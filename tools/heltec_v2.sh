@@ -42,6 +42,22 @@ bootstrap() {
 esptool() { PYTHONPATH="$TOOLS/esptool-4.8.1" "$TOOLS/venv/bin/python" -m esptool "$@"; }
 
 fulsha() { git -C "$REPO" rev-parse --verify "$1^{commit}"; }
+
+ci_ok() {   # every check run on the commit completed with success (and there is at least one)
+    local runs
+    runs="$(gh api "repos/{owner}/{repo}/commits/$1/check-runs" \
+            --jq '.check_runs[] | "\(.status)/\(.conclusion) \(.name)"')" || die "cannot read CI status"
+    [ -n "$runs" ] || die "no CI check runs for ${1:0:7}"
+    echo "$runs" >&2
+    ! grep -qv '^completed/success ' <<<"$runs" || die "CI is not green for ${1:0:7}"
+}
+
+expected_mac() {   # the one board we may write to: HELTEC_MAC or .flashtools/board.mac
+    local mac="${HELTEC_MAC:-$(cat "$TOOLS/board.mac" 2>/dev/null || true)}"
+    mac="$(tr 'A-F' 'a-f' <<<"$mac" | tr -d '[:space:]')"
+    [[ "$mac" =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || die "set the board MAC in HELTEC_MAC or $TOOLS/board.mac"
+    echo "$mac"
+}
 dist()   { echo "$TOOLS/fw/$(fulsha "$1")"; }
 
 fetch() {
@@ -63,8 +79,12 @@ verify() {
     grep -qx "commit=$sha" "$d/BUILD_INFO.txt"        || die "artifact is not built from $sha"
     grep -qx "env=heltec_v2_sx1276" "$d/BUILD_INFO.txt" || die "wrong PlatformIO env"
     grep -q -a "$sha" "$d/firmware.bin"                || die "firmware.bin lacks commit stamp"
-    grep -q -a "TX blocked: RX-only firmware" "$d/firmware.bin" || die "RX-only guard string missing"
     grep -q -a "SX1276 direct RX (TX disabled)" "$d/firmware.bin" || die "not the SX1276 RX-only backend"
+    grep -q -a "RX-ONLY TEST FIRMWARE" "$d/firmware.bin"   || die "RX-only build marker missing"
+    local s
+    for s in "Firmware update (OTA)" "_arduino"; do       # network update must be compiled out
+        if grep -q -a "$s" "$d/firmware.bin"; then die "image still contains '$s' (OTA/HTTP update)"; fi
+    done
     local info; info="$(esptool --chip esp32 image_info --version 2 "$d/firmware.bin")"
     grep -q "Chip ID: 0 (ESP32)" <<<"$info"            || die "firmware.bin is not for ESP32 (classic)"
     grep -q "Validation hash: .* (valid)" <<<"$info"   || die "firmware.bin hash invalid"
@@ -73,7 +93,7 @@ verify() {
     git -C "$REPO" show "$sha:src/ramses_radio.cpp" | grep -q 'Serial.println("\[radio\] TX blocked' \
         || die "sendFrame not blocked in source"
     git -C "$REPO" show "$sha:src/main.cpp" | grep -E '^\s*orcon::tick\(' && die "periodic TX active"
-    gh api "repos/{owner}/{repo}/commits/$sha/check-runs" --jq '.check_runs[] | "\(.name): \(.conclusion)"' >&2
+    ci_ok "$sha"
     echo "VERIFIED $sha  ($d)"
 }
 
@@ -90,7 +110,9 @@ precheck() {
     id="$(esptool --chip esp32 --port "$PORT" flash_id 2>&1)" \
         || { echo "$id" >&2; die "flash_id failed (port busy, no board, or not an ESP32)"; }
     grep -E '^(Chip is|MAC:|Detected flash size:) ' <<<"$id"
-    grep -qE '^Chip is ESP32-D0WD' <<<"$id"                || die "board is not an ESP32-D0WD (Heltec V2)"
+    grep -qE '^Chip is ESP32-D0WDQ6 \(revision ' <<<"$id" || die "board is not an ESP32-D0WDQ6 (Heltec V2)"
+    local mac; mac="$(expected_mac)"
+    grep -qix "MAC: $mac" <<<"$id"                         || die "board MAC is not $mac (another board?)"
     [ "$(grep -c '^Detected flash size: ' <<<"$id")" = 1 ] || die "flash size not reported"
     grep -qx 'Detected flash size: 8MB' <<<"$id"           || die "flash is not exactly 8MB"
     # The board's current partition table must equal the new one, so NVS keeps its place.
@@ -100,7 +122,7 @@ precheck() {
     echo "board partition table:"
     "$TOOLS/venv/bin/python" -I "$REPO/tools/check_parts.py" "$cur" || die "board partition layout unexpected"
     cmp -s "$cur" "$d/partitions.bin" || die "board partition table differs from the new one (NVS could move)"
-    echo "PRECHECK OK ${sha:0:7}: ESP32-D0WD, 8MB, partition table identical (NVS @0x9000 kept)"
+    echo "PRECHECK OK ${sha:0:7}: ESP32-D0WDQ6 $mac, 8MB, partition table identical (NVS @0x9000 kept)"
 }
 
 flash() {

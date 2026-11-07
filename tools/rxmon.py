@@ -39,32 +39,38 @@ while time.time() < end:
             fw = m.group(1)
         if line.startswith("[rxstat]"):
             stats.append(dict(kv.split("=", 1) for kv in line.split()[1:]))
-        m = re.match(r"\[(sync|rx) (\d+) (-?\d+)dBm(?: pre=(\w\w))?\]\s*(.*)", line)
+        # firmware >= 0c9af7b: [sync N ms rssi pre=XX] / [rx N ms rssi] <frame>, N = sync number
+        m = re.match(r"\[(sync|rx) (\d+) (\d+) (-?\d+)dBm(?: pre=(\w\w))?\]\s*(.*)", line)
         if m:
-            events.append((m.group(1), int(m.group(2)), int(m.group(3)), m.group(4), m.group(5)))
+            events.append((m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4)), m.group(5), m.group(6)))
 
 print("\n===== summary =====")
 print("firmware:", fw or "(no boot banner seen)")
-# A sync counts as decoded when the next event is an [rx] within 500 ms.
-syncs = [(i, e) for i, e in enumerate(events) if e[0] == "sync"]
-ok = [e for i, e in syncs
-      if i + 1 < len(events) and events[i + 1][0] == "rx" and events[i + 1][1] - e[1] < 500]
-bad = [e for i, e in syncs if e not in ok]
+# Exact pairing: a decoded frame carries the number of the sync it began at.
+syncs = {e[1]: e for e in events if e[0] == "sync"}
+done = {e[1] for e in events if e[0] == "rx" and e[1]}
+ok = [syncs[n] for n in sorted(done) if n in syncs]
+bad = [e for n, e in sorted(syncs.items()) if n not in done]
 print(f"syncs: {len(syncs)}  decoded: {len(ok)}  garbled: {len(bad)}")
 print("byte before 00 (FF = old decoder would see it):",
-      dict(collections.Counter(e[3] for _, e in syncs)))
+      dict(collections.Counter(e[4] for e in syncs.values())))
 if ok:
-    print("RSSI decoded:", sorted(e[2] for e in ok))
+    print("RSSI decoded:", sorted(e[3] for e in ok))
 if bad:
-    print("RSSI garbled:", sorted(e[2] for e in bad))
+    print("RSSI garbled:", sorted(e[3] for e in bad))
 for e in events:
     if e[0] == "rx":
-        print(f"   [rx {e[1]} {e[2]}dBm] {e[4]}")
+        print(f"   [rx {e[1]} {e[3]}dBm] {e[5]}")
 if stats:
     a, b = stats[0], stats[-1]
-    keys = [k for k in ("uart", "ovf", "sync5", "sync4", "frames", "resets") if k in a]
+    keys = [k for k in ("uart", "ovf", "sync5", "sync4", "frames", "resets", "drop", "lost") if k in a]
     print("rxstat first->last:", ", ".join(f"{k} {a[k]}->{b[k]}" for k in keys))
     print("delta:", {k: int(b[k]) - int(a[k]) for k in keys})
+    for k in ("pendmax", "qmax", "taskus", "loopmax"):
+        if k in b:
+            print(f"max {k}: {max(int(x[k]) for x in stats)}", end="  ")
+    if "stack" in b:
+        print(f"min stack free: {min(int(x['stack']) for x in stats)} B  min heap: {b.get('minheap')} B  rx state: {b.get('rxst')} err {b.get('err')} rec {b.get('rec')}")
     print("radio: op=%s (low 3 bits 5 = RX) lna=%s rxcfg=%s rxbw=%s rssi=%s..%s dBm" % (
         b["op"], b["lna"], b["rxcfg"], b["rxbw"],
         min(int(x["rssi"]) for x in stats), max(int(x["rssi"]) for x in stats)))
