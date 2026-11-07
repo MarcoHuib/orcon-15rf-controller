@@ -41,6 +41,23 @@ jobs:
               assert bad not in sx_body, f"SX1276 backend references {bad}"
           # RadioLib FSK getRSSI() with default args = startReceive()+standby(): kills direct RX
           assert "getRSSI()" not in sx_body, "SX1276 backend calls getRSSI() without skipReceive"
+
+          import re
+          net = Path("src/net.cpp").read_text()
+          rxo = Path("src/rx_only.h").read_text()
+          test = Path("test/test_orcon.cpp").read_text()
+          # every applyCommand key must be in the test's refused list or the UI allowlist
+          body = net.split("static const char* applyCommand(JsonDocument& d) {", 1)[1].split("\n}\n", 1)[0]
+          keys = set(re.findall(r'd\["(\w+)"\]', body))
+          allow = set(re.findall(r'"(\w+)"', rxo.split("OK[] = {", 1)[1].split("}", 1)[0]))
+          tested = set(re.findall(r'"(\w+)"', test.split("TX[] = {", 1)[1].split("};", 1)[0]))
+          assert allow == {"maskids", "showfilter", "roomidx"}, f"RX-only allowlist changed: {allow}"
+          assert keys - allow <= tested, f"applyCommand keys not covered by test_orcon: {keys - allow - tested}"
+          assert "#if RX_ONLY\n    for (JsonPair kv" in body, "applyCommand lacks the RX-only gate"
+          for frag in ("ArduinoOTA.begin()", "ArduinoOTA.handle()", 'server.on("/update"'):
+              i = net.index(frag)
+              assert net.rfind("#if !RX_ONLY", 0, i) > net.rfind("#endif", 0, i), f"{frag} not gated by !RX_ONLY"
+          print("PASS: RX-only command, OTA and update gates present")
           assert not any(line.strip().startswith("orcon::tick(")
                          for line in main.splitlines()), "Periodic TX remains active"
           assert "[env:heltec_v2_sx1276]\n" in config
@@ -59,6 +76,20 @@ jobs:
           /tmp/orcon-test-rx
           g++ -std=c++17 -I src -I test/shim test/test_log.cpp src/ramses_codec.cpp src/orcon_frames.cpp src/orcon_log.cpp -o /tmp/orcon-test-log
           /tmp/orcon-test-log
+          for rx in 1 0; do
+            g++ -std=c++17 -DRX_ONLY=$rx -I src -I test/shim test/test_orcon.cpp src/orcon.cpp src/orcon_frames.cpp src/orcon_log.cpp src/ramses_codec.cpp -o /tmp/orcon-test-orcon-$rx
+            /tmp/orcon-test-orcon-$rx
+          done
+
+      - name: Check web page JavaScript syntax
+        shell: bash
+        run: |
+          g++ -std=c++17 -DPROGMEM= -I src -I test/shim test/dump_pages.cpp -o /tmp/dump-pages
+          for i in 0 1 2 3 4 5 6; do
+            /tmp/dump-pages $i | python3 -c 'import re,sys; print("\n;\n".join(re.findall(r"<script>(.*?)</script>", sys.stdin.read(), re.S)))' > /tmp/page$i.js
+            node --check /tmp/page$i.js
+          done
+          echo "PASS: all page scripts parse"
 
       - name: Install pinned PlatformIO
         shell: bash
@@ -85,6 +116,9 @@ jobs:
           # The image must carry this commit and the RX-only guard string.
           grep -q -a "$GITHUB_SHA" dist/firmware.bin
           grep -q -a "TX blocked: RX-only firmware" dist/firmware.bin
+          # network firmware update must be compiled out of the RX-only image
+          ! grep -q -a "Firmware update (OTA)" dist/firmware.bin
+          ! grep -q -a "_arduino" dist/firmware.bin
           {
             echo "commit=$GITHUB_SHA"
             echo "run_id=$GITHUB_RUN_ID"

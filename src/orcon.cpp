@@ -35,6 +35,10 @@ static uint32_t  g_pairUntil    = 0;
 static bool      g_idsDirty     = false;
 static bool      g_passiveLearn = false;   // advanced: off by default
 
+// RX-only: refuse before ANY state change (no pairing window, no commanded mode,
+// no emulated-sensor values, no TX counters). Counted so the UI can show it.
+#define RX_ONLY_REFUSE(ret) do { if (RX_ONLY) { g_state.txRefused++; return ret; } } while (0)
+
 static void applyIds(uint8_t usClass, uint32_t usSerial,
                      uint8_t fanClass, uint32_t fanSerial) {
     g_ids.us = ramses::DeviceId(usClass, usSerial);
@@ -71,26 +75,33 @@ static void fmtFrame(const ramses::Frame& f, char* out, size_t cap) {
     snprintf(out, cap, "%s %04X %03u %s", typeStr(f.type), f.cmd, f.len, hex);
 }
 
+// Only a frame the radio actually sent is logged/counted, and only then does the
+// ACK window (lastCmdMs) start. A refused/blocked TX leaves no trace but txRefused.
 static bool tx(const ramses::Frame& f) {
+    if (RX_ONLY || !radio::sendFrame(f)) { g_state.txRefused++; return false; }
     rlog::add('T', f, 0);
     g_state.txCount++;
+    g_state.lastCmdMs = millis();
     fmtFrame(f, g_state.lastTx, sizeof(g_state.lastTx));
-    return radio::sendFrame(f);
+    return true;
 }
 
 static bool sendMode(Mode m) {
-    g_state.cmdMode = m; g_state.lastCmdMs = millis();
-    return tx(make22F1(g_ids, m));
+    bool ok = tx(make22F1(g_ids, m));
+    if (ok) g_state.cmdMode = m;
+    return ok;
 }
 
 bool setMode(Mode m) {
+    RX_ONLY_REFUSE(false);
     if (m == Mode::Unknown) return false;
     bool ok = sendMode(m); delay(120); sendMode(m);
     return ok;
 }
-bool setTimer(uint16_t minutes) { return tx(make22F3(g_ids, minutes)); }
+bool setTimer(uint16_t minutes) { RX_ONLY_REFUSE(false); return tx(make22F3(g_ids, minutes)); }
 
 bool sendBind() {
+    RX_ONLY_REFUSE(false);
     bool ok = tx(make1FC9_bind(g_ids));
     delay(60); sendMode(Mode::Auto);
     return ok;
@@ -102,6 +113,7 @@ bool sendBind() {
 // emits frames addressed from its own ID — onFrame()/learnFan() captures that
 // ID *authoritatively* during the window (no passive sniffing of neighbours).
 void startPairing() {
+    RX_ONLY_REFUSE();
     g_pairState = PairState::Searching;
     g_pairUntil = millis() + 180000UL;
     tx(make1FC9_bind(g_ids));
@@ -118,10 +130,11 @@ uint32_t pairWindowLeftMs() {
 }
 bool idsDirty()              { return g_idsDirty; }
 void clearIdsDirty()         { g_idsDirty = false; }
-void setPassiveLearn(bool on){ g_passiveLearn = on; }
+void setPassiveLearn(bool on){ g_passiveLearn = on && !RX_ONLY; }
 bool passiveLearn()          { return g_passiveLearn; }
 
 void setSelftest(bool on) {
+    if (on) RX_ONLY_REFUSE();
     g_selftest = on; g_state.selftest = on;
     if (on) { g_stStart = millis(); g_stLast = 0; g_stMode = Mode::Away; }
 }
@@ -129,12 +142,13 @@ void setSelftest(bool on) {
 // RQ 0001 to the unit (the display's power-on RF-check). If the unit answers
 // RP 0001, our transmit is confirmed working.
 void sendConnect() {
-    g_state.lastCmdMs = millis();
+    RX_ONLY_REFUSE();
     tx(makeRequest(g_ids, 0x0001));
 }
 
 // Arbitrary frame us -> fan (2-address). type: 0=I 1=RQ 2=RP 3=W.
 void sendRaw(uint8_t type, uint16_t code, const uint8_t* pl, uint8_t len) {
+    RX_ONLY_REFUSE();
     ramses::Frame f;
     f.type = (ramses::MsgType)type;
     f.has_addr[0] = true;  f.addr[0] = g_ids.us;
@@ -144,28 +158,29 @@ void sendRaw(uint8_t type, uint16_t code, const uint8_t* pl, uint8_t len) {
     if (len > ramses::MAX_PAYLOAD) len = ramses::MAX_PAYLOAD;
     f.len = len;
     for (uint8_t i = 0; i < len; i++) f.payload[i] = pl[i];
-    g_state.lastCmdMs = millis();
     tx(f);
 }
 
 bool sendDemand(uint8_t percent) {
+    RX_ONLY_REFUSE(false);
     g_state.demand = percent > 100 ? 100 : percent;
     return tx(make31E0(g_ids, percent));
 }
-bool sendCo2(uint16_t ppm)  { g_state.co2 = ppm; return tx(make1298(g_ids, ppm)); }
-bool sendDeviceInfo()       { return tx(make10E0(g_ids)); }
-bool requestStatus()        { g_state.lastCmdMs = millis(); return tx(makeRequest(g_ids, 0x31DA)); }
-bool requestFilter()        { return tx(makeRequest(g_ids, 0x10D0)); }   // ask the fan for filter status
-bool setBypass(uint8_t val) { return tx(make22F7(g_ids, val)); }
-bool setFanSpeed(uint8_t p, uint8_t pct) { return tx(makeFanSpeed(g_ids, p, pct)); }
+bool sendCo2(uint16_t ppm)  { RX_ONLY_REFUSE(false); g_state.co2 = ppm; return tx(make1298(g_ids, ppm)); }
+bool sendDeviceInfo()       { RX_ONLY_REFUSE(false); return tx(make10E0(g_ids)); }
+bool requestStatus()        { RX_ONLY_REFUSE(false); return tx(makeRequest(g_ids, 0x31DA)); }
+bool requestFilter()        { RX_ONLY_REFUSE(false); return tx(makeRequest(g_ids, 0x10D0)); }   // ask the fan for filter status
+bool setBypass(uint8_t val) { RX_ONLY_REFUSE(false); return tx(make22F7(g_ids, val)); }
+bool setFanSpeed(uint8_t p, uint8_t pct) { RX_ONLY_REFUSE(false); return tx(makeFanSpeed(g_ids, p, pct)); }
 
 void setFanSaved(uint8_t p, int16_t pct) { if (p < 7) g_fanSaved[p] = (pct > 100 ? 100 : pct); }
 int16_t fanSaved(uint8_t p) { return p < 7 ? g_fanSaved[p] : -1; }
 void setBypassSaved(int16_t v) { g_bypSaved = v; }
 int16_t bypassSaved() { return g_bypSaved; }
-void setAutoRestore(bool on) { g_autoRestore = on; g_state.autoRestore = on; }
+void setAutoRestore(bool on) { g_autoRestore = on && !RX_ONLY; g_state.autoRestore = g_autoRestore; }
 bool autoRestore() { return g_autoRestore; }
 uint8_t reapplySaved() {
+    RX_ONLY_REFUSE(0);
     uint8_t c = 0;
     for (uint8_t p = 0; p < 7; p++)
         if (g_fanSaved[p] >= 0) { setFanSpeed(p, (uint8_t)g_fanSaved[p]); delay(150); c++; }
@@ -178,6 +193,7 @@ uint8_t reapplySaved() {
 //  which: 0 = balanced 50/50 (restore), 1 = exhaust-only (suck out),
 //         2 = supply-only (blow in). Values are remembered (keeper).
 void setAcMode(uint8_t which) {
+    RX_ONLY_REFUSE();
     uint8_t hiSup, hiExh, byp;
     if (which == 1)      { hiSup = 0;   hiExh = 100; byp = 0xC8; }   // exhaust, bypass open
     else if (which == 2) { hiSup = 100; hiExh = 0;   byp = 0xC8; }   // supply, bypass open
@@ -192,6 +208,7 @@ void setAcMode(uint8_t which) {
 // (e.g. a quiet low imbalance for night cooling), optionally open the bypass,
 // then switch to High. Remembered across power loss.
 void setAcCustom(uint8_t sup, uint8_t exh, bool openByp) {
+    RX_ONLY_REFUSE();
     if (sup > 100) sup = 100;
     if (exh > 100) exh = 100;
     setFanSpeed(4, sup); setFanSaved(4, sup); delay(150);   // High supply  (param 7)
@@ -201,6 +218,7 @@ void setAcCustom(uint8_t sup, uint8_t exh, bool openByp) {
 }
 
 void tick(uint32_t now) {
+    if (RX_ONLY) return;                     // periodic TX only
     if (g_reapplyAt && now >= g_reapplyAt) { g_reapplyAt = 0; reapplySaved(); }
     if (g_selftest) {
         if (now - g_stLast >= 8000) {
@@ -252,7 +270,7 @@ bool onFrame(const ramses::Frame& f) {
     if (fromFan) g_state.lastFanMs = millis();
 
     // The unit answered us: an RP / 31D9 / 0001 from the unit shortly after a TX.
-    if (fromFan && (millis() - g_state.lastCmdMs < 6000) &&
+    if (fromFan && g_state.lastCmdMs && (millis() - g_state.lastCmdMs < 6000) &&
         (f.type == ramses::MsgType::RP || f.cmd == 0x31D9 || f.cmd == 0x0001)) {
         g_state.txAckMs = millis();
     }

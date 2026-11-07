@@ -5,6 +5,7 @@
 #include "orcon.h"
 #include "orcon_log.h"
 #include "ramses_radio.h"
+#include "rx_only.h"
 #if defined(USE_CC1101_TX) || defined(RADIO_CC1101_ASYNC)
 #include "cc1101_tx.h"
 #endif
@@ -13,8 +14,10 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#if !RX_ONLY
 #include <ArduinoOTA.h>
 #include <Update.h>
+#endif
 #include <WebServer.h>
 #include <WiFiClient.h>
 #include <PubSubClient.h>
@@ -54,6 +57,7 @@ static float    g_roomTemp[7] = {0,0,0,0,0,0,0};
 static uint32_t g_roomTs[7]   = {0,0,0,0,0,0,0};   // 0 = never received
 static uint32_t g_domRx = 0;       // diag: number of domoticz/out messages seen
 static uint32_t g_domLastIdx = 0;  // diag: last IDX seen on domoticz/out
+static uint32_t g_cmdRejected = 0; // RX-only: refused /api/cmd + MQTT requests
 
 // ---------------------------------------------------------------------------
 // Persistent config (NVS): WiFi, MQTT host, device IDs
@@ -166,6 +170,10 @@ static void buildStateJson(char* out, size_t cap) {
     d["rx_n"]      = s.rxCount;
     d["tx_n"]      = s.txCount;
     d["uptime_ms"] = millis();  // device monotonic time for RF-log age display
+    d["rx_only"]   = (bool)RX_ONLY;   // receive-only firmware: commands are refused
+    d["fw"]        = FW_VERSION;
+    d["tx_refused"] = s.txRefused;
+    d["cmd_rejected"] = g_cmdRejected;
     const radio::RxDiagnostics rf = radio::rxDiagnostics();
     d["rf_uart_bytes"] = rf.uartBytes;
     d["rf_sync_hits"] = rf.syncHits;
@@ -205,7 +213,13 @@ static void buildStateJson(char* out, size_t cap) {
 // ---------------------------------------------------------------------------
 // Command handling (web POST + MQTT)
 // ---------------------------------------------------------------------------
-static void applyCommand(JsonDocument& d) {
+// Returns the refused key (RX-only) or nullptr. A refused request is not applied
+// at all: no partial settings, no NVS writes, no TX attempt.
+static const char* applyCommand(JsonDocument& d) {
+#if RX_ONLY
+    for (JsonPair kv : d.as<JsonObject>())
+        if (!rxOnlyAllowedCmd(kv.key().c_str())) { g_cmdRejected++; return kv.key().c_str(); }
+#endif
     if (!d["mode"].isNull()) {
         orcon::Mode m = orcon::modeFromName(d["mode"] | "");
         if (m != orcon::Mode::Unknown) orcon::setMode(m);
@@ -275,6 +289,7 @@ static void applyCommand(JsonDocument& d) {
         orcon::sendRaw(ty, code, pl, n);
     }
     g_dirty = true;
+    return nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +305,7 @@ static void handleHouseImg() {
     server.send_P(200, "image/webp", (PGM_P)HOUSE_JPG, HOUSE_JPG_LEN);
 }
 static void handleDebug()  { server.send_P(200, "text/html", DEBUG_HTML);  }
+#if !RX_ONLY
 static void handleUpdatePage() { server.send_P(200, "text/html", UPDATE_HTML); }
 static void handleUpdateUpload() {
     HTTPUpload& up = server.upload();
@@ -307,6 +323,7 @@ static void handleUpdateDone() {
     server.send(200, "application/json", ok ? "{\"ok\":1}" : "{\"ok\":0}");
     if (ok) g_rebootAt = millis() + 1500;   // reboot into the new firmware
 }
+#endif
 
 static void handleState() {
     char buf[2048]; buildStateJson(buf, sizeof(buf));
@@ -324,7 +341,11 @@ static void handleCmd() {
     if (deserializeJson(d, server.arg("plain"))) {
         server.send(400, "application/json", "{\"err\":\"bad json\"}"); return;
     }
-    applyCommand(d);
+    if (const char* refused = applyCommand(d)) {
+        JsonDocument r; r["err"] = "rx-only"; r["key"] = refused;
+        char b[128]; serializeJson(r, b, sizeof(b));
+        server.send(403, "application/json", b); return;
+    }
     server.send(200, "application/json", "{\"ok\":1}");
 }
 
@@ -349,10 +370,15 @@ static void handleIds() {
     if (deserializeJson(d, server.arg("plain"))) {
         server.send(400, "application/json", "{\"err\":\"bad json\"}"); return;
     }
-    uint8_t  uc = (uint8_t)(d["us_class"]  | (int)DEV_US_CLASS);
-    uint32_t us = (uint32_t)(d["us_serial"] | 0);
-    uint8_t  fc = (uint8_t)(d["fan_class"] | (int)DEV_FAN_CLASS);
-    uint32_t fs = (uint32_t)(d["fan_serial"]| 0);
+    // Missing fields keep the stored identity (selecting a unit must not reset ours).
+    const orcon::Ids& cur = orcon::ids();
+    int32_t uc = d["us_class"]   | (int32_t)cur.us.cls;
+    int32_t us = d["us_serial"]  | (int32_t)cur.us.serial;
+    int32_t fc = d["fan_class"]  | (int32_t)cur.fan.cls;
+    int32_t fs = d["fan_serial"] | (int32_t)(orcon::state().fanKnown ? cur.fan.serial : 0);
+    if (uc < 0 || uc > 0x3F || fc < 0 || fc > 0x3F || us <= 0 || us > 0x3FFFF || fs < 0 || fs > 0x3FFFF) {
+        server.send(400, "application/json", "{\"err\":\"class 0-63, serial 1-262143 (fan 0 = none)\"}"); return;
+    }
     saveIds(uc, us, fc, fs);
     orcon::setIds(uc, us, fc, fs);
     g_dirty = true;
@@ -436,22 +462,22 @@ static void mqttCallback(char* topic, byte* payload, unsigned int len) {
 // ---- Home Assistant MQTT auto-discovery (Domoticz reads the same format) ----
 static void addDev(JsonDocument& d) {
     JsonObject dev = d["dev"].to<JsonObject>();
-    dev["ids"].to<JsonArray>().add("orcon15rf");
-    dev["name"] = "Orcon 15RF";
+    dev["ids"].to<JsonArray>().add(MQTT_NODE_ID);
+    dev["name"] = RX_ONLY ? "Orcon RX-only monitor" : "Orcon 15RF";
     dev["mf"]   = "Orcon (DIY)";
-    dev["mdl"]  = "HRC400 15RF";
+    dev["mdl"]  = RX_ONLY ? "Heltec V2 SX1276 RX-only" : "HRC400 15RF";
 }
 static void pubCfg(const char* comp, const char* oid, JsonDocument& d) {
     char buf[640]; size_t n = serializeJson(d, buf, sizeof(buf));
     char topic[100];
-    snprintf(topic, sizeof(topic), "homeassistant/%s/orcon15rf/%s/config", comp, oid);
+    snprintf(topic, sizeof(topic), "homeassistant/%s/" MQTT_NODE_ID "/%s/config", comp, oid);
     mqtt.publish(topic, (const uint8_t*)buf, n, true);
 }
 static void pubSensor(const char* oid, const char* name, const char* key,
                       const char* unit, const char* dcla) {
     JsonDocument d;
     d["name"]    = name;
-    d["uniq_id"] = String("orcon_") + oid;
+    d["uniq_id"] = String(MQTT_UID_PREFIX) + oid;
     d["stat_t"]  = MQTT_BASE_TOPIC "/state";
     d["val_tpl"] = String("{{ value_json.") + key + " }}";
     if (unit && *unit) d["unit_of_meas"] = unit;
@@ -462,7 +488,7 @@ static void pubSensor(const char* oid, const char* name, const char* key,
 static void pubBinary(const char* oid, const char* name, const char* tpl, const char* dcla) {
     JsonDocument d;
     d["name"]    = name;
-    d["uniq_id"] = String("orcon_") + oid;
+    d["uniq_id"] = String(MQTT_UID_PREFIX) + oid;
     d["stat_t"]  = MQTT_BASE_TOPIC "/state";
     d["val_tpl"] = tpl;
     d["pl_on"]   = "ON";
@@ -475,7 +501,7 @@ static void pubSelect(const char* oid, const char* name, const char* valTpl,
                       const char* cmdTpl, const char** opts, int nopts) {
     JsonDocument d;
     d["name"]    = name;
-    d["uniq_id"] = String("orcon_") + oid;
+    d["uniq_id"] = String(MQTT_UID_PREFIX) + oid;
     d["stat_t"]  = MQTT_BASE_TOPIC "/state";
     d["val_tpl"] = valTpl;
     d["cmd_t"]   = MQTT_BASE_TOPIC "/cmd";
@@ -498,12 +524,14 @@ static void publishDiscovery() {
     pubSensor("rssi",      "RF signal",           "rssi",      "dBm", "signal_strength");
     pubBinary("bypass", "Bypass open", "{{ 'ON' if value_json.bypass else 'OFF' }}", "opening");
     pubBinary("fault",  "Fault",       "{{ 'ON' if value_json.fault  else 'OFF' }}", "problem");
+#if !RX_ONLY                       // no command entities on a receive-only board
     static const char* MODES[] = {"away","auto","low","medium","high","boost"};
     pubSelect("mode", "Mode", "{{ value_json.mode }}", "{\"mode\":\"{{ value }}\"}", MODES, 6);
     static const char* BYP[] = {"open","auto","close"};
     pubSelect("bypass_set", "Bypass control",
               "{{ 'open' if value_json.bypass else 'close' }}",
               "{\"bypass\":\"{{ value }}\"}", BYP, 3);
+#endif
 }
 #endif
 
@@ -519,7 +547,7 @@ static void mqttReconnect() {
     bool ok = strlen(MQTT_USER)
         ? mqtt.connect(cid.c_str(), MQTT_USER, MQTT_PASS)
         : mqtt.connect(cid.c_str());
-    if (ok) { mqtt.subscribe(MQTT_BASE_TOPIC "/cmd"); mqtt.subscribe("domoticz/out"); publishDiscovery(); g_dirty = true; backoff = 5000; }
+    if (ok) { if (!RX_ONLY) mqtt.subscribe(MQTT_BASE_TOPIC "/cmd"); mqtt.subscribe("domoticz/out"); publishDiscovery(); g_dirty = true; backoff = 5000; }
     else    { backoff = backoff < 300000 ? backoff * 2 : 300000; }
 #endif
 }
@@ -586,10 +614,12 @@ void begin() {
     oledInit();
     wifiConnect();
 
+#if !RX_ONLY   // RX-only: no network firmware update (would allow a TX-capable image)
     if (!g_apMode) {                    // OTA only makes sense on the home network
         ArduinoOTA.setHostname("orcon15rf");
         ArduinoOTA.begin();
     }
+#endif
 
     server.on("/",          handleRoot);
     server.on("/wifi",      handleWifi);
@@ -599,8 +629,10 @@ void begin() {
     server.on("/flow",      handleFlow);
     server.on("/house.jpg", handleHouseImg);
     server.on("/debug",     handleDebug);
+#if !RX_ONLY
     server.on("/update",    HTTP_GET,  handleUpdatePage);
     server.on("/update",    HTTP_POST, handleUpdateDone, handleUpdateUpload);
+#endif
     server.on("/api/state", handleState);
     server.on("/api/netcfg", handleNetCfg);
     server.on("/api/cmd",   HTTP_POST, handleCmd);
@@ -652,7 +684,9 @@ void loop() {
         orcon::clearIdsDirty();
         g_dirty = true;
     }
+#if !RX_ONLY
     if (!g_apMode) ArduinoOTA.handle();
+#endif
     server.handleClient();
 #if MQTT_ENABLED
     mqttReconnect();

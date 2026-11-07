@@ -30,6 +30,7 @@ struct State {
     // --- debug / keeper ---
     uint32_t rxCount        = 0;
     uint32_t txCount        = 0;
+    uint32_t txRefused      = 0;   // TX attempts refused (RX-only) or not sent by the radio
     char     raw31DA[65]    = "";  // last 31DA payload as hex (for offset calibration)
     uint32_t raw31DAms      = 0;
     char     lastRx[80]     = "";  // last decoded RX frame, human string

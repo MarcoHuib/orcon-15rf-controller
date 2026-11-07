@@ -16,10 +16,6 @@
 #include "display.h"
 #include "orcon_log.h"
 
-#ifndef FW_VERSION
-#define FW_VERSION "dev"     // CI sets the git commit (platformio build flag)
-#endif
-
 #if defined(PINTEST)
 // ---- GPIO mapper: drives each CC1101 GPIO HIGH (others LOW) for 2.5s in turn.
 // Probe each CC1101 solder point with a meter to confirm which GPIO it lands on,

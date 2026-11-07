@@ -4,6 +4,10 @@
 #pragma once
 #include <Arduino.h>
 
+// RX-only builds: banner + disabled controls on every page (the API refuses them anyway).
+#define RXONLY_JS R"JS(function rxOnly(s){if(!s||!s.rx_only||window.rxo)return;window.rxo=1;document.body.insertAdjacentHTML('afterbegin','<div id="rxonly" style="background:#7a2e00;color:#fff;padding:8px 12px;font:600 14px system-ui">RX-ONLY TEST FIRMWARE (fw '+String(s.fw||'?').slice(0,7)+') &mdash; receive only, no 868 MHz transmission. Controls, pairing and firmware upload are disabled.</div>');document.querySelectorAll('[data-m],[data-t],[data-b],[data-bypass],[data-ac],[data-accustom],[data-pair],[data-reapply],[data-forget],[data-selftest],[data-connect],[data-status],[data-raw],.ctl,#ar,#pl').forEach(function(e){e.disabled=true;});document.querySelectorAll('a[href="/update"]').forEach(function(a){a.style.display='none';});}
+)JS"
+
 static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -193,7 +197,7 @@ input[type=range]{width:100%}label{color:var(--mut);font-size:13px}
 <p class="small"><a href="/update" style="color:var(--acc)">Update firmware (OTA upload) &rarr;</a></p>
 </div><!-- /adv -->
 </div>
-<script>
+<script>)HTML" RXONLY_JS R"HTML(
 const $=s=>document.querySelector(s);
 function fmtId(id,mask){if(!id)return id||'';if(!mask)return id;const p=(''+id).split(':');if(p.length!==2||p[1].length<4)return id;return p[0]+':'+p[1].slice(0,2)+'••'+p[1].slice(-2);}
 $('#setBtn').onclick=()=>{const a=$('#adv'),v=a.style.display==='none';a.style.display=v?'block':'none';$('#setBtn').textContent=v?'⚙ Hide settings':'⚙ Settings & advanced';};
@@ -220,7 +224,7 @@ document.querySelector('[data-selftest]').onclick=()=>send({selftest:1});
 document.querySelector('[data-connect]').onclick=()=>send({connect:1});
 document.querySelector('[data-raw]').onclick=()=>send({raw_type:$('#rty').value,raw_code:$('#rco').value.trim(),raw_pl:$('#rpl').value.replace(/\s+/g,'')});
 function num(x){return (x===null||x===undefined)?'–':x}
-function refresh(){fetch('/api/state').then(r=>r.json()).then(s=>{
+function refresh(){fetch('/api/state').then(r=>r.json()).then(s=>{rxOnly(s);
  $('#mode').textContent=s.mode||'';
  {var act=(s.cmd_mode&&s.cmd_mode!='unknown')?s.cmd_mode:s.mode;
   document.querySelectorAll('[data-m]').forEach(b=>b.classList.toggle('sel',b.dataset.m===act));}
@@ -389,10 +393,10 @@ Put that as <b>This device ID</b> and your fan as <b>Fan ID</b>, Apply, and the 
 </div>
 <p class="small"><a href="/" style="color:var(--acc)">&larr; back to controls</a></p>
 </div>
-<script>
+<script>)LOG" RXONLY_JS R"LOG(
 const $=s=>document.querySelector(s);
 let seenR='',seenF='';
-function st(){fetch('/api/state',{cache:'no-store'}).then(r=>r.json()).then(s=>{
+function st(){fetch('/api/state',{cache:'no-store'}).then(r=>r.json()).then(s=>{rxOnly(s);
   $('#usid').textContent=s.us_id;$('#fanid').textContent=s.fan_id;
   $('#observed').textContent='Decoded RX: '+s.rx_n+' · Last mode from RF: '+(s.mode||'unknown')+' (not verified fan speed)';
   const age=ms=>ms==null||ms<0?'never':Math.round(ms/1000)+'s ago';
@@ -471,12 +475,12 @@ a{color:var(--mut);font-size:11px;text-decoration:none}
 <button data-b="open"><svg class="ic" viewBox="0 0 24 24"><path d="M12 2v20M3.3 7l17.4 10M20.7 7L3.3 17"/></svg>Open</button><button data-b="auto"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.3 15l2.7-6 2.7 6"/><path d="M10.1 13.2h3.8"/></svg>Auto</button><button data-b="close"><svg class="ic" viewBox="0 0 24 24"><path d="M12 3c2.5 3.5 4 5.5 4 8a4 4 0 0 1-8 0c0-1.6.8-2.8 1.6-3.6.8 1.4 1.7 1.6 2.4.4z"/></svg>Close</button>
 </div>
 <a href="/" target="_top">full control &rarr;</a>
-<script>
+<script>)WIDGET" RXONLY_JS R"WIDGET(
 const $=s=>document.querySelector(s);
 function send(b){return fetch('/api/cmd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})}
 document.querySelectorAll('[data-m]').forEach(b=>b.onclick=()=>send({mode:b.dataset.m}).then(()=>setTimeout(refresh,400)));
 document.querySelectorAll('[data-b]').forEach(b=>b.onclick=()=>send({bypass:b.dataset.b}).then(()=>setTimeout(refresh,400)));
-function refresh(){fetch('/api/state').then(r=>r.json()).then(s=>{
+function refresh(){fetch('/api/state').then(r=>r.json()).then(s=>{rxOnly(s);
   $('#dot').className='dot'+(s.online?' on':'');
   $('#mode').textContent=s.mode;
   $('#ti').textContent=s.t_indoor||'–';$('#to').textContent=s.t_outdoor||'–';
@@ -540,7 +544,7 @@ button{font:inherit;color:var(--fg);background:#26303c;border:1px solid #313d4c;
 <table id="codes"><thead><tr><th>code</th><th>count</th><th>last</th><th>latest payload</th></tr></thead><tbody></tbody></table>
 </div>
 
-<script>
+<script>)DBG" RXONLY_JS R"DBG(
 const $=s=>document.querySelector(s);
 const hb=h=>{let a=[];for(let i=0;i+1<h.length;i+=2)a.push(parseInt(h.substr(i,2),16));return a;};
 const t16=(b,i)=>{if(b.length<i+2)return null;let v=(b[i]<<8)|b[i+1];if(v&0x8000)v-=0x10000;if(v==0x7FFF||v==-32768)return null;return v/100;};
@@ -582,7 +586,7 @@ function renderDecoders(map,now){let html='';
    +'<table><thead><tr><th>field</th><th>byte(s)</th><th>decoded</th></tr></thead><tbody>'+rows+'</tbody></table></div>';});
  $('#decoders').innerHTML=html||'<div class="small">waiting for frames… press “Read live status” near the unit.</div>';}
 function tick(){
- fetch('/api/state').then(r=>r.json()).then(s=>{
+ fetch('/api/state').then(r=>r.json()).then(s=>{rxOnly(s);
   $('#radio').textContent=s.radio;$('#cc').textContent=s.cc1101||'n/a';
   $('#rssi').textContent=s.rssi;$('#online').innerHTML=s.online?'<span class=ok>yes</span>':'<span class=warn>no</span>';
   $('#rxn').textContent=s.rx_n;$('#txn').textContent=s.tx_n;
@@ -754,7 +758,7 @@ body{font:14px system-ui,sans-serif;color:var(--fg);padding:6px}
 </div></div>
 </div>
 </div>
-<script>
+<script>)FLOW" RXONLY_JS R"FLOW(
 const $=s=>document.querySelector(s);
 const num=x=>(x==null||x===undefined)?'–':x;
 const f=x=>(x==null||x==='')?'–':(Math.round(x*10)/10);
@@ -767,7 +771,7 @@ var acS=50,acE=50,acT=null,curByp=0;
 function stepAc(w,d){if(w=='s'){acS=Math.max(0,Math.min(100,acS+d));$('#supv').textContent=acS;}else{acE=Math.max(0,Math.min(100,acE+d));$('#exhv').textContent=acE;}clearTimeout(acT);acT=setTimeout(function(){send({ac_sup:acS,ac_exh:acE,ac_byp:curByp});acT=null;},800);}
 document.querySelectorAll('.ctl').forEach(b=>b.onclick=()=>stepAc(b.dataset.w,+b.dataset.step));
 const ROOMS=['attic','bed1','bath','bed2','kitchen','living','office'];
-function up(){fetch('/api/state').then(r=>r.json()).then(s=>{
+function up(){fetch('/api/state').then(r=>r.json()).then(s=>{rxOnly(s);
  curByp=s.bypass?1:0;
  $('#w_mode').textContent=(s.mode||'–').toUpperCase();
  $('#w_byp').innerHTML='bypass <b>'+(s.bypass?'open':'closed')+'</b>';

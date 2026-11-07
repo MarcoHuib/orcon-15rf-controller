@@ -191,6 +191,9 @@ bool poll(ramses::Frame& out) {
 //   TX: FSK packet mode — the full on-air frame is stuffed as raw payload.
 // ===========================================================================
 #if defined(RADIO_SX1276)
+#if !RX_ONLY
+#error "SX1276 backend is receive-only: it must be built with RX_ONLY=1"
+#endif
 #include <HardwareSerial.h>
 
 static Module g_mod(PIN_SX_NSS, PIN_SX_DIO0, PIN_SX_RST, PIN_SX_DIO1);  // own handle: read-only register diagnostics
