@@ -82,10 +82,11 @@ uint8_t headerForType(MsgType t, bool a0, bool a1, bool a2, bool p0, bool p1);
 size_t wireFromLogical(const uint8_t* logical, size_t n, uint8_t* out, size_t cap);
 // logicalFromWire: input begins at SYNC[0]. returns logical length, 0 on error.
 size_t logicalFromWire(const uint8_t* wire, size_t n, uint8_t* out, size_t cap);
-// Scan a stream of UART-recovered wire bytes (CC1101 async RX) for ONE frame.
-// Finds SYNC[5], lets logicalFromWire read to STOP, parses it. Returns true and
-// fills f on success. *consumed = #bytes the caller may drop from the front
-// (keeps a partial SYNC / incomplete frame at the tail for the next call).
+// Scan a stream of UART-recovered wire bytes (CC1101/SX1276 async RX) for ONE
+// frame. Finds SYNC[1..4] (the leading 0xFF is optional, see .cpp), decodes
+// Manchester to STOP, parses it. Returns true and fills f on success.
+// *consumed = #bytes the caller may drop from the front (keeps a partial sync /
+// incomplete frame at the tail for the next call).
 bool extractWireFrame(const uint8_t* s, size_t n, size_t* consumed, Frame& f);
 
 // ---- Layer C: wire bytes <-> on-air bitstream ------------------------------
