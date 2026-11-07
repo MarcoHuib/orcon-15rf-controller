@@ -254,31 +254,50 @@ static void learnFan(const ramses::DeviceId& d) {
     }
 }
 
+// The selected unit = the configured fan ID (NVS / pairing). Without one, TX builds
+// keep the legacy class-32 match; RX-only shows no unit status until one is chosen.
+static bool isUnit(const ramses::DeviceId& d) {
+    return g_state.fanKnown ? d == g_ids.fan : (!RX_ONLY && d.cls == DEV_FAN_CLASS);
+}
+static bool toUnit(const ramses::Frame& f) {
+    return (f.has_addr[1] && isUnit(f.addr[1])) ||
+           (f.has_addr[2] && !(f.addr[2] == f.addr[0]) && isUnit(f.addr[2]));
+}
+
 bool onFrame(const ramses::Frame& f) {
+    const uint32_t now = millis();
     rlog::add('R', f, (int)radio::lastRssi());
     g_state.rxCount++;
     fmtFrame(f, g_state.lastRx, sizeof(g_state.lastRx));
+    g_state.lastRxMs = now;
 
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 3; i++) {                     // pairing (TX builds; RX-only never pairs)
         if (!f.has_addr[i]) continue;
         if (f.addr[i].cls == DEV_FAN_CLASS) learnFan(f.addr[i]);
     }
-    // "From the fan" by role (rlog learned it from 31D9/31DA/22F1), not by class:
-    // the MVS-15RHBP fan is class 29, not DEV_FAN_CLASS (32).
-    const rlog::Seen& sn = rlog::seen();
-    const bool fromFan = f.has_addr[0] && sn.haveFan && f.addr[0] == sn.fan;
-    if (fromFan) g_state.lastFanMs = millis();
-
-    // The unit answered us: an RP / 31D9 / 0001 from the unit shortly after a TX.
-    if (fromFan && g_state.lastCmdMs && (millis() - g_state.lastCmdMs < 6000) &&
-        (f.type == ramses::MsgType::RP || f.cmd == 0x31D9 || f.cmd == 0x0001)) {
-        g_state.txAckMs = millis();
-    }
-
-    g_state.lastRxMs = millis();
-    bool changed = false;
+    if (!f.has_addr[0]) return false;
     const uint8_t* p = f.payload;
 
+    // A remote's mode command to our unit: recorded apart from the unit's own state.
+    if (f.cmd == 0x22F1 && f.type != ramses::MsgType::RP && f.len >= 2 && p[1] <= 7 && toUnit(f)) {
+        g_state.remoteMode = (Mode)p[1];
+        g_state.remoteId   = f.addr[0];
+        g_state.remoteMs   = now;
+        g_state.remoteConfirmedMs = 0;
+        return true;
+    }
+    // Unit status only from the selected unit itself: neighbours share the channel.
+    const bool status = f.type == ramses::MsgType::I || f.type == ramses::MsgType::RP;
+    if (!status || !isUnit(f.addr[0])) return false;
+    g_state.lastFanMs = now;
+
+    // The unit answered us: an RP / 31D9 / 0001 shortly after one of OUR transmissions.
+    if (g_state.lastCmdMs && (now - g_state.lastCmdMs < 6000) &&
+        (f.type == ramses::MsgType::RP || f.cmd == 0x31D9 || f.cmd == 0x0001)) {
+        g_state.txAckMs = now;
+    }
+
+    bool changed = false;
     switch (f.cmd) {
         case 0x042F:
             if (g_autoRestore && (millis() - g_last042F > 60000)) {
@@ -286,7 +305,13 @@ bool onFrame(const ramses::Frame& f) {
                 g_reapplyAt = millis() + 20000;   // re-push saved settings ~20s after the fan reboots
             }
             changed = true; break;
-        case 0x31D9: if (f.len >= 3 && p[2] <= 7) { g_state.mode = (Mode)p[2]; changed = true; } break;
+        case 0x31D9:
+            if (f.len >= 3 && p[2] <= 7) {
+                g_state.mode = (Mode)p[2]; g_state.modeMs = now; changed = true;
+                if (g_state.remoteMs && now - g_state.remoteMs < 10000 && g_state.mode == g_state.remoteMode)
+                    g_state.remoteConfirmedMs = now;
+            }
+            break;
         case 0x31DA:
             // Calibrated against a real Orcon HRC400 frame (ramses_rf layout):
             //  [3-4] CO2 (7FFF=none)  [5] indoor RH%  [6] outdoor RH%
@@ -311,7 +336,6 @@ bool onFrame(const ramses::Frame& f) {
             changed = true; break;
         case 0x1298: if (f.len >= 3) { g_state.co2 = (uint16_t)((p[1] << 8) | p[2]); changed = true; } break;
         case 0x10D0: if (f.len >= 2) { g_state.filterRemaining = p[1]; changed = true; } break;
-        case 0x22F1: if (f.len >= 2 && p[1] <= 7) { g_state.mode = (Mode)p[1]; changed = true; } break;
         default: break;
     }
     return changed;

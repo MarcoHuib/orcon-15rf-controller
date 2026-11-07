@@ -104,18 +104,14 @@ static void unitSelection() {
     orcon::onFrame(remote22F1(REMOTE2, NB_FAN, 3));                        // other house's remote
     orcon::onFrame(remote22F1(REMOTE, UNIT, 3));                           // our remote, no unit reply
     CHECK(s.mode == Mode::Unknown, "remote command without unit reply is not shown as unit mode");
-#if ORCON_HAS_REMOTE_STATE
     CHECK(s.remoteMode == Mode::High && s.remoteId == REMOTE && s.remoteConfirmedMs == 0,
           "remote command recorded separately, unconfirmed");
-#endif
     g_ms += 40; orcon::onFrame(unit31D9(UNIT, 3));
     CHECK(s.mode == Mode::High, "unit 31D9 sets the mode");
-#if ORCON_HAS_REMOTE_STATE
     CHECK(s.remoteConfirmedMs != 0 && s.modeMs == g_ms, "remote command confirmed by the unit's 31D9");
     g_ms += 30000; orcon::onFrame(remote22F1(REMOTE, UNIT, 1)); g_ms += 15000; orcon::onFrame(unit31D9(UNIT, 3));
     CHECK(s.remoteMode == Mode::Low && s.remoteConfirmedMs == 0 && s.mode == Mode::High,
           "unit reporting another mode does not confirm the remote command");
-#endif
     CHECK(s.lastFanMs != 0, "unit last-heard time follows the selected unit");
 }
 
@@ -140,7 +136,7 @@ static void v3TxStillWorks() {
 int main() {
     printf("orcon state tests (RX_ONLY=%d)\n", RX_ONLY);
 #if RX_ONLY
-    // unitSelection();           // phase 3 (unit filtering); first: State is static
+    unitSelection();              // first: State is static, later groups set the mode
     rxOnlyBlocksEverything();
     apiAllowlist();
 #else

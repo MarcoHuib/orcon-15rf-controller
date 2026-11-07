@@ -129,7 +129,8 @@ static void idStr(const ramses::DeviceId& d, char* out, size_t cap) {
 static size_t buildStateJson(char* out, size_t cap) {
     const orcon::State& s = orcon::state();
     JsonDocument d;
-    d["mode"]      = orcon::modeName(s.mode);
+    d["mode"]      = orcon::modeName(s.mode);           // reported by the selected unit only
+    d["mode_age"]  = s.modeMs ? (int32_t)((millis() - s.modeMs) / 1000) : -1;
     d["supply"]    = s.supplyPct;
     d["exhaust"]   = s.exhaustPct;
     d["t_indoor"]  = s.tempIndoor;
@@ -162,7 +163,13 @@ static size_t buildStateJson(char* out, size_t cap) {
     d["fan_id"]    = fid;
     d["rssi"]      = (int)radio::lastRssi();
     d["radio"]     = radio::name();
-    d["online"]    = (millis() - s.lastRxMs) < 600000UL && s.lastRxMs != 0;
+    d["online"]    = s.lastFanMs != 0 && (millis() - s.lastFanMs) < 600000UL;   // the selected unit, not any traffic
+    // Last remote command to the unit: a request, confirmed only by the unit's own 31D9.
+    char rid[16]; idStr(s.remoteId, rid, sizeof(rid));
+    d["remote_cmd"]       = orcon::modeName(s.remoteMode);
+    d["remote_id"]        = s.remoteMs ? rid : "";
+    d["remote_age"]       = s.remoteMs ? (int32_t)((millis() - s.remoteMs) / 1000) : -1;
+    d["remote_confirmed"] = s.remoteConfirmedMs != 0;
     d["cmd_mode"]  = orcon::modeName(s.cmdMode);
     d["selftest"]  = s.selftest;
     d["fan_age"]   = s.lastFanMs ? (int)((millis() - s.lastFanMs) / 1000) : -1;
@@ -367,11 +374,13 @@ static void handleCmd() {
     server.send(200, "application/json", "{\"ok\":1}");
 }
 
-// GET /api/log -> { log:[...], seen_remote, seen_fan }
+// GET /api/log -> { log:[...], devices:[...], seen_remote, seen_fan }  (devices = discovery only)
 static void handleLog() {
     static char buf[7168];
     size_t n = snprintf(buf, sizeof(buf), "{\"log\":");
-    n += rlog::toJson(buf + n, sizeof(buf) - n);
+    n += rlog::toJson(buf + n, sizeof(buf) - n - 1400);     // leave room for the device list
+    n += snprintf(buf + n, sizeof(buf) - n, ",\"devices\":");
+    n += rlog::devicesJson(buf + n, sizeof(buf) - n - 160);
     const rlog::Seen& s = rlog::seen();
     char rem[16] = "", fan[16] = "";
     if (s.haveRemote) idStr(s.remote, rem, sizeof(rem));

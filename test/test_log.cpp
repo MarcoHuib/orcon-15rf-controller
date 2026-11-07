@@ -44,6 +44,39 @@ int main(){
     CHECK(strstr(buf,"29:000101 29:000202 --:------ 22F1 003 000104")!=nullptr, "MVS 22F1 formats as received");
     CHECK(rlog::seen().haveRemote && rlog::seen().remote==rem, "MVS: 22F1 sender 29:000101 is the remote");
     CHECK(rlog::seen().haveFan && rlog::seen().fan==fan, "MVS: 31D9 sender 29:000202 is the fan (not the remote)");
+
+    // Discovery table: every sender with its role; bounded; least recently heard evicted.
+    DeviceId nb(20,303), rem2(0x1D,111111);
+    Frame n1 = m2; n1.addr[0] = nb; n1.addr[2] = nb;                           // neighbour unit 31D9
+    Frame r2 = m1; r2.addr[0] = rem2; r2.addr[1] = nb;                         // neighbour's remote
+    g_ms += 1000; rlog::add('R', n1, -75); rlog::add('R', r2, -80);
+    const rlog::Device* dv; size_t nd = rlog::devices(&dv);
+    auto role = [&](DeviceId id) { for (size_t i = 0; i < nd; i++) if (dv[i].id == id) return (int)dv[i].roles; return -1; };
+    CHECK(role(fan) == rlog::ROLE_UNIT && role(nb) == rlog::ROLE_UNIT && role(rem) == rlog::ROLE_REMOTE &&
+          role(rem2) == rlog::ROLE_REMOTE && role(ctl) == 0, "devices: two units, two remotes, one RQ sender, roles by message");
+    char dj[2048]; rlog::devicesJson(dj, sizeof(dj));
+    printf("  devices: %.160s...\n", dj);
+    CHECK(dj[0] == '[' && strstr(dj, "\"id\":\"29:000202\",\"role\":\"unit\"") && strstr(dj, "\"id\":\"20:000303\""),
+          "devicesJson lists the units and remotes");
+    for (uint32_t i = 0; i < 20; i++) { g_ms += 10; Frame x = n1; x.addr[0] = DeviceId(0x14, 1000 + i); x.addr[2] = x.addr[0]; rlog::add('R', x, -90); }
+    nd = rlog::devices(&dv);
+    bool newest = false, oldest = false;
+    for (size_t i = 0; i < nd; i++) { if (dv[i].id == DeviceId(0x14, 1019)) newest = true; if (dv[i].id == DeviceId(0x14, 1000)) oldest = true; }
+    CHECK(nd == rlog::MAX_DEVICES && newest && !oldest, "table stays bounded at 12, least recently heard evicted");
+    // toJson must never write past cap: sweep every cap with long (31DA) entries in the log
+    Frame big = m2; big.cmd = 0x31DA; big.len = 30; for (int i = 0; i < 30; i++) big.payload[i] = (uint8_t)i;
+    g_ms = 4000000000UL;                                     // 10-digit timestamps: longest entries
+    for (size_t i = 0; i < rlog::CAP; i++) rlog::add('R', big, -127);   // whole ring: long entries
+    static char sweep[2400]; int badCap = -1;
+    for (size_t cap = 160; cap <= 1600 && badCap < 0; cap++) {
+        memset(sweep, 0x5A, sizeof(sweep));
+        size_t jn = rlog::toJson(sweep, cap);
+        bool ok = jn < cap && sweep[jn] == 0 && sweep[jn - 1] == ']';
+        for (size_t i = cap; i < sizeof(sweep); i++) if (sweep[i] != 0x5A) ok = false;
+        if (!ok) badCap = (int)cap;
+    }
+    char m2s[96]; snprintf(m2s, sizeof(m2s), "toJson stays inside cap for every cap 160..1600 (first bad: %d)", badCap);
+    CHECK(badCap < 0, m2s);
     const char* v=failures?"FAILED":"ALL PASSED"; const char* pl=failures==1?"":"s";
     printf("\n%s (%d failure%s)\n",v,failures,pl);
     return failures?1:0;

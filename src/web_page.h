@@ -224,7 +224,7 @@ document.querySelector('[data-connect]').onclick=()=>send({connect:1});
 document.querySelector('[data-raw]').onclick=()=>send({raw_type:$('#rty').value,raw_code:$('#rco').value.trim(),raw_pl:$('#rpl').value.replace(/\s+/g,'')});
 function num(x){return (x===null||x===undefined)?'–':x}
 function refresh(){fetch('/api/state').then(r=>r.json()).then(s=>{rxOnly(s);
- $('#mode').textContent=s.mode||'';
+ $('#mode').textContent=(s.mode||'')+(s.remote_age>=0&&s.remote_age<300?' · remote→'+s.remote_cmd+(s.remote_confirmed?' ✓ unit confirmed':' (unconfirmed)'):'');
  {var act=(s.cmd_mode&&s.cmd_mode!='unknown')?s.cmd_mode:s.mode;
   document.querySelectorAll('[data-m]').forEach(b=>b.classList.toggle('sel',b.dataset.m===act));}
  $('#sup').textContent=num(s.supply);$('#exh').textContent=num(s.exhaust);
@@ -411,7 +411,8 @@ function st(){fetch('/api/state',{cache:'no-store'}).then(r=>r.json()).then(s=>{
 function fmtAge(t,now){let a=Math.max(0,(now-t)/1000);return a<99?a.toFixed(0)+'s':(a/60).toFixed(0)+'m'}
 function load(){fetch('/api/log',{cache:'no-store'}).then(r=>r.json()).then(j=>{
   seenR=j.seen_remote||'';seenF=j.seen_fan||'';
-  $('#seen').innerHTML='Detected: remote <b>'+(seenR||'-')+'</b>, fan <b>'+(seenF||'-')+'</b>';
+  $('#seen').innerHTML='Detected: remote <b>'+(seenR||'-')+'</b>, fan <b>'+(seenF||'-')+'</b>'+
+    '<br>Heard (discovery only, never auto-selected): '+(j.devices||[]).map(function(d){return d.id+' '+d.role+' ×'+d.n+' '+d.age_s+'s '+d.rssi+'dBm';}).join(' · ');
   const now=j.uptime_ms||Math.max(...j.log.map(e=>e.t),0);
   $('#log').innerHTML=j.log.slice().reverse().map(e=>{
     const c=e.d==='R'?'rx':'tx';const r=e.d==='R'?(' '+e.r+'dBm'):'';

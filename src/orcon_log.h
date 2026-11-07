@@ -33,4 +33,19 @@ struct Seen {
 };
 const Seen& seen();
 
+// --- discovered devices ------------------------------------------------------
+// Every sender heard, with the role its messages imply. Discovery only: nothing
+// here ever selects or replaces the unit (that is orcon::ids().fan, set explicitly).
+enum : uint8_t { ROLE_UNIT = 1, ROLE_REMOTE = 2 };   // sent 31D9/31DA | sent 22F1/22F3
+struct Device {
+    ramses::DeviceId id;
+    uint8_t  roles = 0;
+    uint16_t lastCmd = 0;
+    uint32_t count = 0, lastMs = 0;
+    int16_t  rssi = 0;
+};
+static const size_t MAX_DEVICES = 12;
+size_t devices(const Device** out);      // returns how many entries are valid
+size_t devicesJson(char* out, size_t cap); // [{"id","role","n","age_s","rssi","cmd"}...]
+
 } // namespace rlog
