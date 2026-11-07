@@ -369,19 +369,20 @@ b{color:var(--fg)}
 <h1>RF log &amp; device identity</h1>
 
 <div class="card">
-<div class="small">This unit sends as <b id="usid">–</b> &nbsp; → &nbsp; fan <b id="fanid">–</b></div>
+<div class="small">Our ID <b id="usid">–</b> &nbsp;·&nbsp; selected unit <b id="fanid">–</b></div>
 <div id="seen" class="small" style="margin-top:8px"></div>
 <div id="observed" class="small" style="margin-top:8px">Waiting for decoded RF frames…</div>
 <div id="rfdiag" class="small" style="margin-top:8px">Waiting for raw radio diagnostics…</div>
 <div class="row" style="margin-top:10px">
 <div><label>This device ID (cc:serial)</label><input id="us" placeholder="29:012345" style="width:150px"></div>
-<div><label>Fan ID (cc:serial)</label><input id="fan" placeholder="32:178990" style="width:150px"></div>
+<div><label>Our unit (cc:serial)</label><input id="fan" placeholder="29:000202" style="width:150px"></div>
 <button class="go" id="apply" style="margin-top:18px">Apply &amp; save</button>
-<button id="clone" style="margin-top:18px">Use detected</button>
+<button id="clone" style="margin-top:18px">Copy heard remote as our ID</button>
 </div>
 <div id="idmsg" class="small" style="margin-top:8px"></div>
-<p class="small">Cloning: press a button on your existing remote — its ID appears under "Detected".
-Put that as <b>This device ID</b> and your fan as <b>Fan ID</b>, Apply, and the fan obeys without pairing.</p>
+<p class="small">Choose <b>our unit</b> yourself from the heard units: neighbours share 868 MHz, so a heard
+unit is not necessarily ours (check that it answers your own remote). Nothing is selected automatically.
+Cloning (TX builds): press your remote, copy its ID as our ID, Apply.</p>
 </div>
 
 <div class="card">
@@ -395,9 +396,11 @@ Put that as <b>This device ID</b> and your fan as <b>Fan ID</b>, Apply, and the 
 </div>
 <script>)LOG" RXONLY_JS R"LOG(
 const $=s=>document.querySelector(s);
-let seenR='',seenF='';
+let seenR='',selFan='';
 function st(){fetch('/api/state',{cache:'no-store'}).then(r=>r.json()).then(s=>{rxOnly(s);
-  $('#usid').textContent=s.us_id;$('#fanid').textContent=s.fan_id;
+  selFan=s.fan_known?s.fan_id:'';
+  $('#usid').textContent=s.us_id;$('#fanid').textContent=selFan||'none selected';
+  if(s.rx_only)$('#clone').style.display='none';   // receive-only: no identity to clone
   $('#observed').textContent='Decoded RX: '+s.rx_n+' · Last mode from RF: '+(s.mode||'unknown')+' (not verified fan speed)';
   const age=ms=>ms==null||ms<0?'never':Math.round(ms/1000)+'s ago';
   $('#rfdiag').textContent='Raw UART bytes: '+(s.rf_uart_bytes??'-')+
@@ -411,9 +414,13 @@ function st(){fetch('/api/state',{cache:'no-store'}).then(r=>r.json()).then(s=>{
 })}
 function fmtAge(t,now){let a=Math.max(0,(now-t)/1000);return a<99?a.toFixed(0)+'s':(a/60).toFixed(0)+'m'}
 function load(){fetch('/api/log',{cache:'no-store'}).then(r=>r.json()).then(j=>{
-  seenR=j.seen_remote||'';seenF=j.seen_fan||'';
-  $('#seen').innerHTML='Detected: remote <b>'+(seenR||'-')+'</b>, fan <b>'+(seenF||'-')+'</b>'+
-    '<br>Heard (discovery only, never auto-selected): '+(j.devices||[]).map(function(d){return d.id+' '+d.role+' ×'+d.n+' '+d.age_s+'s '+d.rssi+'dBm';}).join(' · ');
+  seenR=j.seen_remote||'';
+  const devs=j.devices||[], units=devs.filter(d=>d.role.indexOf('unit')>=0), rems=devs.filter(d=>d.role.indexOf('remote')>=0);
+  $('#seen').innerHTML='Heard units ('+units.length+', discovery only — pick ours explicitly):<br>'+
+    (units.map(d=>'<button data-pick="'+d.id+'" style="width:auto;margin:2px 6px 2px 0">'+d.id+(d.id===selFan?' ✓ selected':' select')+'</button>×'+d.n+' · '+d.age_s+'s ago · '+d.rssi+' dBm').join('<br>')||'none yet')+
+    '<br>Heard remotes: '+(rems.map(d=>d.id+' ×'+d.n+' '+d.rssi+' dBm').join(' · ')||'none yet');
+  document.querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>{$('#fan').value=b.dataset.pick;
+    $('#idmsg').textContent='Unit '+b.dataset.pick+' entered. Check it is YOUR unit (it answers your own remote), then Apply & save.';});
   const now=j.uptime_ms||Math.max(...j.log.map(e=>e.t),0);
   $('#log').innerHTML=j.log.slice().reverse().map(e=>{
     const c=e.d==='R'?'rx':'tx';const r=e.d==='R'?(' '+e.r+'dBm'):'';
@@ -421,7 +428,7 @@ function load(){fetch('/api/log',{cache:'no-store'}).then(r=>r.json()).then(j=>{
            fmtAge(e.t,now).padStart(4)+r.padStart(7)+'  '+e.s+'</span>';
   }).join('\n')||'(nothing yet)';
 })}
-$('#clone').onclick=()=>{if(seenR)$('#us').value=seenR;if(seenF)$('#fan').value=seenF;};
+$('#clone').onclick=()=>{if(seenR)$('#us').value=seenR;};   // never fills the unit
 $('#apply').onclick=()=>{
   const pa=s=>{const m=(s||'').split(':');return m.length===2?[parseInt(m[0],10),parseInt(m[1],10)]:null};
   const u=pa($('#us').value),f=pa($('#fan').value);
@@ -429,7 +436,7 @@ $('#apply').onclick=()=>{
   const body={us_class:u[0],us_serial:u[1]};
   if(f){body.fan_class=f[0];body.fan_serial=f[1];}
   fetch('/api/ids',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-   .then(r=>r.json().then(j=>{$('#idmsg').textContent=r.ok?'Saved. Now controlling as '+$('#us').value+'.':'Not saved: '+(j.err||r.status);st();}));
+   .then(r=>r.json().then(j=>{$('#idmsg').textContent=r.ok?'Saved. Selected unit: '+($('#fan').value||'none')+'.':'Not saved: '+(j.err||r.status);st();}));
 };
 st();load();setInterval(()=>{if($('#auto').checked)load();},1500);setInterval(st,4000);
 </script></body></html>)LOG";
