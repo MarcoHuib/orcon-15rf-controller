@@ -27,3 +27,6 @@ docs/img/house-cutaway.png
 docs/img/house_cutaway_base*.png
 docs/img/_try_*
 docs/img/_q_*
+
+# Flash tooling cache (tools/heltec_v2.sh)
+.flashtools/
