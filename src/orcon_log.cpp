@@ -46,13 +46,24 @@ size_t format(const ramses::Frame& f, char* out, size_t cap) {
 }
 
 static void learn(const ramses::Frame& f) {
-    // Class 0x20 = FAN; controllers are class 0x1D (29, REM) or 0x25 (37, CO2 /
-    // 15RF display). Capture both so the UI can offer "clone this controller".
+    // Class 0x20 = FAN; controller candidates are 0x1D (29) or 0x25 (37).
+    // Keep the FIRST controller address in this frame. Some MVS remotes send
+    // two class-29 addresses; blindly taking the last one can select a target
+    // instead of the transmitter. This is only a candidate until verified.
     for (int i = 0; i < 3; i++) {
         if (!f.has_addr[i]) continue;
-        uint8_t c = f.addr[i].cls;
-        if (c == 0x20)                   { g_seen.fan    = f.addr[i]; g_seen.haveFan    = true; }
-        else if (c == 0x1D || c == 0x25) { g_seen.remote = f.addr[i]; g_seen.haveRemote = true; }
+        if (f.addr[i].cls == 0x20) {
+            g_seen.fan = f.addr[i];
+            g_seen.haveFan = true;
+        }
+    }
+    for (int i = 0; i < 3; i++) {
+        if (!f.has_addr[i]) continue;
+        if (f.addr[i].cls == 0x1D || f.addr[i].cls == 0x25) {
+            g_seen.remote = f.addr[i];
+            g_seen.haveRemote = true;
+            break;
+        }
     }
 }
 
