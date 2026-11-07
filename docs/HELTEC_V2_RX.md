@@ -36,11 +36,12 @@ Gecontroleerd en in orde:
 
 ## Diagnose (serieel elke 10 s, ook in `/api/state`)
 
-`[rxstat] uart ferr ovf sync5 sync4 frames resets pend op lna rxcfg rxbw rssi heap`
+`[rxstat] uart ovf sync5 sync4 frames resets pend op lna rxcfg rxbw rssi heap`
 
 - `sync5`: exacte `FF 00 33 55 53` (de oude decoder). `sync4`: `00 33 55 53` (de nieuwe).
 - `frames`: frames die Manchester + checksum doorstaan.
-- `ovf`: UART-overflows (verloren bytes). `ferr`: framingfouten (ruismaat).
+- `ovf`: UART-overflows (verloren bytes).
+- Per sync: `[sync <ms> <dBm> pre=XX]`, met XX = het byte vóór `00` (FF = uitgelijnd; 55/D5/F5/FD = verschoven UART-fase). Een sync zonder `[rx]`-regel binnen 500 ms is een verminkt frame.
 - `op`: RegOpMode, laagste 3 bits `5` = RX. `lna`: bits 7-5 = gebruikte LNA-gain.
 - Per frame: `[rx <ms> <dBm>] I --- 29:… 22F1 003 …`.
 
@@ -72,7 +73,7 @@ Voorwaarde: geen ander programma (Opera/esptool-js, serial monitor) houdt
    - `[radio] SX1276 direct RX (TX disabled) up on 868.300 MHz`;
    - `[rxstat]` met `op=x5`.
 3. **Rustmeting, 5 min, niet drukken:** `tools/heltec_v2.sh monitor 300 idle.log`.
-   Noteer de delta's van `uart`, `ferr` en `ovf`, het RSSI-bereik en eventuele spontane 31D9/31DA van de unit.
+   Noteer de delta's van `uart` en `ovf`, het RSSI-bereik en eventuele spontane 31D9/31DA van de unit.
 4. **Druktest:** `tools/heltec_v2.sh monitor 330 press.log`.
    - Wacht 30 s.
    - Druk dan 20× op de afstandsbediening, om de 15 s, en wissel de stand af (1-2-3-1-…).
@@ -84,8 +85,32 @@ Voorwaarde: geen ander programma (Opera/esptool-js, serial monitor) houdt
    - `frames/sync4` ≥ 0,9 → bitfouten zijn geen probleem. Lager → RF-kwaliteit (stap 6).
    - `ovf` = 0. Is `ovf` > 0, dan is de loop te traag (WiFi/MQTT): dat is een softwarefix, geen RF.
 6. **Volgende iteratie, alleen als stap 5 tekortschiet. Eén parameter per build:**
-   - a. `RF_RXBW_KHZ` 250 → 125 (SSB). Herhaal stap 3–5 en vergelijk `ferr`, `frames/sync4` en het aantal drukken.
+   - a. `RF_RXBW_KHZ` 250 → 125 (SSB). Herhaal stap 3–5 en vergelijk `frames/sync4`, de RSSI van verminkte syncs en het aantal drukken.
    - b. Alleen bij sterke signalen met fouten (`rssi` > −50 dBm): LNA/AGC-experiment.
 7. **Terugrollen naar d82ffa3:** het artifact bestaat tot 2026-11-21 en heeft geen commit-stempel. Gebruik de partitiecontrole en
    `esptool --chip esp32 write_flash 0x1000 bootloader.bin 0x8000 partitions.bin 0xe000 boot_app0.bin 0x10000 firmware.bin`
    uit `.flashtools/fw/d82ffa3…/`.
+
+## Meetresultaten
+
+### Meting 1: firmware 1379f6b, 2026-11-07 17:45–17:55, 600 s via USB
+
+Flash: precheck OK (ESP32-D0WDQ6 rev 1.0, 8 MB, partitietabel identiek), 4×
+"Hash of data verified", NVS niet gewist. De oude firmware draaide zonder
+WiFi-config (SoftAP), dus er is alleen via USB gemeten.
+
+| Meting | d82ffa3 (jouw meting) | 1379f6b |
+|---|---|---|
+| RX actief na het eerste frame | nee (standby) | ja, `op=0D` gedurende 600 s |
+| sync5 (oude decoder) / sync4 | 1 / – | **0 / 6** |
+| Gedecodeerde frames | 1 | 3 (20:000303 31D9 + 31DA, 37:000404 31DA; −73/−77 dBm) |
+| UART-overflow / buffer-resets | – / 0 | 0 / 0 |
+| Ruis op de UART | – | ±2,7 kB/s, RSSI-ruisvloer −87…−102 dBm |
+| LNA / RxConfig / RxBw | – | G1 (max) / AgcAutoOn, trigger none / 250 kHz SSB |
+
+- **H0 en H1 zijn op hardware bevestigd.** De oude decoder had geen van de 6 syncs gevonden.
+- **Ongeveer de helft van de syncs gaf geen geldig frame.** Dat is nu de beperkende factor.
+- **Niet bekend:** of er tijdens de meting op de afstandsbediening is gedrukt. Er kwam geen enkel frame van 29:000101 of 29:000202.
+- **Twee monitorbevindingen:**
+  - Het openen van de poort resette het bord (DTR/RTS-volgorde). Gefixt in `rxmon.py`.
+  - `ferr` werkt niet: de ESP32-driver zet de frame-error-interrupt niet aan. De teller is verwijderd.
