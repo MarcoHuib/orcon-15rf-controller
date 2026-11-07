@@ -114,3 +114,31 @@ WiFi-config (SoftAP), dus er is alleen via USB gemeten.
 - **Twee monitorbevindingen:**
   - Het openen van de poort resette het bord (DTR/RTS-volgorde). Gefixt in `rxmon.py`.
   - `ferr` werkt niet: de ESP32-driver zet de frame-error-interrupt niet aan. De teller is verwijderd.
+
+### Meting 2: firmware 7812177 (RX-logica gelijk aan 1379f6b + `[sync]`-diagnose), 18:21–18:33, 720 s
+
+Zelfde precheck en flash als meting 1. Twee drukrondes (normale plek en ±1 m). De
+monitor opende de poort zonder reset, zoals bedoeld.
+
+| Meting | d82ffa3 | 1379f6b (meting 1) | 7812177 (meting 2) |
+|---|---|---|---|
+| RX na het eerste frame | nee | ja | ja, `op=0D` gedurende 710 s |
+| syncs → frames | 1 → 1, daarna doof | 6–7 → 3 | **62 → 59** (95%) |
+| sync5 (oude decoder) | 1 | 0 | 22 van 62 (35%) |
+| 22F1 van 29:000101 (afstandsbediening) | – | 0 | **21 frames**, ≥ 17 gescheiden drukken, −27…−45 dBm |
+| 31D9 van 29:000202 (unit) | – | 0 | 33 frames; 16 van 17 drukken binnen 300 ms beantwoord |
+| Verminkte syncs | – | 3–4 | 3, allemaal zwak (−82…−88 dBm), geen tijdens het drukken |
+| `ovf` / `resets` / LNA | – | 0 / 0 / G1 | 0 / 0 / G1 (constant) |
+
+- Byte vóór `00`: 55 (19×), FF (22×), D5 (10×), F5 (7×), FD (4×). Dit zijn precies de vijf
+  UART-fases die H1 voorspelt; daarmee is het mechanisme op hardware bevestigd.
+- H5 (overmatig signaal) is **verworpen**: bij −27 dBm, met de LNA op maximale gain, worden alle frames foutloos gedecodeerd.
+- Adressering bevestigd: 29:000101 → 29:000202 22F1 `00 0N 04` (N = stand 1–3). De unit antwoordt
+  met 31D9 `00 00 0N`, direct en ±1 s later nog een keer. 20:000303 en 37:000404 sturen 31D9/31DA (17/30 bytes):
+  andere afzuigunits (buren), −74…−81 dBm.
+- Meting 1 ontving niets van de afstandsbediening, ook geen 31D9 van de unit, met dezelfde RX-logica. Waarschijnlijk vielen de drukken buiten het meetvenster.
+- Diagnosebeperking: de RSSI wordt gemeten wanneer de loop de bytes verwerkt. Bij een korte
+  stall krijgen twee frames dezelfde (latere) waarde; een −91 dBm bij een 22F1 is daar een voorbeeld van. Het decoderen zelf heeft hier geen last van.
+
+**Conclusie:** geen RF-wijziging nodig voor eigen apparaten op deze afstanden. RxBw 250 → 125 kHz blijft
+een optie voor zwakke signalen (< −80 dBm), maar alleen als dat ooit nodig blijkt.

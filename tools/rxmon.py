@@ -12,7 +12,7 @@ import time
 import serial
 
 port, secs = sys.argv[1], float(sys.argv[2])
-logf = open(sys.argv[3], "a") if len(sys.argv) > 3 and sys.argv[3] else None
+logf = open(sys.argv[3], "a", buffering=1) if len(sys.argv) > 3 and sys.argv[3] else None  # line-buffered: log readable while running
 s = serial.Serial()
 s.port, s.baudrate, s.timeout = port, 115200, 0.2
 s.dtr = True
