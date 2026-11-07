@@ -14,6 +14,11 @@
 #include "orcon.h"
 #include "net.h"
 #include "display.h"
+#include "orcon_log.h"
+
+#ifndef FW_VERSION
+#define FW_VERSION "dev"     // CI sets the git commit (platformio build flag)
+#endif
 
 #if defined(PINTEST)
 // ---- GPIO mapper: drives each CC1101 GPIO HIGH (others LOW) for 2.5s in turn.
@@ -41,7 +46,7 @@ void loop() {
 void setup() {
     Serial.begin(DEBUG_SERIAL_BAUD);
     delay(200);
-    Serial.println("\nOrcon 15RF emulator starting...");
+    Serial.printf("\nOrcon 15RF emulator starting... fw=%s\n", FW_VERSION);
 
     display::begin();          // init the panel (if any) before the radio takes the shared SPI
 
@@ -63,7 +68,26 @@ void loop() {
     ramses::Frame f;
     while (radio::poll(f)) {
         if (orcon::onFrame(f)) net::notifyStateChanged();
+#if DEBUG_RX_HEX && defined(RADIO_SX1276)
+        char s[96]; rlog::format(f, s, sizeof(s));
+        Serial.printf("[rx %lu %ddBm] %s\n", (unsigned long)millis(), (int)radio::lastRssi(), s);
+#endif
     }
+
+#if defined(RADIO_SX1276)
+    // Serial RX counters for USB-only measurements (same fields as /api/state).
+    static uint32_t lastStat = 0;
+    if (millis() - lastStat >= 10000) {
+        lastStat = millis();
+        const radio::RxDiagnostics d = radio::rxDiagnostics();
+        Serial.printf("[rxstat] t=%lu uart=%lu ferr=%lu ovf=%lu sync5=%lu sync4=%lu frames=%lu "
+                      "resets=%lu pend=%u op=%02X lna=%02X rxcfg=%02X rxbw=%02X rssi=%d heap=%lu\n",
+                      (unsigned long)millis(), (unsigned long)d.uartBytes, (unsigned long)d.uartFrameErrs,
+                      (unsigned long)d.uartOverflows, (unsigned long)d.syncHits, (unsigned long)d.coreSyncHits,
+                      (unsigned long)d.frames, (unsigned long)d.bufferResets, d.pendingBytes, d.opMode,
+                      d.lna, d.rxConfig, d.rxBw, d.rssiNow, (unsigned long)ESP.getFreeHeap());
+    }
+#endif
 
     // 2) periodic sensor broadcasts (31E0 demand, 1298 CO2, 10E0 info)
     // orcon::tick(millis()); // RX-only: geen periodieke TX

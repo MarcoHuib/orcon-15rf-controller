@@ -193,18 +193,25 @@ bool poll(ramses::Frame& out) {
 #if defined(RADIO_SX1276)
 #include <HardwareSerial.h>
 
-static SX1276 g_radio = new Module(PIN_SX_NSS, PIN_SX_DIO0, PIN_SX_RST, PIN_SX_DIO1);
+static Module g_mod(PIN_SX_NSS, PIN_SX_DIO0, PIN_SX_RST, PIN_SX_DIO1);  // own handle: read-only register diagnostics
+static SX1276 g_radio(&g_mod);
 static HardwareSerial rxUart(1);     // reads the demodulated data off DIO2
 static uint8_t  g_rxbuf[320];
 static size_t   g_rxlen = 0;
 static uint32_t g_uartBytes = 0;   // demodulated UART bytes, including RF noise
-static uint32_t g_syncHits = 0;    // exact RAMSES 5-byte sync markers in UART stream
+static uint32_t g_syncHits = 0;    // exact 5-byte FF 00 33 55 53 (the pre-fix metric)
+static uint32_t g_coreSyncHits = 0;// 00 33 55 53, with or without the leading FF
+static uint32_t g_frames = 0;      // frames that passed Manchester + checksum
 static uint32_t g_lastUartMs = 0;
 static uint32_t g_lastSyncMs = 0;
 static uint32_t g_bufferResets = 0;
 static uint8_t  g_syncProgress = 0;
+static bool     g_syncAfterFF = false;
+static uint8_t  g_prevByte = 0;
+static volatile uint32_t g_uartOverflows = 0;   // HW FIFO / ring buffer full: bytes LOST
+static volatile uint32_t g_uartFrameErrs = 0;   // stop bit 0: noise or misaligned UART
 
-const char* name() { return "SX1276 direct RX + packet TX"; }
+const char* name() { return "SX1276 direct RX (TX disabled)"; }
 
 static bool configure() {
     int st = g_radio.beginFSK(RF_FREQ_MHZ, RF_BITRATE_KBPS, RF_DEVIATION_KHZ,
@@ -227,6 +234,10 @@ bool begin() {
     bool ok = configure();
     rxUart.setRxBufferSize(8192);
     rxUart.begin(38400, SERIAL_8N1, PIN_SX_DIO2 /*rx*/, -1 /*tx unused*/);
+    rxUart.onReceiveError([](hardwareSerial_error_t e) {   // runs in the UART event task
+        if (e == UART_FIFO_OVF_ERROR || e == UART_BUFFER_FULL_ERROR) g_uartOverflows = g_uartOverflows + 1;
+        else if (e == UART_FRAME_ERROR) g_uartFrameErrs = g_uartFrameErrs + 1;
+    });
     return ok;
 }
 
@@ -243,21 +254,30 @@ bool poll(ramses::Frame& out) {
         g_rxbuf[g_rxlen++] = b;
         ++g_uartBytes;
         g_lastUartMs = now;
-        if (b == ramses::SYNC[g_syncProgress]) {
-            ++g_syncProgress;
-            if (g_syncProgress == 5) {
-                ++g_syncHits;
+        // Track the core sync 00 33 55 53 and whether FF preceded it.
+        if (b == ramses::SYNC[1 + g_syncProgress]) {
+            if (g_syncProgress == 0) g_syncAfterFF = (g_prevByte == ramses::SYNC[0]);
+            if (++g_syncProgress == 4) {
+                ++g_coreSyncHits;
+                if (g_syncAfterFF) ++g_syncHits;
                 g_lastSyncMs = now;
                 g_syncProgress = 0;
+                // Sample here, closest to the frame. skipReceive=true is required: with
+                // default args RadioLib does startReceive()+standby() in FSK = RX dead.
+                g_rssi = g_radio.getRSSI(false, true);
             }
+        } else if (b == ramses::SYNC[1]) {
+            g_syncProgress = 1;
+            g_syncAfterFF = (g_prevByte == ramses::SYNC[0]);
         } else {
-            g_syncProgress = (b == ramses::SYNC[0]) ? 1 : 0;
+            g_syncProgress = 0;
         }
+        g_prevByte = b;
     }
     if (g_rxlen < 8) return false;
     size_t consumed = 0;
     bool ok = ramses::extractWireFrame(g_rxbuf, g_rxlen, &consumed, out);
-    if (ok) g_rssi = g_radio.getRSSI();
+    if (ok) ++g_frames;
     if (consumed > 0 && consumed <= g_rxlen) {
         memmove(g_rxbuf, g_rxbuf + consumed, g_rxlen - consumed);
         g_rxlen -= consumed;
@@ -275,6 +295,15 @@ RxDiagnostics rxDiagnostics() {
 #if defined(RADIO_SX1276)
     stats.uartBytes = g_uartBytes;
     stats.syncHits = g_syncHits;
+    stats.coreSyncHits = g_coreSyncHits;
+    stats.frames = g_frames;
+    stats.uartOverflows = g_uartOverflows;
+    stats.uartFrameErrs = g_uartFrameErrs;
+    stats.opMode = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_OP_MODE);
+    stats.lna = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_LNA);
+    stats.rxConfig = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_RX_CONFIG);
+    stats.rxBw = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_RX_BW);
+    stats.rssiNow = (int16_t)g_radio.getRSSI(false, true);
     stats.lastUartMs = g_lastUartMs;
     stats.lastSyncMs = g_lastSyncMs;
     stats.bufferResets = g_bufferResets;

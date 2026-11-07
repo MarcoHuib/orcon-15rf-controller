@@ -32,7 +32,16 @@ bool poll(ramses::Frame& out);
 // packets; these counters separate demodulator activity from codec acceptance.
 struct RxDiagnostics {
     uint32_t uartBytes = 0;
-    uint32_t syncHits = 0;
+    uint32_t syncHits = 0;       // exact FF 00 33 55 53 (metric of the pre-fix decoder)
+    uint32_t coreSyncHits = 0;   // 00 33 55 53 (what the decoder now accepts)
+    uint32_t frames = 0;         // decoded, checksum-clean frames
+    uint32_t uartOverflows = 0;  // UART FIFO/ring-buffer overflows (bytes lost)
+    uint32_t uartFrameErrs = 0;  // UART framing errors (noise indicator)
+    uint8_t  opMode = 0;         // SX1276 RegOpMode; low 3 bits 5 = RX
+    uint8_t  lna = 0;            // RegLna: bits 7-5 = LNA gain in use (1 = max)
+    uint8_t  rxConfig = 0;       // RegRxConfig: bit3 AgcAutoOn, bits 2-0 RxTrigger
+    uint8_t  rxBw = 0;           // RegRxBw raw (mant bits 4-3, exp bits 2-0)
+    int16_t  rssiNow = 0;        // instantaneous RSSI (noise floor when idle)
     uint32_t lastUartMs = 0;
     uint32_t lastSyncMs = 0;
     uint32_t bufferResets = 0;

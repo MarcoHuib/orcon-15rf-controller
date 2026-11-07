@@ -169,6 +169,13 @@ static void buildStateJson(char* out, size_t cap) {
     const radio::RxDiagnostics rf = radio::rxDiagnostics();
     d["rf_uart_bytes"] = rf.uartBytes;
     d["rf_sync_hits"] = rf.syncHits;
+    d["rf_core_sync_hits"] = rf.coreSyncHits;
+    d["rf_frames"] = rf.frames;
+    d["rf_uart_overflows"] = rf.uartOverflows;
+    d["rf_uart_frame_errs"] = rf.uartFrameErrs;
+    d["rf_opmode"] = rf.opMode;
+    d["rf_lna"] = rf.lna;
+    d["rf_rssi_now"] = rf.rssiNow;
     d["rf_buffer_resets"] = rf.bufferResets;
     d["rf_buffered_bytes"] = rf.bufferedBytes;
     d["rf_pending_bytes"] = rf.pendingBytes;
