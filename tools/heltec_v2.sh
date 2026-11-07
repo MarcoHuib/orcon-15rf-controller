@@ -4,7 +4,8 @@
 #
 #   tools/heltec_v2.sh fetch   <commit>        download the CI artifact of <commit>
 #   tools/heltec_v2.sh verify  <commit>        checksums, commit stamp, RX-only, ESP32 target
-#   tools/heltec_v2.sh flash   <commit>        verify, then write via USB (asks for "yes")
+#   tools/heltec_v2.sh precheck <commit>       verify + read-only board checks (chip, 8MB, partitions)
+#   tools/heltec_v2.sh flash   <commit>        precheck, then write via USB (asks for "yes")
 #   tools/heltec_v2.sh monitor <secs> [log] [reset]  serial log + RX summary
 #
 # esptool 4.8.1 runs from its PyPI source tarball (SHA-256 pinned below) in a
@@ -76,10 +77,35 @@ verify() {
     echo "VERIFIED $sha  ($d)"
 }
 
-flash() {
+# Read-only device checks. Any deviation, missing value or esptool error stops here.
+precheck() {
     local sha; sha="$(fulsha "$1")"
     verify "$sha"; local d; d="$(dist "$sha")"
-    esptool --chip esp32 --port "$PORT" flash_id | grep -E "Chip is|MAC|Detected flash size"
+    local img
+    for img in bootloader.bin firmware.bin; do
+        esptool --chip esp32 image_info --version 2 "$d/$img" | grep -qx "Flash size: 8MB" \
+            || die "$img header is not set for 8MB flash"
+    done
+    local id
+    id="$(esptool --chip esp32 --port "$PORT" flash_id 2>&1)" \
+        || { echo "$id" >&2; die "flash_id failed (port busy, no board, or not an ESP32)"; }
+    grep -E '^(Chip is|MAC:|Detected flash size:) ' <<<"$id"
+    grep -qE '^Chip is ESP32-D0WD' <<<"$id"                || die "board is not an ESP32-D0WD (Heltec V2)"
+    [ "$(grep -c '^Detected flash size: ' <<<"$id")" = 1 ] || die "flash size not reported"
+    grep -qx 'Detected flash size: 8MB' <<<"$id"           || die "flash is not exactly 8MB"
+    # The board's current partition table must equal the new one, so NVS keeps its place.
+    local cur="$d/device-partitions.bin"; rm -f "$cur"
+    esptool --chip esp32 --port "$PORT" read_flash 0x8000 0xc00 "$cur" >/dev/null \
+        || die "reading the board's partition table failed"
+    echo "board partition table:"
+    "$TOOLS/venv/bin/python" -I "$REPO/tools/check_parts.py" "$cur" || die "board partition layout unexpected"
+    cmp -s "$cur" "$d/partitions.bin" || die "board partition table differs from the new one (NVS could move)"
+    echo "PRECHECK OK ${sha:0:7}: ESP32-D0WD, 8MB, partition table identical (NVS @0x9000 kept)"
+}
+
+flash() {
+    local sha; sha="$(fulsha "$1")"
+    precheck "$sha"; local d; d="$(dist "$sha")"
     read -r -p "Write commit ${sha:0:7} to the Heltec on $PORT? Type yes: " ok
     [ "$ok" = "yes" ] || die "aborted by user"
     esptool --chip esp32 --port "$PORT" --baud 460800 write_flash \
@@ -96,7 +122,8 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
     fetch)   fetch "$@" ;;
     verify)  verify "$@" ;;
+    precheck) precheck "$@" ;;
     flash)   flash "$@" ;;
     monitor) monitor "$@" ;;
-    *) sed -n '2,13p' "$0"; exit 2 ;;
+    *) sed -n '2,14p' "$0"; exit 2 ;;
 esac
