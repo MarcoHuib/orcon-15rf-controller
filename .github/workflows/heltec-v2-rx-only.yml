@@ -65,21 +65,13 @@ jobs:
           print("PASS: SX1276 transmission path is blocked")
           PY
 
-      - name: Run RAMSES protocol unit tests
+      - name: Run host unit tests (plain, ASan+UBSan, TSan)
         shell: bash
+        timeout-minutes: 10
         run: |
-          g++ -std=c++17 -I src test/test_codec.cpp src/ramses_codec.cpp -o /tmp/orcon-test-codec
-          /tmp/orcon-test-codec
-          g++ -std=c++17 -I src test/test_frames.cpp src/ramses_codec.cpp src/orcon_frames.cpp -o /tmp/orcon-test-frames
-          /tmp/orcon-test-frames
-          g++ -std=c++17 -I src test/test_rx.cpp src/ramses_codec.cpp -o /tmp/orcon-test-rx
-          /tmp/orcon-test-rx
-          g++ -std=c++17 -I src -I test/shim test/test_log.cpp src/ramses_codec.cpp src/orcon_frames.cpp src/orcon_log.cpp -o /tmp/orcon-test-log
-          /tmp/orcon-test-log
-          for rx in 1 0; do
-            g++ -std=c++17 -DRX_ONLY=$rx -I src -I test/shim test/test_orcon.cpp src/orcon.cpp src/orcon_frames.cpp src/orcon_log.cpp src/ramses_codec.cpp -o /tmp/orcon-test-orcon-$rx
-            /tmp/orcon-test-orcon-$rx
-          done
+          test/run_host_tests.sh
+          CXXFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all" test/run_host_tests.sh
+          CXXFLAGS="-fsanitize=thread" test/run_host_tests.sh
 
       - name: Check web page JavaScript syntax
         shell: bash

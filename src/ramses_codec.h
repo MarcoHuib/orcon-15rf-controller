@@ -87,7 +87,9 @@ size_t logicalFromWire(const uint8_t* wire, size_t n, uint8_t* out, size_t cap);
 // Manchester to STOP, parses it. Returns true and fills f on success.
 // *consumed = #bytes the caller may drop from the front (keeps a partial sync /
 // incomplete frame at the tail for the next call).
-bool extractWireFrame(const uint8_t* s, size_t n, size_t* consumed, Frame& f);
+// *syncAt (optional) = index of the frame's 00 sync byte in s, on success.
+bool extractWireFrame(const uint8_t* s, size_t n, size_t* consumed, Frame& f,
+                      size_t* syncAt = nullptr);
 
 // ---- Layer C: wire bytes <-> on-air bitstream ------------------------------
 // encodeOnAir: full buffer incl. preamble, UART framing, packed MSB-first.

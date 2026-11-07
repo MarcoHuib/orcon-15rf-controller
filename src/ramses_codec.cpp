@@ -228,7 +228,7 @@ bool decodeFrame(const uint8_t* onair, size_t n_bytes, size_t n_bits, Frame& f) 
     return parseLogical(logical, ln, f);
 }
 
-bool extractWireFrame(const uint8_t* s, size_t n, size_t* consumed, Frame& f) {
+bool extractWireFrame(const uint8_t* s, size_t n, size_t* consumed, Frame& f, size_t* syncAt) {
     // Match only SYNC[1..4] (00 33 55 53). A UART locks onto the alternating
     // 0x55 preamble at any even bit phase; in 4 of 5 phases the 0xFF byte is
     // absorbed into a misaligned preamble byte and never arrives (test_rx.cpp).
@@ -253,7 +253,11 @@ bool extractWireFrame(const uint8_t* s, size_t n, size_t* consumed, Frame& f) {
             logical[o++] = (uint8_t)((hi << 4) | lo);
             j += 2;
         }
-        if (!garbled && parseLogical(logical, o, f)) { if (consumed) *consumed = j + 1; return true; }
+        if (!garbled && parseLogical(logical, o, f)) {
+            if (consumed) *consumed = j + 1;
+            if (syncAt) *syncAt = i;
+            return true;
+        }
     }
     // No frame: drop everything but a possible partial sync at the tail.
     if (consumed) *consumed = (n >= 4) ? n - 4 : 0;

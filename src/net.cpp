@@ -125,7 +125,8 @@ static void idStr(const ramses::DeviceId& d, char* out, size_t cap) {
 // ---------------------------------------------------------------------------
 // State -> JSON
 // ---------------------------------------------------------------------------
-static void buildStateJson(char* out, size_t cap) {
+// Returns the JSON length, or 0 if it does not fit (never emit truncated JSON).
+static size_t buildStateJson(char* out, size_t cap) {
     const orcon::State& s = orcon::state();
     JsonDocument d;
     d["mode"]      = orcon::modeName(s.mode);
@@ -188,6 +189,20 @@ static void buildStateJson(char* out, size_t cap) {
     d["rf_pending_bytes"] = rf.pendingBytes;
     d["rf_last_uart_age_ms"] = rf.lastUartMs ? (int32_t)(millis() - rf.lastUartMs) : -1;
     d["rf_last_sync_age_ms"] = rf.lastSyncMs ? (int32_t)(millis() - rf.lastSyncMs) : -1;
+#if defined(RADIO_SX1276)
+    static const char* const RX_STATE[] = { "receiving", "recovering", "failed" };
+    d["rf_state"]         = RX_STATE[rf.rxState < 3 ? rf.rxState : 2];
+    d["rf_err"]           = rf.rxErr;
+    d["rf_recoveries"]    = rf.rxRecoveries;
+    d["rf_lost"]          = rf.rxLost;
+    d["rf_queue_depth"]   = rf.queueDepth;
+    d["rf_queue_max"]     = rf.queueHighWater;
+    d["rf_queue_drops"]   = rf.queueDrops;
+    d["rf_uart_pend_max"] = rf.uartPendMax;
+    d["rf_task_max_us"]   = rf.taskMaxUs;
+    d["rf_stack_free"]    = rf.stackFree;
+    d["heap_min"]         = ESP.getMinFreeHeap();
+#endif
     d["raw31da"]   = s.raw31DA;
     d["raw31da_age"] = s.raw31DAms ? (int)((millis() - s.raw31DAms) / 1000) : -1;
     d["last_rx"]   = s.lastRx;
@@ -207,7 +222,9 @@ static void buildStateJson(char* out, size_t cap) {
     d["cc1101"]    = cc1101tx::version();
     d["urx"]       = cc1101tx::uartBytes();   // bytes seen on the GDO2 RX line (diag)
 #endif
-    serializeJson(d, out, cap);
+    size_t need = measureJson(d);
+    if (need >= cap) { Serial.printf("[net] state JSON %u B > %u B buffer: skipped\n", (unsigned)need, (unsigned)cap); return 0; }
+    return serializeJson(d, out, cap);
 }
 
 // ---------------------------------------------------------------------------
@@ -325,9 +342,10 @@ static void handleUpdateDone() {
 }
 #endif
 
+static char g_stateBuf[3072];                  // loop task only (HTTP + MQTT publish)
 static void handleState() {
-    char buf[2048]; buildStateJson(buf, sizeof(buf));
-    server.send(200, "application/json", buf);
+    if (!buildStateJson(g_stateBuf, sizeof(g_stateBuf))) { server.send(500, "application/json", "{\"err\":\"state too large\"}"); return; }
+    server.send(200, "application/json", g_stateBuf);
 }
 static void handleNetCfg() {   // current WiFi SSID + MQTT host, to prefill the setup page
     JsonDocument d;
@@ -645,7 +663,7 @@ void begin() {
 #if MQTT_ENABLED
     mqtt.setServer(g_mqttHost.c_str(), MQTT_PORT);
     mqtt.setCallback(mqttCallback);
-    mqtt.setBufferSize(1536);  // room for the full state JSON out + domoticz/out msgs in
+    mqtt.setBufferSize(3328);  // state JSON (<= 3072) + topic/header; also domoticz/out in
     mqtt.setSocketTimeout(2);     // cap a blocking connect() at 2s (don't starve RX)
 #endif
     oledDraw();
@@ -667,9 +685,9 @@ bool        mqttConnected() {
 }
 
 void publishState() {
-    char buf[1400]; buildStateJson(buf, sizeof(buf));
+    size_t n = buildStateJson(g_stateBuf, sizeof(g_stateBuf));
 #if MQTT_ENABLED
-    if (mqtt.connected()) mqtt.publish(MQTT_BASE_TOPIC "/state", buf, true);
+    if (n && mqtt.connected()) mqtt.publish(MQTT_BASE_TOPIC "/state", g_stateBuf, true);
 #endif
     oledDraw();
     g_dirty = false;

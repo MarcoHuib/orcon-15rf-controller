@@ -39,6 +39,8 @@ void loop() {
 }
 #else
 
+static uint32_t g_loopMaxUs = 0;
+
 void setup() {
     Serial.begin(DEBUG_SERIAL_BAUD);
     delay(200);
@@ -60,13 +62,15 @@ void setup() {
 }
 
 void loop() {
+    const uint32_t loopStart = micros();
     // 1) drain any received RAMSES frames into the state model
     ramses::Frame f;
     while (radio::poll(f)) {
         if (orcon::onFrame(f)) net::notifyStateChanged();
 #if DEBUG_RX_HEX && defined(RADIO_SX1276)
         char s[200]; rlog::format(f, s, sizeof(s));   // full payload (31DA is 30 bytes)
-        Serial.printf("[rx %lu %ddBm] %s\n", (unsigned long)millis(), (int)radio::lastRssi(), s);
+        Serial.printf("[rx %lu %lu %ddBm] %s\n", (unsigned long)radio::lastSeq(), (unsigned long)millis(),
+                      (int)radio::lastRssi(), s);
 #endif
     }
 
@@ -76,11 +80,16 @@ void loop() {
     if (millis() - lastStat >= 10000) {
         lastStat = millis();
         const radio::RxDiagnostics d = radio::rxDiagnostics();
-        Serial.printf("[rxstat] t=%lu uart=%lu ovf=%lu sync5=%lu sync4=%lu frames=%lu "
-                      "resets=%lu pend=%u op=%02X lna=%02X rxcfg=%02X rxbw=%02X rssi=%d heap=%lu\n",
-                      (unsigned long)millis(), (unsigned long)d.uartBytes, (unsigned long)d.uartOverflows, (unsigned long)d.syncHits, (unsigned long)d.coreSyncHits,
-                      (unsigned long)d.frames, (unsigned long)d.bufferResets, d.pendingBytes, d.opMode,
-                      d.lna, d.rxConfig, d.rxBw, d.rssiNow, (unsigned long)ESP.getFreeHeap());
+        Serial.printf("[rxstat] t=%lu uart=%lu ovf=%lu sync5=%lu sync4=%lu frames=%lu resets=%lu pend=%u "
+                      "pendmax=%u q=%u qmax=%u drop=%lu taskus=%lu stack=%lu rxst=%u err=%d rec=%u lost=%lu "
+                      "op=%02X lna=%02X rxcfg=%02X rxbw=%02X rssi=%d heap=%lu minheap=%lu loopmax=%lu\n",
+                      (unsigned long)millis(), (unsigned long)d.uartBytes, (unsigned long)d.uartOverflows,
+                      (unsigned long)d.syncHits, (unsigned long)d.coreSyncHits, (unsigned long)d.frames,
+                      (unsigned long)d.bufferResets, d.pendingBytes, d.uartPendMax, d.queueDepth,
+                      d.queueHighWater, (unsigned long)d.queueDrops, (unsigned long)d.taskMaxUs,
+                      (unsigned long)d.stackFree, d.rxState, d.rxErr, d.rxRecoveries, (unsigned long)d.rxLost,
+                      d.opMode, d.lna, d.rxConfig, d.rxBw, d.rssiNow, (unsigned long)ESP.getFreeHeap(),
+                      (unsigned long)ESP.getMinFreeHeap(), (unsigned long)g_loopMaxUs);
     }
 #endif
 
@@ -92,5 +101,8 @@ void loop() {
 
     // 4) on-screen UI + touch (4848S040 panel; no-op on Heltec)
     display::loop();
+
+    const uint32_t loopUs = micros() - loopStart;   // longest main-loop pass = worst network stall
+    if (loopUs > g_loopMaxUs) g_loopMaxUs = loopUs;
 }
 #endif  // PINTEST

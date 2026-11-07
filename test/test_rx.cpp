@@ -1,6 +1,7 @@
 // test_rx.cpp — async-RX decode chain (CC1101 GDO2 / SX1276 DIO2 -> UART -> codec).
-// Build: g++ -std=c++17 -I src test/test_rx.cpp src/ramses_codec.cpp -o /tmp/test_rx
+// Build: g++ -std=c++17 -I src test/test_rx.cpp src/rx_stream.cpp src/ramses_codec.cpp -o /tmp/test_rx
 #include "ramses_codec.h"
+#include "rx_stream.h"
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -27,25 +28,20 @@ static size_t toWire(const Frame& f, uint8_t* wire, size_t cap) {
     return wireFromLogical(logical, ln, wire, cap);
 }
 
-// Same buffer handling as radio::poll() (ramses_radio.cpp / cc1101_tx.cpp):
-// 320-byte window, at most one extract per call, memmove by `consumed`.
+// The firmware's own decoder (rx_stream.cpp), fed `chunk` bytes per RX-task pass.
+// Each sync is tagged with rssi = -seq so tests can check frame -> sync attribution.
 struct Stream {
-    uint8_t buf[320]; size_t len = 0; uint32_t resets = 0;
+    rxs::Decoder d;
     std::vector<Frame> out;
-    void poll(const uint8_t* in, size_t n, size_t& pos) {
-        while (pos < n && len < sizeof(buf)) buf[len++] = in[pos++];
-        if (len < 8) return;
-        size_t consumed = 0; Frame f;
-        bool ok = extractWireFrame(buf, len, &consumed, f);
-        if (ok) out.push_back(f);
-        if (consumed > 0 && consumed <= len) { memmove(buf, buf + consumed, len - consumed); len -= consumed; }
-        else if (len >= sizeof(buf)) { resets++; len = 0; }
-    }
-    // feed `n` bytes `chunk` at a time, then drain like main.cpp's while(poll()).
+    std::vector<rxs::Item> items;
     void feed(const uint8_t* in, size_t n, size_t chunk) {
         size_t pos = 0;
-        while (pos < n) { size_t lim = pos + chunk < n ? pos + chunk : n; size_t p = pos; poll(in, lim, p); pos = p; }
-        for (int k = 0; k < 8; k++) { size_t p = n; poll(in, n, p); }
+        while (pos < n) {
+            size_t lim = pos + chunk < n ? pos + chunk : n;
+            while (pos < lim && d.room()) if (d.put(in[pos++])) d.noteSync((int16_t)-(int)d.syncs, (uint32_t)pos);
+            rxs::Item it;
+            while (d.next(it)) { out.push_back(it.f); items.push_back(it); }
+        }
     }
 };
 
@@ -137,8 +133,13 @@ static void test_consecutive() {
         char m[96];
         bool ok = st.out.size() == 3 && same(st.out[0], b) && same(st.out[1], a) && same(st.out[2], b);
         snprintf(m, sizeof(m), "garbled+B+A+B, chunk=%zu -> %zu frames (want B,A,B), resets=%u",
-                 chunk, st.out.size(), st.resets);
-        CHECK(ok && st.resets == 0, m);
+                 chunk, st.out.size(), st.d.resets);
+        CHECK(ok && st.d.resets == 0, m);
+        // sync 1 is the garbled A: frames must carry syncs 2,3,4 and those syncs' RSSI
+        bool tags = st.items.size() == 3;
+        for (size_t k = 0; tags && k < 3; k++) tags = st.items[k].seq == k + 2 && st.items[k].rssi == -(int)(k + 2);
+        snprintf(m, sizeof(m), "chunk=%zu: each frame tagged with its own sync (seq 2,3,4) and RSSI", chunk);
+        CHECK(tags && st.d.syncs == 4, m);
     }
 
     // checksum error must be rejected, and the next frame still decoded
@@ -163,8 +164,8 @@ int main(){
     // long random byte noise through the stream: no false decodes, buffer bounded
     { rng = 7; std::vector<uint8_t> nz(200000); for (auto& b : nz) { b = 0; for (int k = 0; k < 8; k++) b |= (uint8_t)(rbit() << k); }
       Stream st; st.feed(nz.data(), nz.size(), 50);
-      char m[96]; snprintf(m, sizeof(m), "200k random bytes -> %zu false frames, %u resets", st.out.size(), st.resets);
-      CHECK(st.out.empty() && st.resets == 0, m); }
+      char m[96]; snprintf(m, sizeof(m), "200k random bytes -> %zu false frames, %u resets", st.out.size(), st.d.resets);
+      CHECK(st.out.empty() && st.d.resets == 0, m); }
 
     test_uart_phase_sweep();
     test_consecutive();
