@@ -23,8 +23,8 @@ void add(char dir, const ramses::Frame& f, int rssi);
 size_t toJson(char* out, size_t cap);
 
 // --- clone auto-detect ------------------------------------------------------
-// When we hear an I 22F1/22F3/31D9 involving a REM (class 0x1D) and a FAN
-// (class 0x20), remember those ids so the UI can offer "clone this remote".
+// Roles by message, not device class: the sender of 31D9/31DA is the fan; the
+// sender of 22F1/22F3 is a remote and its destination the fan.
 struct Seen {
     bool             haveRemote = false;
     bool             haveFan    = false;

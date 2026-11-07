@@ -46,24 +46,20 @@ size_t format(const ramses::Frame& f, char* out, size_t cap) {
 }
 
 static void learn(const ramses::Frame& f) {
-    // Class 0x20 = FAN; controller candidates are 0x1D (29) or 0x25 (37).
-    // Keep the FIRST controller address in this frame. Some MVS remotes send
-    // two class-29 addresses; blindly taking the last one can select a target
-    // instead of the transmitter. This is only a candidate until verified.
-    for (int i = 0; i < 3; i++) {
-        if (!f.has_addr[i]) continue;
-        if (f.addr[i].cls == 0x20) {
-            g_seen.fan = f.addr[i];
-            g_seen.haveFan = true;
-        }
-    }
-    for (int i = 0; i < 3; i++) {
-        if (!f.has_addr[i]) continue;
-        if (f.addr[i].cls == 0x1D || f.addr[i].cls == 0x25) {
-            g_seen.remote = f.addr[i];
-            g_seen.haveRemote = true;
-            break;
-        }
+    // Roles come from what a device SENDS, not its class: on the MVS-15RHBP the
+    // fan AND its remote are both class 29 (HRC400 fans are 32), e.g.
+    //   I 29:000101 -> 29:000202 22F1 000104  (remote -> fan)
+    //   I 29:000202 ...          31D9 000003  (fan state broadcast)
+    if (!f.has_addr[0]) return;
+    const ramses::DeviceId& src = f.addr[0];
+    if ((f.cmd == 0x31D9 || f.cmd == 0x31DA) &&            // only a ventilation unit reports these
+        f.type != ramses::MsgType::RQ) {                   // (an RQ for them comes from a controller)
+        g_seen.fan = src; g_seen.haveFan = true;
+    } else if ((f.cmd == 0x22F1 || f.cmd == 0x22F3) &&     // fan-mode / timer command
+               f.type != ramses::MsgType::RP) {
+        g_seen.remote = src; g_seen.haveRemote = true;
+        int dst = f.has_addr[1] ? 1 : (f.has_addr[2] ? 2 : -1);
+        if (dst > 0 && !(f.addr[dst] == src)) { g_seen.fan = f.addr[dst]; g_seen.haveFan = true; }
     }
 }
 

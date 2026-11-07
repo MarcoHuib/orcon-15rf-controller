@@ -30,6 +30,20 @@ int main(){
     CHECK(strstr(j,"\"d\":\"R\"")&&strstr(j,"\"d\":\"T\"")&&strstr(j,"\"r\":-73"), "toJson has RX+TX entries with rssi");
     CHECK(rlog::seen().haveRemote && rlog::seen().remote.cls==0x1D, "clone-detect found the remote id");
     CHECK(rlog::seen().haveFan && rlog::seen().fan.cls==0x20, "clone-detect found the fan id");
+
+    // MVS-15RHBP: remote AND fan are class 29. Roles must follow the messages
+    // actually received: I 29:000101 -> 29:000202 22F1 000104, I 29:000202 31D9 000003.
+    DeviceId rem(0x1D,101), fan(0x1D,202), ctl(0x25,4242);
+    Frame m1; m1.type=MsgType::I; m1.addr[0]=rem; m1.addr[1]=fan; m1.has_addr[2]=false;
+    m1.cmd=0x22F1; m1.len=3; m1.payload[0]=0x00; m1.payload[1]=0x01; m1.payload[2]=0x04;
+    Frame m2; m2.type=MsgType::I; m2.addr[0]=fan; m2.has_addr[1]=false; m2.addr[2]=fan;
+    m2.cmd=0x31D9; m2.len=3; m2.payload[0]=0x00; m2.payload[1]=0x00; m2.payload[2]=0x03;
+    Frame m3 = m2; m3.type=MsgType::RQ; m3.addr[0]=ctl; m3.has_addr[1]=true; m3.addr[1]=fan; m3.has_addr[2]=false; m3.cmd=0x31DA; m3.len=1;
+    rlog::add('R', m2, -70); rlog::add('R', m1, -60); rlog::add('R', m2, -70); rlog::add('R', m3, -80);
+    rlog::format(m1, buf, sizeof(buf)); printf("  fmt: %s\n", buf);
+    CHECK(strstr(buf,"29:000101 29:000202 --:------ 22F1 003 000104")!=nullptr, "MVS 22F1 formats as received");
+    CHECK(rlog::seen().haveRemote && rlog::seen().remote==rem, "MVS: 22F1 sender 29:000101 is the remote");
+    CHECK(rlog::seen().haveFan && rlog::seen().fan==fan, "MVS: 31D9 sender 29:000202 is the fan (not the remote)");
     const char* v=failures?"FAILED":"ALL PASSED"; const char* pl=failures==1?"":"s";
     printf("\n%s (%d failure%s)\n",v,failures,pl);
     return failures?1:0;

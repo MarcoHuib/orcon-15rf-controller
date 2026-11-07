@@ -241,12 +241,15 @@ bool onFrame(const ramses::Frame& f) {
     g_state.rxCount++;
     fmtFrame(f, g_state.lastRx, sizeof(g_state.lastRx));
 
-    bool fromFan = false;
     for (int i = 0; i < 3; i++) {
         if (!f.has_addr[i]) continue;
-        if (f.addr[i].cls == DEV_FAN_CLASS) { learnFan(f.addr[i]); g_state.lastFanMs = millis(); }
+        if (f.addr[i].cls == DEV_FAN_CLASS) learnFan(f.addr[i]);
     }
-    if (f.has_addr[0] && f.addr[0].cls == DEV_FAN_CLASS) fromFan = true;
+    // "From the fan" by role (rlog learned it from 31D9/31DA/22F1), not by class:
+    // the MVS-15RHBP fan is class 29, not DEV_FAN_CLASS (32).
+    const rlog::Seen& sn = rlog::seen();
+    const bool fromFan = f.has_addr[0] && sn.haveFan && f.addr[0] == sn.fan;
+    if (fromFan) g_state.lastFanMs = millis();
 
     // The unit answered us: an RP / 31D9 / 0001 from the unit shortly after a TX.
     if (fromFan && (millis() - g_state.lastCmdMs < 6000) &&
