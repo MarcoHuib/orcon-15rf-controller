@@ -165,6 +165,7 @@ static void buildStateJson(char* out, size_t cap) {
     d["autorestore"] = orcon::autoRestore();
     d["rx_n"]      = s.rxCount;
     d["tx_n"]      = s.txCount;
+    d["uptime_ms"] = millis();  // device monotonic time for RF-log age display
     d["raw31da"]   = s.raw31DA;
     d["raw31da_age"] = s.raw31DAms ? (int)((millis() - s.raw31DAms) / 1000) : -1;
     d["last_rx"]   = s.lastRx;
