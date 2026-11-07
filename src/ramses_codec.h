@@ -71,7 +71,7 @@ struct Frame {
 // ---- Layer A: Frame <-> logical bytes --------------------------------------
 // buildLogical: returns number of bytes written (incl. checksum), 0 on overflow.
 size_t buildLogical(const Frame& f, uint8_t* out, size_t cap);
-// parseLogical: validates checksum + structure. true on success.
+// parseLogical: validates checksum + structure; n must equal the exact frame length.
 bool   parseLogical(const uint8_t* data, size_t n, Frame& f);
 
 // header byte helpers

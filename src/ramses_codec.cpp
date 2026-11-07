@@ -91,7 +91,7 @@ bool parseLogical(const uint8_t* d, size_t n, Frame& f) {
     f.cmd = ((uint16_t)d[p] << 8) | d[p+1]; p += 2;
     f.len = d[p++];
     if (f.len > MAX_PAYLOAD) return false;
-    if (p + f.len + 1 > n) return false;        // +1 for checksum
+    if (p + f.len + 1 != n) return false;       // exactly payload + checksum, nothing after it
     for (uint8_t i = 0; i < f.len; i++) f.payload[i] = d[p++];
     return true;
 }

@@ -56,6 +56,16 @@ static void test_logical_checksum() {
     logical[2] ^= 0xFF;            // corrupt
     Frame h;
     CHECK(!parseLogical(logical, n, h), "parseLogical rejects corrupted checksum");
+
+    // Exact structural length: trailing bytes (even ones that keep the sum at 0) and
+    // missing bytes are both rejected.
+    uint8_t l2[MAX_LOGICAL + 2];
+    size_t n2 = buildLogical(f, l2, sizeof(l2));
+    l2[n2] = 0x00; l2[n2 + 1] = 0x00;
+    Frame t;
+    CHECK(parseLogical(l2, n2, t), "exact length accepted");
+    CHECK(!parseLogical(l2, n2 + 1, t) && !parseLogical(l2, n2 + 2, t), "frame + trailing 0x00 bytes rejected (sum still 0)");
+    CHECK(!parseLogical(l2, n2 - 1, t), "truncated frame rejected");
 }
 
 static void test_header_types() {
