@@ -5,8 +5,7 @@
 #include <Arduino.h>
 
 // RX-only builds: banner + disabled controls on every page (the API refuses them anyway).
-#define RXONLY_JS R"JS(function rxOnly(s){if(!s||!s.rx_only||window.rxo)return;window.rxo=1;document.body.insertAdjacentHTML('afterbegin','<div id="rxonly" style="background:#7a2e00;color:#fff;padding:8px 12px;font:600 14px system-ui">RX-ONLY TEST FIRMWARE (fw '+String(s.fw||'?').slice(0,7)+') &mdash; receive only, no 868 MHz transmission. Controls, pairing and firmware upload are disabled.</div>');document.querySelectorAll('[data-m],[data-t],[data-b],[data-bypass],[data-ac],[data-accustom],[data-pair],[data-reapply],[data-forget],[data-selftest],[data-connect],[data-status],[data-raw],.ctl,#ar,#pl').forEach(function(e){e.disabled=true;});document.querySelectorAll('a[href="/update"]').forEach(function(a){a.style.display='none';});}
-)JS"
+#define RXONLY_JS R"JS(function rxOnly(s){if(!s||!s.rx_only||window.rxo)return;window.rxo=1;document.body.insertAdjacentHTML('afterbegin','<div id="rxonly" style="background:#7a2e00;color:#fff;padding:8px 12px;font:600 14px system-ui">RX-ONLY TEST FIRMWARE (fw '+String(s.fw||'?').slice(0,7)+') &mdash; receive only, no 868 MHz transmission. Controls, pairing and firmware upload are disabled.</div>');document.querySelectorAll('[data-m],[data-t],[data-b],[data-bypass],[data-ac],[data-accustom],[data-pair],[data-reapply],[data-forget],[data-selftest],[data-connect],[data-status],[data-raw],.ctl,#ar,#pl').forEach(function(e){e.disabled=true;});document.querySelectorAll('a[href="/update"]').forEach(function(a){a.style.display='none';});})JS"
 
 static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 <html lang="en"><head>
