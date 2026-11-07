@@ -82,7 +82,7 @@ verify() {
     grep -q -a "SX1276 direct RX (TX disabled)" "$d/firmware.bin" || die "not the SX1276 RX-only backend"
     grep -q -a "RX-ONLY TEST FIRMWARE" "$d/firmware.bin"   || die "RX-only build marker missing"
     local s
-    for s in "Firmware update (OTA)" "_arduino"; do       # network update must be compiled out
+    for s in "Firmware update (OTA)" "ArduinoOTA" "auth_upload" "Updater.cpp"; do       # network update must be compiled out
         if grep -q -a "$s" "$d/firmware.bin"; then die "image still contains '$s' (OTA/HTTP update)"; fi
     done
     local info; info="$(esptool --chip esp32 image_info --version 2 "$d/firmware.bin")"

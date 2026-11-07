@@ -126,7 +126,7 @@ jobs:
           grep -q -a "SX1276 direct RX (TX disabled)" dist/firmware.bin
           grep -q -a "RX-ONLY TEST FIRMWARE" dist/firmware.bin
           # network firmware update must be compiled out (no "! grep": set -e ignores it)
-          for s in "Firmware update (OTA)" "_arduino"; do
+          for s in "Firmware update (OTA)" "ArduinoOTA" "auth_upload" "Updater.cpp"; do
             if grep -q -a "$s" dist/firmware.bin; then echo "RX-only image contains '$s'"; exit 1; fi
           done
           {
