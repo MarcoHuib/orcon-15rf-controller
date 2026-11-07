@@ -69,7 +69,24 @@ jobs:
           cp .pio/build/heltec_v2_sx1276/firmware.bin dist/firmware.bin
           cp .pio/build/heltec_v2_sx1276/partitions.bin dist/partitions.bin
           cp .pio/build/heltec_v2_sx1276/bootloader.bin dist/bootloader.bin
-          shasum -a 256 dist/*.bin > dist/SHA256SUMS.txt
+          cp "$HOME/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin" dist/boot_app0.bin
+
+          .venv/bin/python "$HOME/.platformio/packages/tool-esptoolpy/esptool.py" \
+            --chip esp32 merge_bin -o dist/heltec-v2-rx-only-merged.bin \
+            --flash_mode dio --flash_freq 40m --flash_size 8MB \
+            0x1000 dist/bootloader.bin \
+            0x8000 dist/partitions.bin \
+            0xe000 dist/boot_app0.bin \
+            0x10000 dist/firmware.bin
+
+          cat > dist/FLASHING.txt <<'HELP'
+          Heltec WiFi LoRa 32 V2 (classic ESP32 / SX1276) - RX-only firmware.
+          Use the official browser flasher https://espressif.github.io/esptool-js/
+          Flash heltec-v2-rx-only-merged.bin at address 0x0.
+          DO NOT use 0x10000 for the merged image.
+          This build deliberately disables 868 MHz transmissions.
+          HELP
+          (cd dist && shasum -a 256 *.bin > SHA256SUMS.txt)
 
       - name: Upload firmware artifacts (not flashed automatically)
         uses: actions/upload-artifact@v4
