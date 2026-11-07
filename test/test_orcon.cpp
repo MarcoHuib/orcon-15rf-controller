@@ -9,6 +9,7 @@
 #include "rx_only.h"
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
 using namespace ramses; using orcon::Mode;
 
@@ -16,8 +17,9 @@ unsigned long g_ms = 1000;
 unsigned long millis() { return g_ms; }
 void delay(unsigned long ms) { g_ms += ms; }
 static int g_sends = 0;
+static std::map<uint16_t, int> g_cmd;    // sendFrame calls per message code
 namespace radio {
-bool sendFrame(const Frame&) { ++g_sends; return !RX_ONLY; }
+bool sendFrame(const Frame& f) { ++g_sends; ++g_cmd[f.cmd]; return !RX_ONLY; }
 float lastRssi() { return -60; }
 }
 
@@ -139,14 +141,61 @@ static void v3TxStillWorks() {
     CHECK(orcon::state().lastCmdMs == g_ms, "a command (RQ 31DA) opens the ACK window");
 }
 
+// 25 simulated hours of orcon::tick() at 1 s steps.
+static void run25h() { for (uint32_t s = 0; s < 25u * 3600u; s++) { g_ms += 1000; orcon::tick(g_ms); } }
+static bool near(int got, int want, int tol) { return got >= want - tol && got <= want + tol; }
+
+static void v3PeriodicTick() {
+    printf("\n== V3 / TX build: orcon::tick() periodic sends (25 h simulated) ==\n");
+    orcon::sendCo2(700);                      // CO2 value set -> 1298 is repeated
+    g_cmd.clear();
+    run25h();
+    char m[160];
+    snprintf(m, sizeof(m), "RQ 31DA every 60 s: %d (~1500), RQ 10D0 every 10 min: %d (~150)", g_cmd[0x31DA], g_cmd[0x10D0]);
+    CHECK(near(g_cmd[0x31DA], 1500, 3) && near(g_cmd[0x10D0], 150, 3), m);
+    snprintf(m, sizeof(m), "31E0 every 5 min: %d (~300), 1298 every 10 min: %d (~150), 10E0 daily: %d (1)",
+             g_cmd[0x31E0], g_cmd[0x1298], g_cmd[0x10E0]);
+    CHECK(near(g_cmd[0x31E0], 300, 3) && near(g_cmd[0x1298], 150, 3) && near(g_cmd[0x10E0], 1, 1), m);
+    CHECK(g_cmd[0x22F1] == 0 && g_cmd[0x2411] == 0, "no mode/fan-speed frames without a selftest or keeper action");
+
+    // keeper: unit announces 042F (power-cycled) -> saved fan speed re-pushed ~20 s later
+    orcon::setAutoRestore(true); orcon::setFanSaved(4, 70); g_cmd.clear();
+    orcon::onFrame(fr(MsgType::I, HRC, false, {}, true, HRC, 0x042F, {0x00}));
+    for (int s = 0; s < 19; s++) { g_ms += 1000; orcon::tick(g_ms); }
+    int early = g_cmd[0x2411];
+    for (int s = 0; s < 3; s++) { g_ms += 1000; orcon::tick(g_ms); }
+    snprintf(m, sizeof(m), "auto-restore after 042F: %d fan-speed frame(s) at ~20 s, none before", g_cmd[0x2411]);
+    CHECK(early == 0 && g_cmd[0x2411] == 1, m);
+    orcon::setAutoRestore(false);
+
+    // selftest: 3x mode every 8 s, switches itself off after 2 min
+    orcon::setSelftest(true); g_cmd.clear();
+    for (int s = 0; s < 140; s++) { g_ms += 1000; orcon::tick(g_ms); }
+    snprintf(m, sizeof(m), "selftest sent %d mode frames in 140 s (3 per 8 s) and stopped", g_cmd[0x22F1]);
+    CHECK(near(g_cmd[0x22F1], 48, 6) && !orcon::state().selftest, m);
+}
+
+static void rxOnlyTickSilent() {
+    printf("\n== RX-only: orcon::tick() never transmits (25 h simulated) ==\n");
+    orcon::setAutoRestore(true); orcon::setFanSaved(4, 70); orcon::setSelftest(true);
+    orcon::onFrame(fr(MsgType::I, UNIT, false, {}, true, UNIT, 0x042F, {0x00}));
+    const uint32_t txBefore = orcon::state().txCount;
+    g_sends = 0; g_cmd.clear();
+    run25h();
+    char m[96]; snprintf(m, sizeof(m), "25 h of tick(): %d sendFrame calls, txCount unchanged", g_sends);
+    CHECK(g_sends == 0 && orcon::state().txCount == txBefore && !orcon::state().selftest && !orcon::autoRestore(), m);
+}
+
 int main() {
     printf("orcon state tests (RX_ONLY=%d)\n", RX_ONLY);
 #if RX_ONLY
     unitSelection();              // first: State is static, later groups set the mode
     rxOnlyBlocksEverything();
     apiAllowlist();
+    rxOnlyTickSilent();
 #else
     v3TxStillWorks();
+    v3PeriodicTick();
 #endif
     printf("\n%s (%d failures)\n", fails ? "FAILED" : "ALL PASSED", fails);
     return fails ? 1 : 0;

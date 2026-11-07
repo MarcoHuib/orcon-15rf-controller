@@ -93,8 +93,11 @@ void loop() {
     }
 #endif
 
-    // 2) periodic sensor broadcasts (31E0 demand, 1298 CO2, 10E0 info)
-    // orcon::tick(millis()); // RX-only: geen periodieke TX
+    // 2) periodic sends (RQ 31DA/10D0, 31E0 demand, 1298 CO2, 10E0 info, keeper, selftest).
+    //    TX builds only: not compiled into RX-only, and tick() itself refuses there too.
+#if !RX_ONLY
+    orcon::tick(millis());
+#endif
 
     // 3) web / MQTT / OLED
     net::loop();

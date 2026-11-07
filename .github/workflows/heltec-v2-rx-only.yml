@@ -59,8 +59,16 @@ jobs:
               i = net.index(frag)
               assert net.rfind("#if !RX_ONLY", 0, i) > net.rfind("#endif", 0, i), f"{frag} not gated by !RX_ONLY"
           print("PASS: RX-only command, OTA and update gates present")
-          assert not any(line.strip().startswith("orcon::tick(")
-                         for line in main.splitlines()), "Periodic TX remains active"
+          # periodic TX: tick() is called for TX builds only, and refuses itself on RX-only
+          calls = [i for i, l in enumerate(main.splitlines()) if l.strip().startswith("orcon::tick(")]
+          for i in calls:
+              before = main.splitlines()[:i]
+              opened = max((j for j, l in enumerate(before) if l.strip() == "#if !RX_ONLY"), default=-1)
+              closed = max((j for j, l in enumerate(before) if l.strip() == "#endif"), default=-1)
+              assert opened > closed, "orcon::tick() call is not inside #if !RX_ONLY"
+          orcon_src = Path("src/orcon.cpp").read_text()
+          tick_body = orcon_src.split("void tick(uint32_t now) {", 1)[1].lstrip()
+          assert tick_body.startswith("if (RX_ONLY) return;"), "tick() does not refuse first on RX-only"
           assert "[env:heltec_v2_sx1276]\n" in config
           assert "platform = espressif32@6.7.0" in config
           print("PASS: SX1276 transmission path is blocked")
