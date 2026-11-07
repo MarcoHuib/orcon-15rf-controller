@@ -1,0 +1,80 @@
+name: Heltec V2 RX-only firmware
+
+on:
+  push:
+    branches:
+      - feature/heltec-v2-rx-only
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Heltec V2 (RX-only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Verify listen-only safety guards
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          main = Path("src/main.cpp").read_text()
+          radio = Path("src/ramses_radio.cpp").read_text()
+          config = Path("platformio.ini").read_text()
+
+          sx = radio.split("#if defined(RADIO_SX1276)", 1)
+          assert len(sx) == 2, "SX1276 backend not found"
+          tx = sx[1].split("bool sendFrame(const ramses::Frame& f) {", 1)
+          assert len(tx) == 2, "SX1276 sendFrame not found"
+          tx_body = tx[1].split("bool poll(ramses::Frame& out)", 1)[0]
+
+          assert "g_radio.transmit(" not in tx_body, "SX1276 TX path is active"
+          assert "return false;" in tx_body, "SX1276 sendFrame is not blocked"
+          assert not any(line.strip().startswith("orcon::tick(")
+                         for line in main.splitlines()), "Periodic TX remains active"
+          assert "[env:heltec_v2_sx1276]\n" in config
+          assert "platform = espressif32@6.7.0" in config
+          print("PASS: SX1276 transmission path is blocked")
+          PY
+
+      - name: Run RAMSES protocol unit tests
+        shell: bash
+        run: |
+          g++ -std=c++17 -I src test/test_codec.cpp src/ramses_codec.cpp -o /tmp/orcon-test-codec
+          /tmp/orcon-test-codec
+          g++ -std=c++17 -I src test/test_frames.cpp src/ramses_codec.cpp src/orcon_frames.cpp -o /tmp/orcon-test-frames
+          /tmp/orcon-test-frames
+
+      - name: Install pinned PlatformIO
+        shell: bash
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --disable-pip-version-check "platformio==6.1.18"
+          .venv/bin/pio --version
+
+      - name: Build for Heltec WiFi LoRa 32 V2
+        shell: bash
+        run: .venv/bin/pio run -e heltec_v2_sx1276
+
+      - name: Package flash images
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp .pio/build/heltec_v2_sx1276/firmware.bin dist/firmware.bin
+          cp .pio/build/heltec_v2_sx1276/partitions.bin dist/partitions.bin
+          cp .pio/build/heltec_v2_sx1276/bootloader.bin dist/bootloader.bin
+          shasum -a 256 dist/*.bin > dist/SHA256SUMS.txt
+
+      - name: Upload firmware artifacts (not flashed automatically)
+        uses: actions/upload-artifact@v4
+        with:
+          name: heltec-v2-rx-only
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
