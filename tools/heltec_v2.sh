@@ -92,7 +92,8 @@ verify() {
     # source-level guard (same as CI) on the exact commit
     git -C "$REPO" show "$sha:src/ramses_radio.cpp" | grep -q 'Serial.println("\[radio\] TX blocked' \
         || die "sendFrame not blocked in source"
-    git -C "$REPO" show "$sha:src/main.cpp" | grep -E '^\s*orcon::tick\(' && die "periodic TX active"
+    git -C "$REPO" show "$sha:src/main.cpp" | python3 -I "$REPO/tools/check_tick.py" \
+        || die "periodic TX: orcon::tick() not excluded from RX-only"
     ci_ok "$sha"
     echo "VERIFIED $sha  ($d)"
 }

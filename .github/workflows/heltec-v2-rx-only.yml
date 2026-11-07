@@ -65,13 +65,10 @@ jobs:
           clone = log_page.split("$('#clone').onclick=", 1)[1].split("\n", 1)[0]
           assert "#fan" not in clone, "Use-detected/clone button fills the unit"
           print("PASS: RX-only command, OTA and update gates present; unit is selected explicitly")
-          # periodic TX: tick() is called for TX builds only, and refuses itself on RX-only
-          calls = [i for i, l in enumerate(main.splitlines()) if l.strip().startswith("orcon::tick(")]
-          for i in calls:
-              before = main.splitlines()[:i]
-              opened = max((j for j, l in enumerate(before) if l.strip() == "#if !RX_ONLY"), default=-1)
-              closed = max((j for j, l in enumerate(before) if l.strip() == "#endif"), default=-1)
-              assert opened > closed, "orcon::tick() call is not inside #if !RX_ONLY"
+          # periodic TX: tick() is called for TX builds only (tools/check_tick.py, also used by
+          # heltec_v2.sh verify), and tick() refuses itself on RX-only
+          import subprocess
+          subprocess.run(["python3", "tools/check_tick.py"], input=main, text=True, check=True)
           orcon_src = Path("src/orcon.cpp").read_text()
           tick_body = orcon_src.split("void tick(uint32_t now) {", 1)[1].lstrip()
           assert tick_body.startswith("if (RX_ONLY) return;"), "tick() does not refuse first on RX-only"
@@ -117,6 +114,10 @@ jobs:
           open("/tmp/good-partitions.bin", "wb").write(raw + b"\xff" * (3072 - len(raw)))
           PY
           tools/test_precheck.sh /tmp/good-partitions.bin
+          python3 tools/check_tick.py < src/main.cpp
+          if sed 's/^#if !RX_ONLY$//' src/main.cpp | python3 tools/check_tick.py; then
+            echo "check_tick.py accepted a tick() call outside #if !RX_ONLY"; exit 1
+          fi
           .venv/bin/python tools/test_rxmon.py
 
       - name: Build for Heltec WiFi LoRa 32 V2
