@@ -13,7 +13,7 @@ compileert niet (`#error`).
 | Logica (`orcon.cpp`) | elke TX-, pairing-, keeper- en selftestfunctie weigert vóór enige toestandswijziging (`RX_ONLY_REFUSE`); `tx()` registreert alleen echt verzonden frames; `tick()` doet niets |
 | API / MQTT | `/api/cmd` en MQTT: elke sleutel buiten `maskids`/`showfilter`/`roomidx` → hele verzoek geweigerd (403 `{"err":"rx-only"}`), geen gedeeltelijke toepassing, geen NVS-schrijfactie |
 | Netwerkupdate | ArduinoOTA en `/update` zijn weggecompileerd; CI controleert dat het image die strings niet bevat |
-| MQTT | eigen namespace `orcon15rf_rx/…` en HA-node `orcon15rf_rx` (overschrijft nooit een productiebord), geen command-topic, geen HA-bedieningsentiteiten |
+| MQTT | standaard **uit** op RX-only, tot op de setup-pagina "MQTT enabled" met een broker is ingesteld. NVS `mqtt`: afwezig = compile-default, `""` = uit, host = aan. Een lege host bij "aan" wordt geweigerd. Daarnaast: eigen namespace `orcon15rf_rx/…` en HA-node `orcon15rf_rx` (overschrijft nooit een productiebord), geen command-topic, geen HA-bedieningsentiteiten. `mqtt_on` en `mqtt_connected` staan in `/api/state`. |
 | Zichtbaarheid | state-JSON `rx_only:true`, `fw`, `tx_refused`, `cmd_rejected`; elke webpagina toont een RX-ONLY-banner met uitgeschakelde knoppen |
 
 Beperkingen: de webpagina's tonen nog de (uitgeschakelde) bedieningsknoppen. Er is geen authenticatie op de web-API. Een LAN-gebruiker kan UI-instellingen en `/api/ids`/`/api/wifi` wijzigen, maar kan niet zenden en geen firmware uploaden. USB-flashen blijft altijd mogelijk.
@@ -43,6 +43,7 @@ Model (`test_rxpipe`), géén hardware: bij een DNS-storing van 5 s, trage HTTP 
 - **Unitstatus** komt alleen van de **expliciet gekozen** unit: `fan_id`, opgeslagen in NVS en in te stellen via `/api/ids`. In RX-only wordt nooit automatisch een unit gekozen; zonder gekozen unit is er geen unitstatus.
 - **Een 22F1 van een afstandsbediening aan die unit** wordt apart bewaard in `remote_cmd`/`remote_id`/`remote_age`. `remote_confirmed` wordt pas waar als de unit zelf binnen 10 s die stand meldt. `mode` en `mode_age` komen alleen van de unit.
 - **`/api/log` → `devices`** toont alle gehoorde afzenders met hun rol (op basis van berichten), aantal, leeftijd en RSSI. Dat is alleen discovery en kiest nooit iets.
+- **Logpagina:** de eigen unit kies je expliciet uit de lijst van gehoorde units, met één knop per unit. Die knop vult alleen het veld in; opslaan gebeurt pas met "Apply & save". "Use detected" vult nooit de unit in en is verborgen op RX-only.
 
 ## Uitgangsmeting (firmware d82ffa3)
 
@@ -81,6 +82,7 @@ Gecontroleerd en in orde:
 - `sync5`: exacte `FF 00 33 55 53` (de oude decoder). `sync4`: `00 33 55 53` (de nieuwe).
 - `frames`: frames die Manchester + checksum doorstaan.
 - `ovf`: UART-overflows (verloren bytes).
+- `tools/rxmon.py` koppelt per **boot**: syncnummers en tellers beginnen bij elke herstart opnieuw. `tools/rxmon.py --file <log>` analyseert een opgeslagen log achteraf.
 - Per sync: `[sync <N> <ms> <dBm> pre=XX]`, met XX = het byte vóór `00` (FF = uitgelijnd; 55/D5/F5/FD = verschoven UART-fase). Elk frame: `[rx <N> <ms> <dBm>] …`, met hetzelfde syncnummer N. Een sync zonder `[rx]` met dat nummer is een verminkt frame. `tools/rxmon.py` koppelt ze exact.
 - `op`: RegOpMode, laagste 3 bits `5` = RX. `lna`: bits 7-5 = gebruikte LNA-gain.
 - Per frame: `[rx <ms> <dBm>] I --- 29:… 22F1 003 …`.

@@ -1,5 +1,11 @@
-"""rxmon.py <port> <seconds> [logfile] [reset] — read the Heltec V2 serial log,
-echo it, and summarise RX: boot banner, syncs vs decoded frames, [rxstat] deltas.
+"""rxmon.py — Heltec V2 serial log: echo it and summarise RX per boot.
+
+  rxmon.py <port> <seconds> [logfile] [reset]   read the serial port
+  rxmon.py --file <logfile>                     re-analyse a saved log
+
+Sync numbers and [rxstat] counters restart at every boot, so syncs are paired
+with frames ([sync N ...] <-> [rx N ...]) and counters are compared WITHIN one
+boot; a boot starts at the firmware banner ("emulator starting").
 
 Auto-reset circuit: EN is pulled low only when DTR is released while RTS is
 asserted. macOS asserts both on open, so keep both asserted (no reset); to
@@ -9,70 +15,118 @@ import re
 import sys
 import time
 
-import serial
+SYNC = re.compile(r"\[sync (\d+) (\d+) (-?\d+)dBm pre=(\w\w)\]")
+RX = re.compile(r"\[rx (\d+) (\d+) (-?\d+)dBm\]\s*(.*)")
+COUNTERS = ("uart", "ovf", "sync5", "sync4", "frames", "resets", "drop", "lost")
 
-port, secs = sys.argv[1], float(sys.argv[2])
-logf = open(sys.argv[3], "a", buffering=1) if len(sys.argv) > 3 and sys.argv[3] else None  # line-buffered: log readable while running
-s = serial.Serial()
-s.port, s.baudrate, s.timeout = port, 115200, 0.2
-s.dtr = True
-s.rts = True
-s.open()
-if len(sys.argv) > 4 and sys.argv[4] == "reset":
-    s.dtr = False
-    time.sleep(0.1)
-    s.dtr = True
 
-stats, events, fw, buf = [], [], None, b""
-end = time.time() + secs
-while time.time() < end:
-    buf += s.read(512)
-    while b"\n" in buf:
-        raw, buf = buf.split(b"\n", 1)
-        line = raw.decode("utf-8", "replace").rstrip("\r")
-        stamp = time.strftime("%H:%M:%S")
-        print(f"{stamp} {line}", flush=True)
-        if logf:
-            logf.write(f"{stamp} {line}\n")
+def new_boot(start, fw=None, banner=False):
+    return {"start": start, "fw": fw, "banner": banner, "syncs": {}, "rx": [], "stats": []}
+
+
+def feed(boots, stamp, line):
+    if "emulator starting" in line:
         m = re.search(r"fw=(\S+)", line)
-        if m:
-            fw = m.group(1)
-        if line.startswith("[rxstat]"):
-            stats.append(dict(kv.split("=", 1) for kv in line.split()[1:]))
-        # firmware >= 0c9af7b: [sync N ms rssi pre=XX] / [rx N ms rssi] <frame>, N = sync number
-        m = re.match(r"\[(sync|rx) (\d+) (\d+) (-?\d+)dBm(?: pre=(\w\w))?\]\s*(.*)", line)
-        if m:
-            events.append((m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4)), m.group(5), m.group(6)))
+        boots.append(new_boot(stamp, m.group(1) if m else None, banner=True))
+        return
+    if not boots:
+        boots.append(new_boot(stamp))          # log began while the firmware was running
+    b = boots[-1]
+    m = SYNC.match(line)
+    if m:
+        b["syncs"][int(m.group(1))] = (stamp, int(m.group(3)), m.group(4))
+        return
+    m = RX.match(line)
+    if m:
+        b["rx"].append((int(m.group(1)), stamp, int(m.group(3)), m.group(4)))
+        return
+    if line.startswith("[rxstat]"):
+        b["stats"].append(dict(kv.split("=", 1) for kv in line.split()[1:] if "=" in kv))
 
-print("\n===== summary =====")
-print("firmware:", fw or "(no boot banner seen)")
-# Exact pairing: a decoded frame carries the number of the sync it began at.
-syncs = {e[1]: e for e in events if e[0] == "sync"}
-done = {e[1] for e in events if e[0] == "rx" and e[1]}
-ok = [syncs[n] for n in sorted(done) if n in syncs]
-bad = [e for n, e in sorted(syncs.items()) if n not in done]
-print(f"syncs: {len(syncs)}  decoded: {len(ok)}  garbled: {len(bad)}")
-print("byte before 00 (FF = old decoder would see it):",
-      dict(collections.Counter(e[4] for e in syncs.values())))
-if ok:
-    print("RSSI decoded:", sorted(e[3] for e in ok))
-if bad:
-    print("RSSI garbled:", sorted(e[3] for e in bad))
-for e in events:
-    if e[0] == "rx":
-        print(f"   [rx {e[1]} {e[3]}dBm] {e[5]}")
-if stats:
-    a, b = stats[0], stats[-1]
-    keys = [k for k in ("uart", "ovf", "sync5", "sync4", "frames", "resets", "drop", "lost") if k in a]
-    print("rxstat first->last:", ", ".join(f"{k} {a[k]}->{b[k]}" for k in keys))
-    print("delta:", {k: int(b[k]) - int(a[k]) for k in keys})
-    for k in ("pendmax", "qmax", "taskus", "loopmax"):
-        if k in b:
-            print(f"max {k}: {max(int(x[k]) for x in stats)}", end="  ")
-    if "stack" in b:
-        print(f"min stack free: {min(int(x['stack']) for x in stats)} B  min heap: {b.get('minheap')} B  rx state: {b.get('rxst')} err {b.get('err')} rec {b.get('rec')}")
-    print("radio: op=%s (low 3 bits 5 = RX) lna=%s rxcfg=%s rxbw=%s rssi=%s..%s dBm" % (
-        b["op"], b["lna"], b["rxcfg"], b["rxbw"],
-        min(int(x["rssi"]) for x in stats), max(int(x["rssi"]) for x in stats)))
-    if any(int(x["op"], 16) & 7 != 5 for x in stats):
-        print("WARNING: SX1276 left RX mode at some sample:", [x["op"] for x in stats])
+
+def summary(boots):
+    print("\n===== summary =====")
+    banners = sum(1 for b in boots if b["banner"])
+    reboots = banners - (1 if boots and boots[0]["banner"] else 0)   # a log that starts at a boot: not a reboot
+    print(f"boots in log: {len(boots)} (reboots seen: {reboots})")
+    tot = collections.Counter()
+    for k, b in enumerate(boots):
+        done = {n for n, *_ in b["rx"] if n}
+        ok = [b["syncs"][n] for n in sorted(done) if n in b["syncs"]]
+        bad = [s for n, s in sorted(b["syncs"].items()) if n not in done]
+        fw = b["fw"] or ("(no fw= in banner)" if b["banner"] else "(started before the log)")
+        print(f"\n-- boot {k + 1} from {b['start']}, firmware {fw}")
+        print(f"syncs: {len(b['syncs'])}  decoded: {len(ok)}  garbled: {len(bad)}")
+        print("byte before 00 (FF = old decoder would see it):",
+              dict(collections.Counter(s[2] for s in b["syncs"].values())))
+        if ok:
+            print("RSSI decoded:", sorted(s[1] for s in ok))
+        if bad:
+            print("RSSI garbled (sender unknown):", sorted(s[1] for s in bad))
+        for n, stamp, rssi, frame in b["rx"]:
+            print(f"   [rx {n} {rssi}dBm] {frame}")
+        tot.update(syncs=len(b["syncs"]), decoded=len(ok), garbled=len(bad))
+        st = b["stats"]
+        if st:
+            a, z = st[0], st[-1]
+            keys = [c for c in COUNTERS if c in a and c in z]
+            delta = {c: int(z[c]) - int(a[c]) for c in keys}
+            print("rxstat first->last:", ", ".join(f"{c} {a[c]}->{z[c]}" for c in keys))
+            print("delta:", delta)
+            for c in ("pendmax", "qmax", "taskus", "loopmax"):
+                if c in z:
+                    print(f"max {c}: {max(int(x[c]) for x in st if c in x)}", end="  ")
+            if "stack" in z:
+                print(f"min stack free: {min(int(x['stack']) for x in st if 'stack' in x)} B  min heap: "
+                      f"{z.get('minheap')} B  rx state: {z.get('rxst')} err {z.get('err')} rec {z.get('rec')}")
+            print("radio: op=%s (low 3 bits 5 = RX) lna=%s rxcfg=%s rxbw=%s rssi=%s..%s dBm" % (
+                z["op"], z["lna"], z["rxcfg"], z["rxbw"],
+                min(int(x["rssi"]) for x in st), max(int(x["rssi"]) for x in st)))
+            if any(int(x["op"], 16) & 7 != 5 for x in st):
+                print("WARNING: SX1276 left RX mode at some sample:", [x["op"] for x in st])
+            for c in ("ovf", "drop", "resets"):
+                tot[c] += delta.get(c, 0)
+    print(f"\n== total over boots: {dict(tot)}")
+
+
+def from_file(path):
+    boots = []
+    for raw in open(path, encoding="utf-8", errors="replace"):
+        stamp, _, line = raw.rstrip("\n").partition(" ")
+        feed(boots, stamp, line)
+    return boots
+
+
+def from_serial(port, secs, logpath, reset):
+    import serial
+    logf = open(logpath, "a", buffering=1) if logpath else None   # line-buffered: readable while running
+    s = serial.Serial()
+    s.port, s.baudrate, s.timeout = port, 115200, 0.2
+    s.dtr = True
+    s.rts = True
+    s.open()
+    if reset:
+        s.dtr = False
+        time.sleep(0.1)
+        s.dtr = True
+    boots, buf, end = [], b"", time.time() + secs
+    while time.time() < end:
+        buf += s.read(512)
+        while b"\n" in buf:
+            raw, buf = buf.split(b"\n", 1)
+            line = raw.decode("utf-8", "replace").rstrip("\r")
+            stamp = time.strftime("%H:%M:%S")
+            print(f"{stamp} {line}", flush=True)
+            if logf:
+                logf.write(f"{stamp} {line}\n")
+            feed(boots, stamp, line)
+    return boots
+
+
+if __name__ == "__main__":
+    if sys.argv[1] == "--file":
+        summary(from_file(sys.argv[2]))
+    else:
+        summary(from_serial(sys.argv[1], float(sys.argv[2]),
+                            sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None,
+                            len(sys.argv) > 4 and sys.argv[4] == "reset"))
