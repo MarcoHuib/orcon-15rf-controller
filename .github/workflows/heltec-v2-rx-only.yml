@@ -85,6 +85,15 @@ jobs:
           assert "[env:heltec_v2_sx1276]\n" in config
           assert "platform = espressif32@6.7.0" in config
           print("PASS: SX1276 transmission path is blocked")
+          # OLED power-save must stay local to the display. Radio diagnostics
+          # (name/RSSI) are read-only; no task or network/radio control here.
+          oled = net.split("// OLED\n", 1)[1].split("// WiFi\n", 1)[0]
+          oled += Path("src/oled_power.h").read_text()
+          for bad in (r"\besp_\w*sleep\w*\s*\(", r"\bvTask(?:Suspend|Delete)\s*\(",
+                      r"\bWiFi\.", r"\bmqtt\.", r"\bSPI\.",
+                      r"\bradio::(?:begin|startReceive|sendFrame|poll)\s*\("):
+              assert not re.search(bad, oled), f"OLED code controls a non-display subsystem: {bad}"
+          print("PASS: OLED power-save does not sleep the CPU or control RX/WiFi/MQTT")
           PY
 
       - name: Run host unit tests (plain, ASan+UBSan, TSan)
@@ -104,6 +113,8 @@ jobs:
             node --check /tmp/page$i.js
           done
           echo "PASS: all page scripts parse"
+          /tmp/dump-pages 5 | node test/test_oled_setup.js
+          /tmp/dump-pages 0 | node test/test_oled_main.js
 
       - name: Install pinned PlatformIO
         shell: bash
@@ -150,6 +161,8 @@ jobs:
           grep -q -a "$GITHUB_SHA" dist/firmware.bin
           grep -q -a "SX1276 direct RX (TX disabled)" dist/firmware.bin
           grep -q -a "RX-ONLY TEST FIRMWARE" dist/firmware.bin
+          grep -q -a "/api/oled" dist/firmware.bin
+          grep -q -a "oled_mode" dist/firmware.bin
           # network firmware update must be compiled out (no "! grep": set -e ignores it)
           for s in "Firmware update (OTA)" "ArduinoOTA" "auth_upload" "Updater.cpp"; do
             if grep -q -a "$s" dist/firmware.bin; then echo "RX-only image contains '$s'"; exit 1; fi

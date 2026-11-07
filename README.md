@@ -34,6 +34,9 @@ path, not the motor).
   auto-generates a unique controller ID on first boot.
 - **Interfaces**: onboard web UI, MQTT (with Home Assistant auto-discovery), an
   embeddable airflow widget, and — on the Guition panel — an on-screen touch UI.
+- **Heltec V2 OLED**: defaults to power-save after 30 seconds; choose On, Off or
+  Auto in the web setup page without restarting WiFi or radio reception.
+  See [OLED settings and checks](docs/HELTEC_V2_OLED.md).
 
 ## Screenshots
 

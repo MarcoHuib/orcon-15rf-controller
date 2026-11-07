@@ -92,6 +92,10 @@
 #define PIN_OLED_SCL  15
 #define PIN_OLED_RST  16
 #define PIN_VEXT      21      // drive LOW to power the OLED/Vext rail on V2
+#define PIN_PRG_BTN   0       // PRG button -> GND. GPIO0 is the ESP32 boot-mode
+                              // strapping pin: read-only use (INPUT_PULLUP, never
+                              // driven), so reset+hold still enters the ROM
+                              // flasher and short presses only wake the OLED.
 #else
 // On-board SSD1306 OLED (Heltec V3/V4): I2C + Vext power + reset
 #define PIN_OLED_SDA  17

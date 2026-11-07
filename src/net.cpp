@@ -7,6 +7,7 @@
 #include "ramses_radio.h"
 #include "rx_only.h"
 #include "net_cfg.h"
+#include "oled_power.h"
 #if defined(USE_CC1101_TX) || defined(RADIO_CC1101_ASYNC)
 #include "cc1101_tx.h"
 #endif
@@ -37,6 +38,9 @@ static Preferences  prefs;
 #if !defined(NO_OLED)
 static U8G2_SSD1306_128X64_NONAME_F_HW_I2C
     oled(U8G2_R0, PIN_OLED_RST, PIN_OLED_SCL, PIN_OLED_SDA);
+#endif
+#if defined(BOARD_HELTEC_V2)
+static oledpower::Power g_oledPower;
 #endif
 
 static bool     g_apMode    = false;
@@ -83,6 +87,9 @@ static void loadConfig() {
     bool     pl = prefs.getBool("pl", false);
     g_maskIds    = prefs.getBool("mask", true);
     g_showFilter = prefs.getBool("fltr", true);
+#if defined(BOARD_HELTEC_V2)
+    g_oledPower.setMode(oledpower::storedMode(prefs.getString("oled_mode", "auto").c_str()), millis());
+#endif
     for (int i = 0; i < 7; i++) { char rk[4]; snprintf(rk, sizeof(rk), "r%d", i); g_roomIdx[i] = prefs.getUInt(rk, 0); }
     prefs.end();
     bool freshId = (us == 0);
@@ -159,6 +166,13 @@ static size_t buildStateJson(char* out, size_t cap) {
     d["plearn"]    = orcon::passiveLearn();
     d["mask_ids"]  = g_maskIds;
     d["show_filter"] = g_showFilter;
+#if defined(BOARD_HELTEC_V2)
+    d["oled_available"] = true;
+    d["oled_mode"] = oledpower::modeName(g_oledPower.mode());
+    d["oled_on"] = g_oledPower.awake();
+#else
+    d["oled_available"] = false;  // this setting only controls the Heltec V2 OLED
+#endif
     char uid[16], fid[16];
     idStr(orcon::ids().us,  uid, sizeof(uid));
     idStr(orcon::ids().fan, fid, sizeof(fid));
@@ -598,6 +612,12 @@ static void mqttReconnect() {
 // ---------------------------------------------------------------------------
 // OLED
 // ---------------------------------------------------------------------------
+static void oledTick() {
+#if defined(BOARD_HELTEC_V2)
+    if (g_oledPower.sync(oled, millis())) g_dirty = true;
+#endif
+}
+
 #if defined(NO_OLED)
 static void oledInit() {}
 static void oledDraw() {}
@@ -608,8 +628,17 @@ static void oledInit() {
     digitalWrite(PIN_OLED_RST, LOW); delay(20); digitalWrite(PIN_OLED_RST, HIGH);
     oled.begin();
     oled.setFont(u8g2_font_6x12_tf);
+#if defined(BOARD_HELTEC_V2)
+    pinMode(PIN_PRG_BTN, INPUT_PULLUP);   // read-only: never disturbs the GPIO0 boot/flashing function
+    g_oledPower.setMode(g_oledPower.mode(), millis());
+    oledTick();
+#endif
 }
 static void oledDraw() {
+    oledTick();
+#if defined(BOARD_HELTEC_V2)
+    if (!g_oledPower.awake()) return;  // no buffer transfers while the OLED is asleep
+#endif
     const orcon::State& s = orcon::state();
     char l1[24], l2[24], l3[24], l4[24];
     snprintf(l1, sizeof(l1), "Orcon 15RF  %s", radio::name());
@@ -626,6 +655,69 @@ static void oledDraw() {
     oled.drawStr(0, 41, l3); oled.drawStr(0, 56, l4);
     if (s.fault) oled.drawStr(104, 11, "!");
     oled.sendBuffer();
+}
+#endif
+
+#if defined(BOARD_HELTEC_V2)
+// Physical PRG button (GPIO0): a short press restarts the OLED viewing window
+// (wake + fresh 30 s in Auto/Off; no visible change while On). The pin is only
+// ever read, with a pull-up — GPIO0 keeps its plain boot-strapping role, so
+// reset+hold still enters the ROM flasher exactly as on a stock board.
+static void prgPoll(uint32_t now) {
+    constexpr uint32_t DEBOUNCE_MS = 30;
+    static bool     raw     = true;    // last pin level read
+    static bool     stable  = true;    // debounced level; true = released
+    static uint32_t changed = 0;       // when the raw level last changed
+    const bool level = digitalRead(PIN_PRG_BTN);
+    if (level != raw) { raw = level; changed = now; }
+    else if (level != stable && uint32_t(now - changed) >= DEBOUNCE_MS) {
+        stable = level;
+        if (!stable) {                 // debounced press: exactly one wake per press
+            g_oledPower.wake(now);
+            oledDraw();                // lift power-save and redraw the status now
+        }
+    }
+}
+
+// Local display setting, separate from /api/cmd: the RX-only allowlist and all
+// TX/OTA guards stay unchanged. Reject unknown keys before any NVS/state change.
+// {"mode":...} persists the policy; {"toggle":1} flips the screen right now
+// without touching the stored mode (same wake/sleep actions as the PRG button).
+static void handleOledSave() {
+    JsonDocument d;
+    oledpower::Mode mode = oledpower::Mode::Auto;
+    bool toggle = false;
+    if (deserializeJson(d, server.arg("plain")) || !d.is<JsonObject>() || d.size() != 1) {
+        server.send(400, "application/json", "{\"err\":\"expected mode: on, off or auto\"}"); return;
+    }
+    if (d["mode"].is<const char*>()) {
+        if (!oledpower::parseMode(d["mode"].as<const char*>(), mode)) {
+            server.send(400, "application/json", "{\"err\":\"expected mode: on, off or auto\"}"); return;
+        }
+    } else if (!(d["toggle"].is<int>() && d["toggle"].as<int>() == 1)) {
+        server.send(400, "application/json", "{\"err\":\"expected mode: on, off or auto\"}"); return;
+    } else {
+        toggle = true;
+    }
+    if (toggle) {
+        if (g_oledPower.awake()) g_oledPower.sleep();
+        else                     g_oledPower.wake(millis());
+    } else {
+        if (mode != g_oledPower.mode()) {
+            if (!prefs.begin("orcon", false)) {
+                server.send(500, "application/json", "{\"err\":\"display setting not saved\"}"); return;
+            }
+            size_t written = prefs.putString("oled_mode", oledpower::modeName(mode));
+            prefs.end();
+            if (!written) {
+                server.send(500, "application/json", "{\"err\":\"display setting not saved\"}"); return;
+            }
+        }
+        g_oledPower.setMode(mode, millis());
+    }
+    oledDraw();  // apply power-save immediately; redraw current status on wake
+    g_dirty = true;
+    server.send(200, "application/json", "{\"ok\":1}");
 }
 #endif
 
@@ -683,6 +775,9 @@ void begin() {
     server.on("/api/ids",   HTTP_POST, handleIds);
     server.on("/api/scan",  handleScan);
     server.on("/api/wifi",  HTTP_POST, handleWifiSave);
+#if defined(BOARD_HELTEC_V2)
+    server.on("/api/oled",  HTTP_POST, handleOledSave);
+#endif
     server.begin();
 
 #if MQTT_ENABLED
@@ -720,6 +815,10 @@ void publishState() {
 }
 
 void loop() {
+    oledTick();  // runs independently of state publishing and RF activity
+#if defined(BOARD_HELTEC_V2)
+    prgPoll(millis());   // OLED wake button; a plain GPIO read, no RF/WiFi impact
+#endif
     if (g_rebootAt && millis() > g_rebootAt) ESP.restart();
     if (orcon::idsDirty()) {                  // pairing learned a fan -> persist it
         const orcon::Ids& id = orcon::ids();
@@ -734,6 +833,7 @@ void loop() {
 #if MQTT_ENABLED
     if (mqttOn()) { mqttReconnect(); mqtt.loop(); }
 #endif
+    oledTick();
     if (g_dirty || millis() - g_lastPub > 5000) publishState();
 }
 

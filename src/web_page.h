@@ -23,6 +23,10 @@ button{font:inherit;color:var(--fg);background:#26303c;border:1px solid #313d4c;
 button:active{transform:scale(.97)}button.sel{background:var(--acc);border-color:var(--acc);color:#04121f;font-weight:600}
 button:has(svg.ic){display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;line-height:1.15}
 .ic{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.icobtn{margin-left:auto;padding:6px 8px;border-radius:9px;color:var(--mut)}
+.icobtn.on{color:var(--acc);border-color:var(--acc)}
+.icobtn .ic{width:20px;height:20px}
+.icobtn[hidden]{display:none}
 .row{display:flex;justify-content:space-between;padding:6px 2px;border-bottom:1px solid #232c38}
 .row:last-child{border:0}.row b{color:var(--mut);font-weight:500}
 .metrics{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
@@ -43,7 +47,10 @@ input[type=range]{width:100%}label{color:var(--mut);font-size:13px}
 .col{min-width:0}
 @media(min-width:760px){.wrap{max-width:900px}.cols{grid-template-columns:1fr 1fr;column-gap:16px;align-items:start}}
 </style></head><body><div class="wrap">
-<h1><span id="dot" class="dot"></span> Orcon 15RF <span id="mode" class="small"></span></h1>
+<h1><span id="dot" class="dot"></span> Orcon 15RF <span id="mode" class="small"></span>
+<button id="oledbtn" class="icobtn" hidden title="OLED screen">
+<svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M9 21h6M12 17v4"/></svg>
+</button></h1>
 
 <div class="cols"><div class="col">
 <div class="card imgw" style="padding:0;overflow:hidden">
@@ -190,7 +197,7 @@ input[type=range]{width:100%}label{color:var(--mut);font-size:13px}
 <button style="width:100%;margin-top:6px" data-raw>Send raw</button>
 </div>
 <p class="small">Power-cycle the HRC400, then press Pair within 3 minutes.</p>
-<p class="small"><a href="/wifi" style="color:var(--acc)">WiFi &amp; MQTT setup &rarr;</a></p>
+<p class="small"><a href="/wifi" style="color:var(--acc)">WiFi, MQTT &amp; display setup &rarr;</a></p>
 <p class="small"><a href="/log" style="color:var(--acc)">RF log &amp; device ID / clone &rarr;</a></p>
 <p class="small"><a href="/debug" style="color:var(--acc)">RF debug &amp; 31DA calibration &rarr;</a></p>
 <p class="small"><a href="/update" style="color:var(--acc)">Update firmware (OTA upload) &rarr;</a></p>
@@ -218,6 +225,7 @@ document.querySelectorAll('[data-pair]').forEach(b=>b.onclick=()=>{send({pair:1}
 if($('#pl'))$('#pl').onchange=e=>send({plearn:e.target.checked?1:0});
 if($('#maskids'))$('#maskids').onchange=e=>send({maskids:e.target.checked?1:0}).then(()=>setTimeout(refresh,300));
 if($('#showfilter'))$('#showfilter').onchange=e=>send({showfilter:e.target.checked?1:0}).then(()=>setTimeout(refresh,300));
+if($('#oledbtn'))$('#oledbtn').onclick=async()=>{const b=$('#oledbtn');b.disabled=true;try{await fetch('/api/oled',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({toggle:1})});}catch(e){}refresh();b.disabled=false;};
 if($('#riSave'))$('#riSave').onclick=()=>{var a=[];for(var i=0;i<7;i++){var el=$('#ri'+i);a.push(el&&el.value?+el.value:0);}send({roomidx:a}).then(()=>{if($('#riMsg'))$('#riMsg').textContent='Saved.';setTimeout(refresh,400);});};
 document.querySelector('[data-selftest]').onclick=()=>send({selftest:1});
 document.querySelector('[data-connect]').onclick=()=>send({connect:1});
@@ -269,6 +277,7 @@ function refresh(){fetch('/api/state').then(r=>r.json()).then(s=>{rxOnly(s);
  $('#rssi').textContent=num(s.rssi);$('#radio').textContent=s.radio||'';
  ('cc1101' in s)?($('#cc').textContent=(s.cc1101===0||s.cc1101===255)?('not found ('+s.cc1101+')'):('0x'+s.cc1101.toString(16)+' OK')):($('#cc').textContent='n/a');
  $('#dot').className='dot'+(s.online?' on':'');
+ if($('#oledbtn')){const ob=$('#oledbtn');if(!s.oled_available){ob.hidden=true;}else{ob.hidden=false;ob.classList.toggle('on',!!s.oled_on);ob.title='OLED screen: '+(s.oled_on?'on':'off')+' — tap to toggle';}}
  document.querySelectorAll('[data-m]').forEach(b=>b.classList.toggle('sel',b.dataset.m===s.mode));
  const fa=s.fan_age;
  let t='Fan reports <b>'+(s.mode||'?')+'</b>'+(fa>=0?' · heard '+fa+'s ago':' · not heard yet');
@@ -295,7 +304,17 @@ button{cursor:pointer;margin-top:14px}button.go{background:var(--acc);border-col
 .row{display:flex;gap:8px}.row>*{flex:1}.small{font-size:12px;color:var(--mut)}
 #msg{margin-top:10px}.ok{color:var(--ok)}
 </style></head><body><div class="wrap">
-<h1>WiFi &amp; MQTT setup</h1>
+<h1>WiFi, MQTT &amp; display setup</h1>
+<div class="card" id="oledcard" hidden>
+<label for="oledmode">Heltec V2 OLED</label>
+<select id="oledmode">
+<option value="auto">Auto — off after 30 seconds</option>
+<option value="on">On</option><option value="off">Off</option>
+</select>
+<p class="small">Auto shows the screen for 30 seconds after startup or Apply. WiFi and radio reception stay active.</p>
+<button id="oledsave">Apply display setting</button>
+<div id="oledmsg" class="small" role="status"></div>
+</div>
 <div class="card">
 <label>Network</label>
 <div class="row">
@@ -320,6 +339,18 @@ button{cursor:pointer;margin-top:14px}button.go{background:var(--acc);border-col
 <script>
 const $=s=>document.querySelector(s);
 $('#show').onchange=e=>$('#pass').type=e.target.checked?'text':'password';
+fetch('/api/state',{cache:'no-store'}).then(r=>r.json()).then(s=>{rxOnly(s);if(s.oled_available){$('#oledcard').hidden=false;$('#oledmode').value=s.oled_mode;}}).catch(()=>{});
+$('#oledsave').onclick=async()=>{
+ const button=$('#oledsave');button.disabled=true;
+ $('#oledmsg').textContent='Saving…';
+ try{
+  const mode=$('#oledmode').value;
+  const r=await fetch('/api/oled',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})});
+  const j=await r.json();
+  $('#oledmsg').textContent=r.ok?(mode==='auto'?'Saved. Screen on for 30 seconds.':mode==='on'?'Saved. Screen on.':'Saved. Screen off.'):'Not saved: '+(j.err||r.status);
+ }catch(e){$('#oledmsg').textContent='Save failed — try again.';}
+ finally{button.disabled=false;}
+};
 fetch('/api/netcfg').then(r=>r.json()).then(c=>{if(c.mqtt)$('#mqtt').value=c.mqtt;$('#mqtton').checked=!!c.mqtt_on;if($('#curcfg'))$('#curcfg').textContent='Current: WiFi “'+(c.ssid||'—')+'”, MQTT '+(c.mqtt_on?c.mqtt:'off');}).catch(()=>{});
 function scan(){
  $('#rescan').textContent='…';
@@ -346,7 +377,7 @@ $('#save').onclick=()=>{
  })).catch(()=>{$('#msg').textContent='Save failed — try again.';});
 };
 scan();
-</script></body></html>)SETUP";
+)SETUP" RXONLY_JS R"SETUP(</script></body></html>)SETUP";
 
 // --- RF log + device-ID / clone page (served at /log) ------------------------
 static const char LOG_HTML[] PROGMEM = R"LOG(<!doctype html>
