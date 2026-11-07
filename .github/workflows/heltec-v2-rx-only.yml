@@ -28,8 +28,9 @@ jobs:
           radio = Path("src/ramses_radio.cpp").read_text()
           config = Path("platformio.ini").read_text()
 
-          sx = radio.split("#if defined(RADIO_SX1276)", 1)
-          assert len(sx) == 2, "SX1276 backend not found"
+          # the backend block is the one carrying the RX_ONLY #error (include blocks also test RADIO_SX1276)
+          sx = radio.split('#error "SX1276 backend is receive-only', 1)
+          assert len(sx) == 2, "SX1276 backend (with its RX_ONLY #error) not found"
           tx = sx[1].split("bool sendFrame(const ramses::Frame& f) {", 1)
           assert len(tx) == 2, "SX1276 sendFrame not found"
           tx_body = tx[1].split("bool poll(ramses::Frame& out)", 1)[0]
