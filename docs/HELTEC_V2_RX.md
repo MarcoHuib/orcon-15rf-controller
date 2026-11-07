@@ -1,8 +1,48 @@
 # Heltec V2 (SX1276) — RX-betrouwbaarheid RAMSES-II / Orcon MVS-15RHBP
 
-Branch `feature/heltec-v2-rx-only`. Firmware is RX-only: `radio::sendFrame()` is in
-de SX1276-backend geblokkeerd, `orcon::tick()` is uit, en CI weigert elke TX-call
-in die backend.
+Branch `feature/heltec-v2-rx-only`.
+
+## RX-only: wat afgedwongen wordt (`RX_ONLY`, `config.h`)
+
+`RX_ONLY` staat automatisch aan voor `RADIO_SX1276`. Een SX1276-build zonder die vlag
+compileert niet (`#error`).
+
+| Laag | Afdwinging |
+|---|---|
+| Radio | SX1276-backend heeft geen TX-pad; `sendFrame()` weigert; CI weigert `transmit`/`startTransmit`/`transmitDirect` in de backend |
+| Logica (`orcon.cpp`) | elke TX-, pairing-, keeper- en selftestfunctie weigert vóór enige toestandswijziging (`RX_ONLY_REFUSE`); `tx()` registreert alleen echt verzonden frames; `tick()` doet niets |
+| API / MQTT | `/api/cmd` en MQTT: elke sleutel buiten `maskids`/`showfilter`/`roomidx` → hele verzoek geweigerd (403 `{"err":"rx-only"}`), geen gedeeltelijke toepassing, geen NVS-schrijfactie |
+| Netwerkupdate | ArduinoOTA en `/update` zijn weggecompileerd; CI controleert dat het image die strings niet bevat |
+| MQTT | eigen namespace `orcon15rf_rx/…` en HA-node `orcon15rf_rx` (overschrijft nooit een productiebord), geen command-topic, geen HA-bedieningsentiteiten |
+| Zichtbaarheid | state-JSON `rx_only:true`, `fw`, `tx_refused`, `cmd_rejected`; elke webpagina toont een RX-ONLY-banner met uitgeschakelde knoppen |
+
+Beperkingen: de webpagina's tonen nog de (uitgeschakelde) bedieningsknoppen. Er is geen authenticatie op de web-API. Een LAN-gebruiker kan UI-instellingen en `/api/ids`/`/api/wifi` wijzigen, maar kan niet zenden en geen firmware uploaden. USB-flashen blijft altijd mogelijk.
+
+## Ontvangst onder netwerkbelasting
+
+- Na `begin()` bezit één FreeRTOS-taak (`ramses_rx`) de SX1276. Die taak heeft prioriteit 3 en draait op de core van de loop, met een periode van 5 ms en task-watchdog. Alleen deze taak raakt SPI en de RX-UART aan.
+- De loop (web, MQTT, WiFi) haalt alleen gedecodeerde frames uit `FrameQueue<32>`. Die queue is lock-free met één producent en één consument. Is hij vol, dan valt het **nieuwste** frame weg en wordt het geteld (`rf_queue_drops`). Gedeelde toestand (`orcon`, `rlog`) wordt alleen in de loop gewijzigd.
+- De taak controleert RegOpMode elke seconde. Staat de radio niet in RX, of mislukt de init, dan volgt een begrensde herstart: maximaal 10 per boot, met backoff 1, 2, 4, 8, 16 en 30 s. Daarna blijft `rf_state` op `failed` staan.
+
+Nieuwe meetwaarden (`[rxstat]` en `/api/state`):
+
+| Veld | Betekenis |
+|---|---|
+| `pendmax` | Maximale bezetting van de 8 KB UART-buffer |
+| `q`, `qmax`, `drop` | Queuediepte, high-watermark en drops |
+| `taskus` | Langste doorloop van de RX-taak |
+| `stack` | Ongebruikte stack van de RX-taak |
+| `minheap` | Minimale vrije heap |
+| `loopmax` | Langste loop-iteratie, oftewel de langste netwerkstall |
+| `rxst`, `err`, `rec`, `lost` | Herstelstatus van de radio |
+
+Model (`test_rxpipe`), géén hardware: bij een DNS-storing van 5 s, trage HTTP van 3 s ×3 of een WiFi-reconnect van 15 s verloor de oude één-loop-opzet 3, 3 en 13 frames. De nieuwe opzet verliest er geen.
+
+## Unitselectie
+
+- **Unitstatus** komt alleen van de **expliciet gekozen** unit: `fan_id`, opgeslagen in NVS en in te stellen via `/api/ids`. In RX-only wordt nooit automatisch een unit gekozen; zonder gekozen unit is er geen unitstatus.
+- **Een 22F1 van een afstandsbediening aan die unit** wordt apart bewaard in `remote_cmd`/`remote_id`/`remote_age`. `remote_confirmed` wordt pas waar als de unit zelf binnen 10 s die stand meldt. `mode` en `mode_age` komen alleen van de unit.
+- **`/api/log` → `devices`** toont alle gehoorde afzenders met hun rol (op basis van berichten), aantal, leeftijd en RSSI. Dat is alleen discovery en kiest nooit iets.
 
 ## Uitgangsmeting (firmware d82ffa3)
 
@@ -36,12 +76,12 @@ Gecontroleerd en in orde:
 
 ## Diagnose (serieel elke 10 s, ook in `/api/state`)
 
-`[rxstat] uart ovf sync5 sync4 frames resets pend op lna rxcfg rxbw rssi heap`
+`[rxstat] uart ovf sync5 sync4 frames resets pend pendmax q qmax drop taskus stack rxst err rec lost op lna rxcfg rxbw rssi heap minheap loopmax`
 
 - `sync5`: exacte `FF 00 33 55 53` (de oude decoder). `sync4`: `00 33 55 53` (de nieuwe).
 - `frames`: frames die Manchester + checksum doorstaan.
 - `ovf`: UART-overflows (verloren bytes).
-- Per sync: `[sync <ms> <dBm> pre=XX]`, met XX = het byte vóór `00` (FF = uitgelijnd; 55/D5/F5/FD = verschoven UART-fase). Een sync zonder `[rx]`-regel binnen 500 ms is een verminkt frame.
+- Per sync: `[sync <N> <ms> <dBm> pre=XX]`, met XX = het byte vóór `00` (FF = uitgelijnd; 55/D5/F5/FD = verschoven UART-fase). Elk frame: `[rx <N> <ms> <dBm>] …`, met hetzelfde syncnummer N. Een sync zonder `[rx]` met dat nummer is een verminkt frame. `tools/rxmon.py` koppelt ze exact.
 - `op`: RegOpMode, laagste 3 bits `5` = RX. `lna`: bits 7-5 = gebruikte LNA-gain.
 - Per frame: `[rx <ms> <dBm>] I --- 29:… 22F1 003 …`.
 
@@ -55,7 +95,7 @@ tools/heltec_v2.sh flash    <commit>   # precheck, dan "yes", dan schrijven
 `precheck` stopt bij elke afwijking, ontbrekende waarde of fout. Er wordt niets geschreven.
 
 - **Artifact:** SHA256SUMS, `BUILD_INFO` (commit en env), commit-stempel en RX-only-strings in `firmware.bin`, image-header Chip ID 0 (ESP32) met geldige hash, 8 MB in bootloader- en app-header, CI-status.
-- **Bord (alleen lezen):** `Chip is ESP32-D0WD…` en exact `Detected flash size: 8MB`.
+- **Bord (alleen lezen):** `Chip is ESP32-D0WDQ6`, het MAC-adres gelijk aan `HELTEC_MAC` of `.flashtools/board.mac`, en exact `Detected flash size: 8MB`. Alle check-runs van de commit moeten `success` zijn.
 - **Partitietabel:** de tabel van het bord (0x8000, 0xC00) moet byte-identiek zijn aan de nieuwe (NVS op 0x9000).
 - **Schrijven:** daarna worden de 4 images op hun eigen offsets geschreven, zodat NVS (WiFi/MQTT/ID's) behouden blijft. Het merged image op 0x0 zou NVS wissen.
 
@@ -142,3 +182,42 @@ monitor opende de poort zonder reset, zoals bedoeld.
 
 **Conclusie:** geen RF-wijziging nodig voor eigen apparaten op deze afstanden. RxBw 250 → 125 kHz blijft
 een optie voor zwakke signalen (< −80 dBm), maar alleen als dat ooit nodig blijkt.
+
+## Duurtest 24–72 uur (WiFi + MQTT): criteria
+
+**Vooraf (stop als één punt niet klopt)**
+- Firmware = een commit waarvan **alle** CI-jobs groen zijn: V2-build, host-tests (gewoon, ASan/UBSan, TSan), V3/CC1101-, V3/SX1262- en 4848-build. Flashen alleen na expliciet akkoord, via `tools/heltec_v2.sh flash`.
+- WiFi (STA) en MQTT zijn ingesteld. Unit 29:000202 is gekozen via `/api/ids`. Het MAC-adres van het bord staat in `.flashtools/board.mac`.
+- Productietopic `orcon15rf/state` en de HA-entiteiten van het productiebord zijn vastgelegd. Na de test moeten ze ongewijzigd zijn.
+
+**Tijdens de test vastleggen**
+- **Serieel:** `tools/heltec_v2.sh monitor <s> duur.log` (regelgebufferd).
+- **MQTT:** een abonnement op `orcon15rf_rx/state`.
+- **Bewuste verstoringen**, met tijdstip noteren:
+  - broker 30 min uit;
+  - access point herstarten;
+  - onoplosbare MQTT-host (DNS-fout);
+  - trage HTTP-client op `/api/log`;
+  - afstandsbedieningsdrukken op bekende tijden.
+
+**Geslaagd als**
+- **Geen reset.** De boot-banner verschijnt één keer, de uptime loopt door, en er zijn geen task-watchdog-meldingen of `[net] state JSON … skipped`.
+- **De radio blijft in RX.** `op` heeft in elk monster laagste 3 bits = 5. `lost` blijft 0; bij herstel staat `rxst` daarna weer op 0 en blijft `rec` onder 10.
+- **Geen verlies van UART-bytes of frames.**
+  - `ovf = 0`, `drop = 0` en `resets = 0`, ook tijdens de verstoringen (terwijl `loopmax` hoog oploopt);
+  - `pendmax` blijft onder 4096.
+- **Geheugen is stabiel.**
+  - `stack` blijft boven 1024 B;
+  - `minheap` vertoont geen dalende trend van meer dan 10 KB per 24 uur.
+- **Drukken komen door.** Minstens 95% van de drukken geeft een 22F1 van 29:000101 en een 31D9 van 29:000202. `remote_confirmed` klopt met de 31D9.
+- **Buren beïnvloeden niets.** Buurunits (o.a. 20:000303, 37:000404) veranderen nooit `fan_id`, `mode` of de unitstatus.
+- **Commando's worden geweigerd.** Een bewust commando via de API geeft 403 en verhoogt `cmd_rejected`, maar `tx_count` blijft 0. Op het productietopic verandert niets.
+
+**Direct afbreken bij**
+- elke aanwijzing voor TX;
+- unitstatus die van een ander apparaat komt;
+- `rf_state = failed`;
+- een reboot-lus;
+- wijzigingen aan de productietopics.
+
+Niet te verifiëren zonder extra meetapparatuur: dat er werkelijk geen 868 MHz-energie wordt uitgezonden. Daarvoor is een SDR of spectrumanalyzer nodig. Het bewijs is nu broncode, CI-guards en het ontbreken van TX-paden in het image.

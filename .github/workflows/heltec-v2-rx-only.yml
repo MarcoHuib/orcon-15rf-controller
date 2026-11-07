@@ -91,6 +91,20 @@ jobs:
           .venv/bin/python -m pip install --disable-pip-version-check "platformio==6.1.18"
           .venv/bin/pio --version
 
+      - name: Test flash tooling (precheck scenarios, partition table, rxmon pairing)
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, struct
+          e = [("nvs",1,2,0x9000,0x5000),("otadata",1,0,0xE000,0x2000),("app0",0,0x10,0x10000,0x330000),
+               ("app1",0,0x11,0x340000,0x330000),("spiffs",1,0x82,0x670000,0x180000),("coredump",1,3,0x7F0000,0x10000)]
+          body = b"".join(struct.pack("<2sBBII16sI", b"\xaa\x50", t, s, o, z, n.encode(), 0) for n, t, s, o, z in e)
+          raw = body + b"\xeb\xeb" + b"\xff" * 14 + hashlib.md5(body).digest()
+          open("/tmp/good-partitions.bin", "wb").write(raw + b"\xff" * (3072 - len(raw)))
+          PY
+          tools/test_precheck.sh /tmp/good-partitions.bin
+          .venv/bin/python tools/test_rxmon.py
+
       - name: Build for Heltec WiFi LoRa 32 V2
         shell: bash
         env:
@@ -103,15 +117,18 @@ jobs:
           mkdir -p dist
           cp .pio/build/heltec_v2_sx1276/firmware.bin dist/firmware.bin
           cp .pio/build/heltec_v2_sx1276/partitions.bin dist/partitions.bin
+          python3 tools/check_parts.py dist/partitions.bin
           cp .pio/build/heltec_v2_sx1276/bootloader.bin dist/bootloader.bin
           cp "$HOME/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin" dist/boot_app0.bin
 
           # The image must carry this commit and the RX-only guard string.
           grep -q -a "$GITHUB_SHA" dist/firmware.bin
-          grep -q -a "TX blocked: RX-only firmware" dist/firmware.bin
-          # network firmware update must be compiled out of the RX-only image
-          ! grep -q -a "Firmware update (OTA)" dist/firmware.bin
-          ! grep -q -a "_arduino" dist/firmware.bin
+          grep -q -a "SX1276 direct RX (TX disabled)" dist/firmware.bin
+          grep -q -a "RX-ONLY TEST FIRMWARE" dist/firmware.bin
+          # network firmware update must be compiled out (no "! grep": set -e ignores it)
+          for s in "Firmware update (OTA)" "_arduino"; do
+            if grep -q -a "$s" dist/firmware.bin; then echo "RX-only image contains '$s'"; exit 1; fi
+          done
           {
             echo "commit=$GITHUB_SHA"
             echo "run_id=$GITHUB_RUN_ID"
@@ -130,11 +147,19 @@ jobs:
             0x10000 dist/firmware.bin
 
           cat > dist/FLASHING.txt <<'HELP'
-          Heltec WiFi LoRa 32 V2 (classic ESP32 / SX1276) - RX-only firmware.
-          Use the official browser flasher https://espressif.github.io/esptool-js/
-          Flash heltec-v2-rx-only-merged.bin at address 0x0.
-          DO NOT use 0x10000 for the merged image.
-          This build deliberately disables 868 MHz transmissions.
+          Heltec WiFi LoRa 32 V2 (classic ESP32 / SX1276) - RECEIVE-ONLY firmware.
+          No 868 MHz transmission, no pairing/commands, no OTA or HTTP firmware update.
+          Commit and CI run: see BUILD_INFO.txt. Verify: shasum -a 256 -c SHA256SUMS.txt
+
+          EXISTING BOARD (keeps NVS = Wi-Fi, MQTT, device IDs at 0x9000):
+            tools/heltec_v2.sh flash <commit>      (checks chip, MAC, 8 MB, partitions)
+          or by hand, four images at their own offsets:
+            esptool.py --chip esp32 write_flash 0x1000 bootloader.bin 0x8000 partitions.bin \
+                0xe000 boot_app0.bin 0x10000 firmware.bin
+
+          BLANK BOARD ONLY: heltec-v2-rx-only-merged.bin at 0x0 (also browser flasher
+          https://espressif.github.io/esptool-js/). WARNING: the merged image is 0xFF
+          over 0x9000-0xDFFF and ERASES NVS (Wi-Fi, MQTT, IDs). Never at 0x10000.
           HELP
           (cd dist && shasum -a 256 *.bin > SHA256SUMS.txt)
 
@@ -145,3 +170,23 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 14
+
+  build-other-envs:
+    # Shared code (codec, orcon, net, main) must keep compiling for the TX builds.
+    name: Build ${{ matrix.env }} (compile check, not published)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [heltec_v3_cc1101_ota, heltec_v3_1262_ota, esp32-480480s040]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned PlatformIO
+        shell: bash
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --disable-pip-version-check "platformio==6.1.18"
+      - name: Build ${{ matrix.env }}
+        shell: bash
+        run: .venv/bin/pio run -e ${{ matrix.env }}
