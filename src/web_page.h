@@ -358,8 +358,8 @@ label{display:block;color:var(--mut);font-size:12px;margin:8px 0 4px}
 input,button{font:inherit;color:var(--fg);background:#26303c;border:1px solid #313d4c;border-radius:9px;padding:9px}
 button{cursor:pointer}button.go{background:var(--acc);border-color:var(--acc);color:#04121f;font-weight:600}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:end}.small{font-size:12px;color:var(--mut)}
-pre{background:#0c1016;border-radius:10px;padding:10px;overflow:auto;max-height:60vh;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;margin:0}
-.rx{color:var(--rx)}.tx{color:var(--tx)}.tag{display:inline-block;width:14px}
+pre{background:#0c1016;border-radius:10px;padding:10px;overflow:auto;max-height:60vh;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.rx{color:var(--rx)}.tx{color:var(--tx)}.tag{display:inline-block;width:14px}.entry{display:block;padding:5px 0;border-bottom:1px solid #232c38}
 b{color:var(--fg)}
 </style></head><body><div class="wrap">
 <h1>RF log &amp; device identity</h1>
@@ -367,6 +367,7 @@ b{color:var(--fg)}
 <div class="card">
 <div class="small">This unit sends as <b id="usid">–</b> &nbsp; → &nbsp; fan <b id="fanid">–</b></div>
 <div id="seen" class="small" style="margin-top:8px"></div>
+<div id="observed" class="small" style="margin-top:8px">Waiting for decoded RF frames…</div>
 <div class="row" style="margin-top:10px">
 <div><label>This device ID (cc:serial)</label><input id="us" placeholder="29:012345" style="width:150px"></div>
 <div><label>Fan ID (cc:serial)</label><input id="fan" placeholder="32:178990" style="width:150px"></div>
@@ -390,18 +391,20 @@ Put that as <b>This device ID</b> and your fan as <b>Fan ID</b>, Apply, and the 
 <script>
 const $=s=>document.querySelector(s);
 let seenR='',seenF='';
-function st(){fetch('/api/state').then(r=>r.json()).then(s=>{
+function st(){fetch('/api/state',{cache:'no-store'}).then(r=>r.json()).then(s=>{
   $('#usid').textContent=s.us_id;$('#fanid').textContent=s.fan_id;
+  $('#observed').textContent='Decoded RX: '+s.rx_n+' · Last mode from RF: '+(s.mode||'unknown')+' (not verified fan speed)';
   if(!$('#us').value)$('#us').value=s.us_id;
   if(!$('#fan').value&&s.fan_id&&!s.fan_id.startsWith('63'))$('#fan').value=s.fan_id;
 })}
 function fmtAge(t,now){let a=Math.max(0,(now-t)/1000);return a<99?a.toFixed(0)+'s':(a/60).toFixed(0)+'m'}
-function load(){fetch('/api/log').then(r=>r.json()).then(j=>{
+function load(){fetch('/api/log',{cache:'no-store'}).then(r=>r.json()).then(j=>{
+  seenR=j.seen_remote||'';seenF=j.seen_fan||'';
   $('#seen').innerHTML='Detected: remote <b>'+(seenR||'-')+'</b>, fan <b>'+(seenF||'-')+'</b>';
-  const now=Math.max(...j.log.map(e=>e.t),0);
+  const now=j.uptime_ms||Math.max(...j.log.map(e=>e.t),0);
   $('#log').innerHTML=j.log.slice().reverse().map(e=>{
     const c=e.d==='R'?'rx':'tx';const r=e.d==='R'?(' '+e.r+'dBm'):'';
-    return '<span class="'+c+'"><span class="tag">'+(e.d==='R'?'←':'→')+'</span>'+
+    return '<span class="entry '+c+'"><span class="tag">'+(e.d==='R'?'←':'→')+'</span>'+
            fmtAge(e.t,now).padStart(4)+r.padStart(7)+'  '+e.s+'</span>';
   }).join('\n')||'(nothing yet)';
 })}
