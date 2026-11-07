@@ -36,6 +36,11 @@ jobs:
 
           assert "g_radio.transmit(" not in tx_body, "SX1276 TX path is active"
           assert "return false;" in tx_body, "SX1276 sendFrame is not blocked"
+          sx_body = sx[1].split("#endif // RADIO_SX1276", 1)[0]
+          for bad in ("g_radio.transmit", "startTransmit", "transmitDirect", "RADIOLIB_SX127X_TX"):
+              assert bad not in sx_body, f"SX1276 backend references {bad}"
+          # RadioLib FSK getRSSI() with default args = startReceive()+standby(): kills direct RX
+          assert "getRSSI()" not in sx_body, "SX1276 backend calls getRSSI() without skipReceive"
           assert not any(line.strip().startswith("orcon::tick(")
                          for line in main.splitlines()), "Periodic TX remains active"
           assert "[env:heltec_v2_sx1276]\n" in config
@@ -50,6 +55,10 @@ jobs:
           /tmp/orcon-test-codec
           g++ -std=c++17 -I src test/test_frames.cpp src/ramses_codec.cpp src/orcon_frames.cpp -o /tmp/orcon-test-frames
           /tmp/orcon-test-frames
+          g++ -std=c++17 -I src test/test_rx.cpp src/ramses_codec.cpp -o /tmp/orcon-test-rx
+          /tmp/orcon-test-rx
+          g++ -std=c++17 -I src -I test/shim test/test_log.cpp src/ramses_codec.cpp src/orcon_frames.cpp src/orcon_log.cpp -o /tmp/orcon-test-log
+          /tmp/orcon-test-log
 
       - name: Install pinned PlatformIO
         shell: bash
@@ -60,6 +69,8 @@ jobs:
 
       - name: Build for Heltec WiFi LoRa 32 V2
         shell: bash
+        env:
+          PLATFORMIO_BUILD_FLAGS: '-DFW_VERSION=\"${{ github.sha }}\"'
         run: .venv/bin/pio run -e heltec_v2_sx1276
 
       - name: Package flash images
@@ -70,6 +81,18 @@ jobs:
           cp .pio/build/heltec_v2_sx1276/partitions.bin dist/partitions.bin
           cp .pio/build/heltec_v2_sx1276/bootloader.bin dist/bootloader.bin
           cp "$HOME/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin" dist/boot_app0.bin
+
+          # The image must carry this commit and the RX-only guard string.
+          grep -q -a "$GITHUB_SHA" dist/firmware.bin
+          grep -q -a "TX blocked: RX-only firmware" dist/firmware.bin
+          {
+            echo "commit=$GITHUB_SHA"
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "env=heltec_v2_sx1276"
+            echo "chip=esp32"
+            .venv/bin/pio pkg list -e heltec_v2_sx1276 2>/dev/null | grep -E 'RadioLib|framework-arduinoespressif32|espressif32' || true
+          } > dist/BUILD_INFO.txt
+          cat dist/BUILD_INFO.txt
 
           .venv/bin/python "$HOME/.platformio/packages/tool-esptoolpy/esptool.py" \
             --chip esp32 merge_bin -o dist/heltec-v2-rx-only-merged.bin \
