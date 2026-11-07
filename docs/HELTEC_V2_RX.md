@@ -221,3 +221,18 @@ een optie voor zwakke signalen (< −80 dBm), maar alleen als dat ooit nodig bli
 - wijzigingen aan de productietopics.
 
 Niet te verifiëren zonder extra meetapparatuur: dat er werkelijk geen 868 MHz-energie wordt uitgezonden. Daarvoor is een SDR of spectrumanalyzer nodig. Het bewijs is nu broncode, CI-guards en het ontbreken van TX-paden in het image.
+
+## Impact op de TX-builds (V3/CC1101, V3/SX1262, 4848)
+
+Compileren elk in CI (`build-other-envs`), getest op host met `RX_ONLY=0` (`test_orcon`). Niet op hardware getest.
+
+| Wijziging | Effect op V3 |
+|---|---|
+| `tx()` telt/logt alleen echt verzonden frames | gelijk, want CC1101-`send` slaagt altijd bij een geldig frame |
+| ACK-venster | ongewijzigd: alleen na een verzonden commando (mode, connect, raw, status) |
+| Unitstatus alleen van de gekoppelde unit | **gedragswijziging bij een gekoppelde fan.** Buren en losse sensoren (1298, 31E0, 12A0 van andere afzenders) zetten geen status meer. Zonder gekoppelde fan blijft de oude class-32-herkenning. |
+| 22F1 van een afstandsbediening | **gedragswijziging**: niet meer direct `mode`. `mode` volgt de 31D9 van de unit; de opdracht staat in `remote_cmd` |
+| `online` | volgt nu de unit, niet meer willekeurig RF-verkeer |
+| Parser met exacte lengte, `toJson`-grens, JSON-buffer van 3 KB | gelijk voor geldige frames; robuuster |
+| MQTT | ongewijzigd: `orcon15rf`, uniq_id `orcon_…`, select-entiteiten blijven |
+| Libs vastgepind | RadioLib 7.8.1, PubSubClient 2.8.0, ArduinoJson 7.4.3, U8g2 2.36.18 (wat `^` nu ook gaf). Het platform van de V3-envs blijft zwevend (`espressif32`). |

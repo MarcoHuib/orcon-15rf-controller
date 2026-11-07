@@ -131,6 +131,12 @@ static void v3TxStillWorks() {
           "pairing learns the HRC400 (class 32) and marks IDs for NVS");
     int n = g_sends; orcon::setBypass(0xC8); uint8_t raw[] = {0x01}; orcon::sendRaw(1, 0x31DA, raw, 1);
     CHECK(g_sends == n + 2, "bypass and raw frames are transmitted");
+    // ACK window: started by commands only, as before (not by periodic sensor sends)
+    g_ms += 60000; uint32_t before = orcon::state().lastCmdMs;
+    orcon::sendDemand(40); orcon::sendCo2(700);
+    CHECK(orcon::state().lastCmdMs == before, "periodic 31E0/1298 sends do not open the ACK window");
+    orcon::requestStatus();
+    CHECK(orcon::state().lastCmdMs == g_ms, "a command (RQ 31DA) opens the ACK window");
 }
 
 int main() {

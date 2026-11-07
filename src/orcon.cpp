@@ -75,19 +75,24 @@ static void fmtFrame(const ramses::Frame& f, char* out, size_t cap) {
     snprintf(out, cap, "%s %04X %03u %s", typeStr(f.type), f.cmd, f.len, hex);
 }
 
-// Only a frame the radio actually sent is logged/counted, and only then does the
-// ACK window (lastCmdMs) start. A refused/blocked TX leaves no trace but txRefused.
+// Only a frame the radio actually sent is logged/counted. A refused/blocked TX
+// leaves no trace but txRefused. Commands (not periodic sends) start the ACK
+// window (lastCmdMs), and only once actually sent.
 static bool tx(const ramses::Frame& f) {
     if (RX_ONLY || !radio::sendFrame(f)) { g_state.txRefused++; return false; }
     rlog::add('T', f, 0);
     g_state.txCount++;
-    g_state.lastCmdMs = millis();
     fmtFrame(f, g_state.lastTx, sizeof(g_state.lastTx));
+    return true;
+}
+static bool txCmd(const ramses::Frame& f) {
+    if (!tx(f)) return false;
+    g_state.lastCmdMs = millis();
     return true;
 }
 
 static bool sendMode(Mode m) {
-    bool ok = tx(make22F1(g_ids, m));
+    bool ok = txCmd(make22F1(g_ids, m));
     if (ok) g_state.cmdMode = m;
     return ok;
 }
@@ -143,7 +148,7 @@ void setSelftest(bool on) {
 // RP 0001, our transmit is confirmed working.
 void sendConnect() {
     RX_ONLY_REFUSE();
-    tx(makeRequest(g_ids, 0x0001));
+    txCmd(makeRequest(g_ids, 0x0001));
 }
 
 // Arbitrary frame us -> fan (2-address). type: 0=I 1=RQ 2=RP 3=W.
@@ -158,7 +163,7 @@ void sendRaw(uint8_t type, uint16_t code, const uint8_t* pl, uint8_t len) {
     if (len > ramses::MAX_PAYLOAD) len = ramses::MAX_PAYLOAD;
     f.len = len;
     for (uint8_t i = 0; i < len; i++) f.payload[i] = pl[i];
-    tx(f);
+    txCmd(f);
 }
 
 bool sendDemand(uint8_t percent) {
@@ -168,7 +173,7 @@ bool sendDemand(uint8_t percent) {
 }
 bool sendCo2(uint16_t ppm)  { RX_ONLY_REFUSE(false); g_state.co2 = ppm; return tx(make1298(g_ids, ppm)); }
 bool sendDeviceInfo()       { RX_ONLY_REFUSE(false); return tx(make10E0(g_ids)); }
-bool requestStatus()        { RX_ONLY_REFUSE(false); return tx(makeRequest(g_ids, 0x31DA)); }
+bool requestStatus()        { RX_ONLY_REFUSE(false); return txCmd(makeRequest(g_ids, 0x31DA)); }
 bool requestFilter()        { RX_ONLY_REFUSE(false); return tx(makeRequest(g_ids, 0x10D0)); }   // ask the fan for filter status
 bool setBypass(uint8_t val) { RX_ONLY_REFUSE(false); return tx(make22F7(g_ids, val)); }
 bool setFanSpeed(uint8_t p, uint8_t pct) { RX_ONLY_REFUSE(false); return tx(makeFanSpeed(g_ids, p, pct)); }

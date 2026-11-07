@@ -428,7 +428,7 @@ $('#apply').onclick=()=>{
   const body={us_class:u[0],us_serial:u[1]};
   if(f){body.fan_class=f[0];body.fan_serial=f[1];}
   fetch('/api/ids',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-   .then(r=>r.json()).then(()=>{$('#idmsg').textContent='Saved. Now controlling as '+$('#us').value+'.';st();});
+   .then(r=>r.json().then(j=>{$('#idmsg').textContent=r.ok?'Saved. Now controlling as '+$('#us').value+'.':'Not saved: '+(j.err||r.status);st();}));
 };
 st();load();setInterval(()=>{if($('#auto').checked)load();},1500);setInterval(st,4000);
 </script></body></html>)LOG";
