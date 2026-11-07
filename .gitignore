@@ -30,3 +30,26 @@ docs/img/_q_*
 
 # Flash tooling cache (tools/heltec_v2.sh)
 .flashtools/
+
+# Raw hardware data, measurements, backups and credentials: keep local, never commit.
+# Test fixtures must be synthetic (tools/check_privacy.py enforces this in CI).
+*.log
+!test/fixtures/**/synthetic-*.log
+*.jsonl
+*.pcap
+*.pcapng
+*.cu8
+*.cs16
+*.iq
+*.sigmf-*
+logs/
+captures/
+measurements/
+backups/
+_backups/
+*.bundle
+*.nvs
+*.mac
+.env
+.env.*
+*credentials*

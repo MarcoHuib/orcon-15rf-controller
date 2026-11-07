@@ -18,6 +18,16 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Privacy check (public repo, no real device IDs, MACs, LAN IPs or recordings)
+        shell: bash
+        run: |
+          python3 tools/check_privacy.py
+          # assembled at run time so this workflow itself contains no such values
+          printf 'id 29:%s\nmac 3c:%s\nip 192.168.%s\n' 123456 aa:bb:cc:dd:ee 50.7 > /tmp/privacy-negative.txt
+          if python3 tools/check_privacy.py /tmp/privacy-negative.txt; then
+            echo "check_privacy.py accepted real-looking data"; exit 1
+          fi
+
       - name: Verify listen-only safety guards
         shell: bash
         run: |

@@ -2,6 +2,20 @@
 
 Branch `feature/heltec-v2-rx-only`.
 
+## Privacy en geschiedenis
+
+Deze repository is publiek.
+
+- **ID's:** de apparaat-ID's in dit document, de tests en de fixtures zijn **gepseudonimiseerd**: de eigen unit, de afstandsbediening en de buurunits hebben fictieve ID's van de vorm `NN:000NNN`. Echte ID's, MAC-adressen, LAN-adressen, seriële opnames en NVS-back-ups blijven lokaal.
+- **Afdwinging:** `.gitignore` sluit dit soort bestanden uit, en `tools/check_privacy.py` (in CI) weigert ze.
+
+De geschiedenis van deze branch is op 2026-11-07 herschreven om die gegevens te verwijderen.
+De koppeling tussen oude en nieuwe commit-ID's wordt uitsluitend lokaal, buiten Git bewaard.
+Oude CI-runs met aangetroffen hardwaregegevens en de bijbehorende artifacts zijn verwijderd;
+gebruik voor builds uitsluitend de schone CI-runs op deze branch. Oude commits die niet
+meer via branches bereikbaar zijn, kunnen op GitHub mogelijk nog via hun SHA worden
+opgevraagd. Dat blijft voorlopig een privacyrisico.
+
 ## RX-only: wat afgedwongen wordt (`RX_ONLY`, `config.h`)
 
 `RX_ONLY` staat automatisch aan voor `RADIO_SX1276`. Een SX1276-build zonder die vlag
@@ -54,10 +68,10 @@ resets 0. De fysieke afstandsbediening stuurt de unit wel betrouwbaar.
 
 | # | Oorzaak | Status |
 |---|---------|--------|
-| H0 | `g_radio.getRSSI()` (RadioLib 7.8.1, FSK, standaardargumenten) doet `startReceive()` + `standby()`. Na het **eerste** gedecodeerde frame stond de SX1276 in standby: geen RX meer tot een reboot. Verklaart "decoded 0 → 1". | Bewezen in de RadioLib-bron (`SX127x::getRSSICommon`). Gefixt in f0b15f1 (`getRSSI(false, true)`). Hardware: `op` moet in elke `[rxstat]` `x5` blijven. |
+| H0 | `g_radio.getRSSI()` (RadioLib 7.8.1, FSK, standaardargumenten) doet `startReceive()` + `standby()`. Na het **eerste** gedecodeerde frame stond de SX1276 in standby: geen RX meer tot een reboot. Verklaart "decoded 0 → 1". | Bewezen in de RadioLib-bron (`SX127x::getRSSICommon`). Gefixt met `getRSSI(false, true)`. Hardware: `op` moet in elke `[rxstat]` `x5` blijven. |
 | H1 | De UART lockt op de alternerende 0x55-preambule op een willekeurige even bitfase. In 4 van 5 fases gaat de `0xFF` van `FF 00 33 55 53` verloren (het byte vóór `00` wordt `55/D5/F5/FD`). De decoder eiste alle 5 bytes. | Bewezen met test (`test_rx`, bit-level UART-model): oud 109/400, nieuw 400/400. Hardware: verhouding `sync5/sync4` ≈ 0,2–0,3 verwacht. |
 | H2 | Na een verminkt frame sprong de decoder naar de eerstvolgende `0x35` in de buffer. Daardoor ging het frame daarna verloren (bijv. de 31D9 van de unit na een 22F1). | Bewezen met test: oud 2/3, nieuw 3/3 frames. |
-| H3 | De rol van een apparaat werd uit de class afgeleid (fan = 32). Bij de MVS-15RHBP zijn unit én afstandsbediening class 29. | Bewezen met test op de echte frames. Gefixt in b259e89. |
+| H3 | De rol van een apparaat werd uit de class afgeleid (fan = 32). Bij de MVS-15RHBP zijn unit én afstandsbediening class 29. | Bewezen met gepseudonimiseerde regressietests; de rolherkenning is aangepast. |
 | H4 | `RF_RXBW_KHZ = 250` op SX1276 is **single-sideband** (500 kHz totaal). Nodig is ≈ fdev + BR/2 = 70 kHz SSB plus kristalafwijking. evofw3/CC1101 gebruikt 270 kHz totaal (≈ 135 SSB). Ongeveer 3 dB extra ruis. | Hypothese, **niet gewijzigd**. Pas meten na H0–H2. |
 | H5 | `directMode()` zet RxTrigger = none. De LNA-gain blijft daardoor statisch; sterke signalen van dichtbij kunnen de ontvanger verzadigen. | Hypothese, niet gewijzigd. `lna` en `rssi` worden gelogd. |
 
@@ -92,7 +106,7 @@ Gecontroleerd en in orde:
   - `consistent`;
   - `difference explained by N unreliable line(s)`;
   - `MISMATCH`.
-- `tools/rxmon.py --file <log>` analyseert een opgeslagen log achteraf. De regressietests gebruiken echte logs uit `test/fixtures/rxmon/`.
+- `tools/rxmon.py --file <log>` analyseert een opgeslagen log achteraf. De regressietests gebruiken synthetische logs uit `test/fixtures/rxmon/`.
 - Per sync: `[sync <N> <ms> <dBm> pre=XX]`, met XX = het byte vóór `00` (FF = uitgelijnd; 55/D5/F5/FD = verschoven UART-fase). Elk frame: `[rx <N> <ms> <dBm>] …`, met hetzelfde syncnummer N. Een sync zonder `[rx]` met dat nummer is een verminkt frame. `tools/rxmon.py` koppelt ze exact.
 - `op`: RegOpMode, laagste 3 bits `5` = RX. `lna`: bits 7-5 = gebruikte LNA-gain.
 - Per frame: `[rx <ms> <dBm>] I --- 29:… 22F1 003 …`.
@@ -139,19 +153,19 @@ Voorwaarde: geen ander programma (Opera/esptool-js, serial monitor) houdt
 6. **Volgende iteratie, alleen als stap 5 tekortschiet. Eén parameter per build:**
    - a. `RF_RXBW_KHZ` 250 → 125 (SSB). Herhaal stap 3–5 en vergelijk `frames/sync4`, de RSSI van verminkte syncs en het aantal drukken.
    - b. Alleen bij sterke signalen met fouten (`rssi` > −50 dBm): LNA/AGC-experiment.
-7. **Terugrollen naar d82ffa3:** het artifact bestaat tot 2026-11-21 en heeft geen commit-stempel. Gebruik de partitiecontrole en
-   `esptool --chip esp32 write_flash 0x1000 bootloader.bin 0x8000 partitions.bin 0xe000 boot_app0.bin 0x10000 firmware.bin`
-   uit `.flashtools/fw/d82ffa3…/`.
+7. **Oude builds:** publieke CI-artifacts met hardwaregegevens zijn ingetrokken voor de privacy-cleanup.
+   Lokale oude images zijn uitsluitend voor archivering; gebruik voor een volgende build
+   een schone commit waarvan alle CI-jobs groen zijn.
 
 ## Meetresultaten
 
-### Meting 1: firmware 1379f6b, 2026-11-07 17:45–17:55, 600 s via USB
+### Meting 1: firmware RX-diagnosebuild, 2026-11-07 17:45–17:55, 600 s via USB
 
 Flash: precheck OK (ESP32-D0WDQ6 rev 1.0, 8 MB, partitietabel identiek), 4×
 "Hash of data verified", NVS niet gewist. De oude firmware draaide zonder
 WiFi-config (SoftAP), dus er is alleen via USB gemeten.
 
-| Meting | d82ffa3 (jouw meting) | 1379f6b |
+| Meting | d82ffa3 (jouw meting) | RX-diagnosebuild |
 |---|---|---|
 | RX actief na het eerste frame | nee (standby) | ja, `op=0D` gedurende 600 s |
 | sync5 (oude decoder) / sync4 | 1 / – | **0 / 6** |
@@ -167,12 +181,12 @@ WiFi-config (SoftAP), dus er is alleen via USB gemeten.
   - Het openen van de poort resette het bord (DTR/RTS-volgorde). Gefixt in `rxmon.py`.
   - `ferr` werkt niet: de ESP32-driver zet de frame-error-interrupt niet aan. De teller is verwijderd.
 
-### Meting 2: firmware 7812177 (RX-logica gelijk aan 1379f6b + `[sync]`-diagnose), 18:21–18:33, 720 s
+### Meting 2: firmware sync-diagnosebuild (RX-logica gelijk aan RX-diagnosebuild + `[sync]`-diagnose), 18:21–18:33, 720 s
 
 Zelfde precheck en flash als meting 1. Twee drukrondes (normale plek en ±1 m). De
 monitor opende de poort zonder reset, zoals bedoeld.
 
-| Meting | d82ffa3 | 1379f6b (meting 1) | 7812177 (meting 2) |
+| Meting | d82ffa3 | RX-diagnosebuild (meting 1) | sync-diagnosebuild (meting 2) |
 |---|---|---|---|
 | RX na het eerste frame | nee | ja | ja, `op=0D` gedurende 710 s |
 | syncs → frames | 1 → 1, daarna doof | 6–7 → 3 | **62 → 59** (95%) |
