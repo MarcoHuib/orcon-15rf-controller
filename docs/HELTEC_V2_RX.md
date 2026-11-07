@@ -82,7 +82,17 @@ Gecontroleerd en in orde:
 - `sync5`: exacte `FF 00 33 55 53` (de oude decoder). `sync4`: `00 33 55 53` (de nieuwe).
 - `frames`: frames die Manchester + checksum doorstaan.
 - `ovf`: UART-overflows (verloren bytes).
-- `tools/rxmon.py` koppelt per **boot**: syncnummers en tellers beginnen bij elke herstart opnieuw. `tools/rxmon.py --file <log>` analyseert een opgeslagen log achteraf.
+- `tools/rxmon.py` koppelt per **boot**, want syncnummers en tellers beginnen bij elke herstart opnieuw. Een boot begint bij:
+  - een ROM-reset (`ets …`/`rst:0x…`), of
+  - de firmware-banner. Direct na een ROM-reset hoort die bij dezelfde boot.
+  - Ontbreken beide, dan geldt het terugvallen van de `t=`-teller, en zo'n boot wordt als "inferred" gemarkeerd.
+  - Lege regels en overige ROM-uitvoer openen geen boot.
+- **Alleen regels die exact aan het formaat voldoen, tellen mee.** Bij een `[rx]`-regel moet de payload-lengte ook kloppen. Andere regels die op RX-data lijken, worden als **UNRELIABLE** getoond en niet gebruikt; er wordt niets gereconstrueerd.
+- **Per boot vergelijkt `rxmon` de log met de firmwaretellers** (`sync4`, `frames`). Dat geeft één van drie uitkomsten:
+  - `consistent`;
+  - `difference explained by N unreliable line(s)`;
+  - `MISMATCH`.
+- `tools/rxmon.py --file <log>` analyseert een opgeslagen log achteraf. De regressietests gebruiken echte logs uit `test/fixtures/rxmon/`.
 - Per sync: `[sync <N> <ms> <dBm> pre=XX]`, met XX = het byte vóór `00` (FF = uitgelijnd; 55/D5/F5/FD = verschoven UART-fase). Elk frame: `[rx <N> <ms> <dBm>] …`, met hetzelfde syncnummer N. Een sync zonder `[rx]` met dat nummer is een verminkt frame. `tools/rxmon.py` koppelt ze exact.
 - `op`: RegOpMode, laagste 3 bits `5` = RX. `lna`: bits 7-5 = gebruikte LNA-gain.
 - Per frame: `[rx <ms> <dBm>] I --- 29:… 22F1 003 …`.
