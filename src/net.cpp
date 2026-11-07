@@ -166,6 +166,14 @@ static void buildStateJson(char* out, size_t cap) {
     d["rx_n"]      = s.rxCount;
     d["tx_n"]      = s.txCount;
     d["uptime_ms"] = millis();  // device monotonic time for RF-log age display
+    const radio::RxDiagnostics rf = radio::rxDiagnostics();
+    d["rf_uart_bytes"] = rf.uartBytes;
+    d["rf_sync_hits"] = rf.syncHits;
+    d["rf_buffer_resets"] = rf.bufferResets;
+    d["rf_buffered_bytes"] = rf.bufferedBytes;
+    d["rf_pending_bytes"] = rf.pendingBytes;
+    d["rf_last_uart_age_ms"] = rf.lastUartMs ? (int32_t)(millis() - rf.lastUartMs) : -1;
+    d["rf_last_sync_age_ms"] = rf.lastSyncMs ? (int32_t)(millis() - rf.lastSyncMs) : -1;
     d["raw31da"]   = s.raw31DA;
     d["raw31da_age"] = s.raw31DAms ? (int)((millis() - s.raw31DAms) / 1000) : -1;
     d["last_rx"]   = s.lastRx;
@@ -295,7 +303,7 @@ static void handleUpdateDone() {
 }
 
 static void handleState() {
-    char buf[1400]; buildStateJson(buf, sizeof(buf));
+    char buf[2048]; buildStateJson(buf, sizeof(buf));
     server.send(200, "application/json", buf);
 }
 static void handleNetCfg() {   // current WiFi SSID + MQTT host, to prefill the setup page

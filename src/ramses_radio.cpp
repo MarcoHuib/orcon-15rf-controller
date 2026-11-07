@@ -197,6 +197,12 @@ static SX1276 g_radio = new Module(PIN_SX_NSS, PIN_SX_DIO0, PIN_SX_RST, PIN_SX_D
 static HardwareSerial rxUart(1);     // reads the demodulated data off DIO2
 static uint8_t  g_rxbuf[320];
 static size_t   g_rxlen = 0;
+static uint32_t g_uartBytes = 0;   // demodulated UART bytes, including RF noise
+static uint32_t g_syncHits = 0;    // exact RAMSES 5-byte sync markers in UART stream
+static uint32_t g_lastUartMs = 0;
+static uint32_t g_lastSyncMs = 0;
+static uint32_t g_bufferResets = 0;
+static uint8_t  g_syncProgress = 0;
 
 const char* name() { return "SX1276 direct RX + packet TX"; }
 
@@ -231,8 +237,23 @@ bool sendFrame(const ramses::Frame& f) {
 }
 
 bool poll(ramses::Frame& out) {
-    while (rxUart.available() && g_rxlen < sizeof(g_rxbuf))
-        g_rxbuf[g_rxlen++] = (uint8_t)rxUart.read();
+    const uint32_t now = millis();
+    while (rxUart.available() && g_rxlen < sizeof(g_rxbuf)) {
+        const uint8_t b = (uint8_t)rxUart.read();
+        g_rxbuf[g_rxlen++] = b;
+        ++g_uartBytes;
+        g_lastUartMs = now;
+        if (b == ramses::SYNC[g_syncProgress]) {
+            ++g_syncProgress;
+            if (g_syncProgress == 5) {
+                ++g_syncHits;
+                g_lastSyncMs = now;
+                g_syncProgress = 0;
+            }
+        } else {
+            g_syncProgress = (b == ramses::SYNC[0]) ? 1 : 0;
+        }
+    }
     if (g_rxlen < 8) return false;
     size_t consumed = 0;
     bool ok = ramses::extractWireFrame(g_rxbuf, g_rxlen, &consumed, out);
@@ -241,12 +262,27 @@ bool poll(ramses::Frame& out) {
         memmove(g_rxbuf, g_rxbuf + consumed, g_rxlen - consumed);
         g_rxlen -= consumed;
     } else if (g_rxlen >= sizeof(g_rxbuf)) {
+        ++g_bufferResets;
         g_rxlen = 0;                          // overflow guard
     }
     return ok;
 }
 
 #endif // RADIO_SX1276
+
+RxDiagnostics rxDiagnostics() {
+    RxDiagnostics stats;
+#if defined(RADIO_SX1276)
+    stats.uartBytes = g_uartBytes;
+    stats.syncHits = g_syncHits;
+    stats.lastUartMs = g_lastUartMs;
+    stats.lastSyncMs = g_lastSyncMs;
+    stats.bufferResets = g_bufferResets;
+    stats.bufferedBytes = (uint16_t)g_rxlen;
+    stats.pendingBytes = (uint16_t)rxUart.available();
+#endif
+    return stats;
+}
 
 float lastRssi() { return g_rssi; }
 

@@ -368,6 +368,7 @@ b{color:var(--fg)}
 <div class="small">This unit sends as <b id="usid">–</b> &nbsp; → &nbsp; fan <b id="fanid">–</b></div>
 <div id="seen" class="small" style="margin-top:8px"></div>
 <div id="observed" class="small" style="margin-top:8px">Waiting for decoded RF frames…</div>
+<div id="rfdiag" class="small" style="margin-top:8px">Waiting for raw radio diagnostics…</div>
 <div class="row" style="margin-top:10px">
 <div><label>This device ID (cc:serial)</label><input id="us" placeholder="29:012345" style="width:150px"></div>
 <div><label>Fan ID (cc:serial)</label><input id="fan" placeholder="32:178990" style="width:150px"></div>
@@ -394,6 +395,13 @@ let seenR='',seenF='';
 function st(){fetch('/api/state',{cache:'no-store'}).then(r=>r.json()).then(s=>{
   $('#usid').textContent=s.us_id;$('#fanid').textContent=s.fan_id;
   $('#observed').textContent='Decoded RX: '+s.rx_n+' · Last mode from RF: '+(s.mode||'unknown')+' (not verified fan speed)';
+  const age=ms=>ms==null||ms<0?'never':Math.round(ms/1000)+'s ago';
+  $('#rfdiag').textContent='Raw UART bytes: '+(s.rf_uart_bytes??'-')+
+    ' · Sync markers: '+(s.rf_sync_hits??'-')+
+    ' · Last raw data: '+age(s.rf_last_uart_age_ms)+
+    ' · Last sync: '+age(s.rf_last_sync_age_ms)+
+    ' · Buffer resets: '+(s.rf_buffer_resets??'-')+
+    ' · Pending bytes: '+(s.rf_pending_bytes??'-');
   if(!$('#us').value)$('#us').value=s.us_id;
   if(!$('#fan').value&&s.fan_id&&!s.fan_id.startsWith('63'))$('#fan').value=s.fan_id;
 })}

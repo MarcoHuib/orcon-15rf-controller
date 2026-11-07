@@ -28,6 +28,19 @@ void startReceive();
 // checksum-clean RAMSES frame has been decoded since the last call.
 bool poll(ramses::Frame& out);
 
+// SX1276 direct-mode diagnostics. UART bytes / sync markers are NOT verified RF
+// packets; these counters separate demodulator activity from codec acceptance.
+struct RxDiagnostics {
+    uint32_t uartBytes = 0;
+    uint32_t syncHits = 0;
+    uint32_t lastUartMs = 0;
+    uint32_t lastSyncMs = 0;
+    uint32_t bufferResets = 0;
+    uint16_t bufferedBytes = 0;
+    uint16_t pendingBytes = 0;
+};
+RxDiagnostics rxDiagnostics();
+
 // Last measured RSSI (dBm) of a received packet, for diagnostics.
 float lastRssi();
 
