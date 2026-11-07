@@ -69,7 +69,7 @@ void loop() {
     while (radio::poll(f)) {
         if (orcon::onFrame(f)) net::notifyStateChanged();
 #if DEBUG_RX_HEX && defined(RADIO_SX1276)
-        char s[96]; rlog::format(f, s, sizeof(s));
+        char s[200]; rlog::format(f, s, sizeof(s));   // full payload (31DA is 30 bytes)
         Serial.printf("[rx %lu %ddBm] %s\n", (unsigned long)millis(), (int)radio::lastRssi(), s);
 #endif
     }
@@ -80,10 +80,9 @@ void loop() {
     if (millis() - lastStat >= 10000) {
         lastStat = millis();
         const radio::RxDiagnostics d = radio::rxDiagnostics();
-        Serial.printf("[rxstat] t=%lu uart=%lu ferr=%lu ovf=%lu sync5=%lu sync4=%lu frames=%lu "
+        Serial.printf("[rxstat] t=%lu uart=%lu ovf=%lu sync5=%lu sync4=%lu frames=%lu "
                       "resets=%lu pend=%u op=%02X lna=%02X rxcfg=%02X rxbw=%02X rssi=%d heap=%lu\n",
-                      (unsigned long)millis(), (unsigned long)d.uartBytes, (unsigned long)d.uartFrameErrs,
-                      (unsigned long)d.uartOverflows, (unsigned long)d.syncHits, (unsigned long)d.coreSyncHits,
+                      (unsigned long)millis(), (unsigned long)d.uartBytes, (unsigned long)d.uartOverflows, (unsigned long)d.syncHits, (unsigned long)d.coreSyncHits,
                       (unsigned long)d.frames, (unsigned long)d.bufferResets, d.pendingBytes, d.opMode,
                       d.lna, d.rxConfig, d.rxBw, d.rssiNow, (unsigned long)ESP.getFreeHeap());
     }

@@ -206,10 +206,9 @@ static uint32_t g_lastUartMs = 0;
 static uint32_t g_lastSyncMs = 0;
 static uint32_t g_bufferResets = 0;
 static uint8_t  g_syncProgress = 0;
-static bool     g_syncAfterFF = false;
+static uint8_t  g_preSync = 0;     // byte before 00: FF if aligned, else 55/D5/F5/FD (UART phase)
 static uint8_t  g_prevByte = 0;
 static volatile uint32_t g_uartOverflows = 0;   // HW FIFO / ring buffer full: bytes LOST
-static volatile uint32_t g_uartFrameErrs = 0;   // stop bit 0: noise or misaligned UART
 
 const char* name() { return "SX1276 direct RX (TX disabled)"; }
 
@@ -236,7 +235,6 @@ bool begin() {
     rxUart.begin(38400, SERIAL_8N1, PIN_SX_DIO2 /*rx*/, -1 /*tx unused*/);
     rxUart.onReceiveError([](hardwareSerial_error_t e) {   // runs in the UART event task
         if (e == UART_FIFO_OVF_ERROR || e == UART_BUFFER_FULL_ERROR) g_uartOverflows = g_uartOverflows + 1;
-        else if (e == UART_FRAME_ERROR) g_uartFrameErrs = g_uartFrameErrs + 1;
     });
     return ok;
 }
@@ -256,19 +254,23 @@ bool poll(ramses::Frame& out) {
         g_lastUartMs = now;
         // Track the core sync 00 33 55 53 and whether FF preceded it.
         if (b == ramses::SYNC[1 + g_syncProgress]) {
-            if (g_syncProgress == 0) g_syncAfterFF = (g_prevByte == ramses::SYNC[0]);
+            if (g_syncProgress == 0) g_preSync = g_prevByte;
             if (++g_syncProgress == 4) {
                 ++g_coreSyncHits;
-                if (g_syncAfterFF) ++g_syncHits;
+                if (g_preSync == ramses::SYNC[0]) ++g_syncHits;
                 g_lastSyncMs = now;
                 g_syncProgress = 0;
                 // Sample here, closest to the frame. skipReceive=true is required: with
                 // default args RadioLib does startReceive()+standby() in FSK = RX dead.
                 g_rssi = g_radio.getRSSI(false, true);
+#if DEBUG_RX_HEX
+                // one line per sync: unmatched by an [rx] line = garbled frame, with its RSSI
+                Serial.printf("[sync %lu %ddBm pre=%02X]\n", (unsigned long)now, (int)g_rssi, g_preSync);
+#endif
             }
         } else if (b == ramses::SYNC[1]) {
             g_syncProgress = 1;
-            g_syncAfterFF = (g_prevByte == ramses::SYNC[0]);
+            g_preSync = g_prevByte;
         } else {
             g_syncProgress = 0;
         }
@@ -298,7 +300,6 @@ RxDiagnostics rxDiagnostics() {
     stats.coreSyncHits = g_coreSyncHits;
     stats.frames = g_frames;
     stats.uartOverflows = g_uartOverflows;
-    stats.uartFrameErrs = g_uartFrameErrs;
     stats.opMode = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_OP_MODE);
     stats.lna = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_LNA);
     stats.rxConfig = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_RX_CONFIG);

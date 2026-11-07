@@ -36,7 +36,6 @@ struct RxDiagnostics {
     uint32_t coreSyncHits = 0;   // 00 33 55 53 (what the decoder now accepts)
     uint32_t frames = 0;         // decoded, checksum-clean frames
     uint32_t uartOverflows = 0;  // UART FIFO/ring-buffer overflows (bytes lost)
-    uint32_t uartFrameErrs = 0;  // UART framing errors (noise indicator)
     uint8_t  opMode = 0;         // SX1276 RegOpMode; low 3 bits 5 = RX
     uint8_t  lna = 0;            // RegLna: bits 7-5 = LNA gain in use (1 = max)
     uint8_t  rxConfig = 0;       // RegRxConfig: bit3 AgcAutoOn, bits 2-0 RxTrigger
