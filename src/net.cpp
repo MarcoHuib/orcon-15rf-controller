@@ -324,7 +324,8 @@ static void handleLog() {
     if (s.haveRemote) idStr(s.remote, rem, sizeof(rem));
     if (s.haveFan)    idStr(s.fan,    fan, sizeof(fan));
     snprintf(buf + n, sizeof(buf) - n,
-             ",\"seen_remote\":\"%s\",\"seen_fan\":\"%s\"}", rem, fan);
+             ",\"seen_remote\":\"%s\",\"seen_fan\":\"%s\",\"uptime_ms\":%lu}",
+             rem, fan, (unsigned long)millis());
     server.send(200, "application/json", buf);
 }
 
