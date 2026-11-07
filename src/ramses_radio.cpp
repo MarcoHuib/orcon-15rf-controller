@@ -6,6 +6,11 @@
 #if defined(USE_CC1101_TX) || defined(RADIO_CC1101_ASYNC)
 #include "cc1101_tx.h"
 #endif
+#if defined(RADIO_SX1276)
+#include <HardwareSerial.h>
+#include <esp_task_wdt.h>
+#include "rx_stream.h"
+#endif
 
 namespace radio {
 
@@ -194,10 +199,6 @@ bool poll(ramses::Frame& out) {
 #if !RX_ONLY
 #error "SX1276 backend is receive-only: it must be built with RX_ONLY=1"
 #endif
-#include <HardwareSerial.h>
-#include <esp_task_wdt.h>
-#include "rx_stream.h"
-
 // One FreeRTOS task owns the SX1276 after begin(): it alone touches SPI and the RX
 // UART. The main loop (web/MQTT/WiFi, can block for seconds) only pops decoded
 // frames from a bounded queue, so network stalls cannot overflow the UART buffer.
