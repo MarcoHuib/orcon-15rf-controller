@@ -20,3 +20,4 @@ run log      -I src -I test/shim test/test_log.cpp src/ramses_codec.cpp src/orco
 run orcon_rx -DRX_ONLY=1 -I src -I test/shim test/test_orcon.cpp $ORCON
 run orcon_v3 -DRX_ONLY=0 -I src -I test/shim test/test_orcon.cpp $ORCON
 run rxpipe   -pthread -I src test/test_rxpipe.cpp src/rx_stream.cpp src/ramses_codec.cpp
+run netcfg   -I src test/test_netcfg.cpp

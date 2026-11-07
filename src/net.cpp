@@ -6,6 +6,7 @@
 #include "orcon_log.h"
 #include "ramses_radio.h"
 #include "rx_only.h"
+#include "net_cfg.h"
 #if defined(USE_CC1101_TX) || defined(RADIO_CC1101_ASYNC)
 #include "cc1101_tx.h"
 #endif
@@ -46,6 +47,8 @@ static uint32_t g_rebootAt  = 0;
 static char     g_ip[24]    = "0.0.0.0";
 
 static String   g_ssid, g_pass, g_mqttHost;
+// MQTT runs only with a broker configured: NVS "mqtt" = "" means off (net_cfg.h).
+static bool mqttOn() { return MQTT_ENABLED && g_mqttHost.length() > 0; }
 static bool     g_maskIds   = true;   // mask device IDs in the UI (privacy, default on)
 static bool     g_showFilter = true;  // show the filter row (some units never report it)
 
@@ -179,6 +182,8 @@ static size_t buildStateJson(char* out, size_t cap) {
     d["tx_n"]      = s.txCount;
     d["uptime_ms"] = millis();  // device monotonic time for RF-log age display
     d["rx_only"]   = (bool)RX_ONLY;   // receive-only firmware: commands are refused
+    d["mqtt_on"]   = mqttOn();
+    d["mqtt_connected"] = mqttOn() && mqtt.connected();
     d["fw"]        = FW_VERSION;
     d["tx_refused"] = s.txRefused;
     d["cmd_rejected"] = g_cmdRejected;
@@ -358,6 +363,7 @@ static void handleNetCfg() {   // current WiFi SSID + MQTT host, to prefill the 
     JsonDocument d;
     d["ssid"] = g_ssid;
     d["mqtt"] = g_mqttHost;
+    d["mqtt_on"] = mqttOn();
     char buf[192]; serializeJson(d, buf, sizeof(buf));
     server.send(200, "application/json", buf);
 }
@@ -437,10 +443,20 @@ static void handleWifiSave() {
     String ssid = d["ssid"] | "";
     String pass = d["pass"] | "";
     String mqtt = d["mqtt"] | "";
-    if (ssid.length() == 0 && pass.length() == 0 && mqtt.length() == 0) {
+    mqtt.trim();
+    const MqttSave act = mqttSaveAction(!d["mqtt_on"].isNull(), d["mqtt_on"].as<bool>(), mqtt.c_str());
+    if (act == MqttSave::Invalid) {
+        server.send(400, "application/json", "{\"err\":\"MQTT on needs a broker host or IPv4 (no scheme/port)\"}"); return;
+    }
+    if (ssid.length() == 0 && pass.length() == 0 && act == MqttSave::Keep) {
         server.send(400, "application/json", "{\"err\":\"nothing to save\"}"); return;
     }
-    saveWifi(ssid.c_str(), pass.c_str(), mqtt.c_str());
+    saveWifi(ssid.c_str(), pass.c_str(), "");     // Wi-Fi only; MQTT below
+    if (act != MqttSave::Keep) {
+        prefs.begin("orcon", false);
+        prefs.putString("mqtt", act == MqttSave::Off ? "" : mqtt.c_str());   // "" = explicitly off
+        prefs.end();
+    }
     server.send(200, "application/json", "{\"ok\":1}");
     g_rebootAt = millis() + 1200;
 }
@@ -564,7 +580,7 @@ static void publishDiscovery() {
 
 static void mqttReconnect() {
 #if MQTT_ENABLED
-    if (mqtt.connected() || g_apMode) return;
+    if (!mqttOn() || mqtt.connected() || g_apMode) return;
     // Back off when the broker is unreachable so a blocking connect() doesn't
     // repeatedly stall the loop and starve the radio RX. Grows 5s -> 5min.
     static uint32_t backoff = 5000;
@@ -670,7 +686,7 @@ void begin() {
     server.begin();
 
 #if MQTT_ENABLED
-    mqtt.setServer(g_mqttHost.c_str(), MQTT_PORT);
+    if (mqttOn()) mqtt.setServer(g_mqttHost.c_str(), MQTT_PORT);
     mqtt.setCallback(mqttCallback);
     mqtt.setBufferSize(3328);  // state JSON (<= 3072) + topic/header; also domoticz/out in
     mqtt.setSocketTimeout(2);     // cap a blocking connect() at 2s (don't starve RX)
@@ -687,7 +703,7 @@ bool        apMode()       { return g_apMode; }
 const char* mqttHost()     { return g_mqttHost.c_str(); }
 bool        mqttConnected() {
 #if MQTT_ENABLED
-    return mqtt.connected();
+    return mqttOn() && mqtt.connected();
 #else
     return false;
 #endif
@@ -696,7 +712,7 @@ bool        mqttConnected() {
 void publishState() {
     size_t n = buildStateJson(g_stateBuf, sizeof(g_stateBuf));
 #if MQTT_ENABLED
-    if (n && mqtt.connected()) mqtt.publish(MQTT_BASE_TOPIC "/state", g_stateBuf, true);
+    if (n && mqttOn() && mqtt.connected()) mqtt.publish(MQTT_BASE_TOPIC "/state", g_stateBuf, true);
 #endif
     oledDraw();
     g_dirty = false;
@@ -716,8 +732,7 @@ void loop() {
 #endif
     server.handleClient();
 #if MQTT_ENABLED
-    mqttReconnect();
-    mqtt.loop();
+    if (mqttOn()) { mqttReconnect(); mqtt.loop(); }
 #endif
     if (g_dirty || millis() - g_lastPub > 5000) publishState();
 }

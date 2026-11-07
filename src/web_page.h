@@ -309,8 +309,8 @@ button{cursor:pointer;margin-top:14px}button.go{background:var(--acc);border-col
 <label><input type="checkbox" id="show" style="width:auto;margin-right:6px">show password</label>
 </div>
 <div class="card">
-<label>MQTT broker host (optional)</label>
-<input id="mqtt" placeholder="e.g. 192.168.1.10  (blank = keep current)">
+<label><input type="checkbox" id="mqtton" style="width:auto;margin-right:6px">MQTT enabled</label>
+<input id="mqtt" placeholder="broker host or IP, e.g. 192.0.2.2 (required when enabled)">
 <div id="curcfg" class="small" style="margin-top:6px"></div>
 </div>
 <button class="go" id="save">Save &amp; reboot</button>
@@ -320,7 +320,7 @@ button{cursor:pointer;margin-top:14px}button.go{background:var(--acc);border-col
 <script>
 const $=s=>document.querySelector(s);
 $('#show').onchange=e=>$('#pass').type=e.target.checked?'text':'password';
-fetch('/api/netcfg').then(r=>r.json()).then(c=>{if(c.mqtt)$('#mqtt').value=c.mqtt;if($('#curcfg'))$('#curcfg').textContent='Current: WiFi “'+(c.ssid||'—')+'”, MQTT '+(c.mqtt||'not set');}).catch(()=>{});
+fetch('/api/netcfg').then(r=>r.json()).then(c=>{if(c.mqtt)$('#mqtt').value=c.mqtt;$('#mqtton').checked=!!c.mqtt_on;if($('#curcfg'))$('#curcfg').textContent='Current: WiFi “'+(c.ssid||'—')+'”, MQTT '+(c.mqtt_on?c.mqtt:'off');}).catch(()=>{});
 function scan(){
  $('#rescan').textContent='…';
  fetch('/api/scan').then(r=>r.json()).then(list=>{
@@ -334,15 +334,16 @@ function scan(){
 $('#rescan').onclick=scan;
 $('#save').onclick=()=>{
  const ssid=$('#ssidManual').value.trim()||$('#ssid').value;
- const mqtt=$('#mqtt').value.trim();
- if(!ssid && !mqtt){$('#msg').textContent='Enter a network and/or an MQTT host.';return;}
+ const mqtt=$('#mqtt').value.trim(), on=$('#mqtton').checked;
+ if(on && !mqtt){$('#msg').textContent='Enter the broker host, or untick MQTT to switch it off.';return;}
  $('#msg').textContent='Saving…';
  fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({ssid:ssid,pass:$('#pass').value,mqtt:mqtt})})
- .then(r=>r.json()).then(()=>{
+  body:JSON.stringify({ssid:ssid,pass:$('#pass').value,mqtt:mqtt,mqtt_on:on})})
+ .then(r=>r.json().then(j=>{
+  if(!r.ok){$('#msg').textContent='Not saved: '+(j.err||r.status);return;}
   $('#msg').className='ok small';
-  $('#msg').innerHTML=ssid?('Saved. Rebooting and joining <b>'+ssid+'</b>.'):'Saved MQTT host. Rebooting — WiFi unchanged.';
- }).catch(()=>{$('#msg').textContent='Save failed — try again.';});
+  $('#msg').innerHTML=(ssid?('Saved. Rebooting and joining <b>'+ssid+'</b>.'):'Saved. Rebooting — WiFi unchanged.')+' MQTT '+(on?'on ('+mqtt+')':'off')+'.';
+ })).catch(()=>{$('#msg').textContent='Save failed — try again.';});
 };
 scan();
 </script></body></html>)SETUP";

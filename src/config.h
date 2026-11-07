@@ -150,7 +150,11 @@
 #define WIFI_AP_PASS     "orconsetup"  // >= 8 chars
 
 #define MQTT_ENABLED     1
-#define MQTT_HOST        "192.168.1.10"
+#if RX_ONLY
+#define MQTT_HOST        ""             // RX-only: off until a broker is set explicitly
+#else
+#define MQTT_HOST        "192.168.1.10" // TX builds: unchanged default (existing setups)
+#endif
 #define MQTT_PORT        1883
 #define MQTT_USER        ""
 #define MQTT_PASS        ""
