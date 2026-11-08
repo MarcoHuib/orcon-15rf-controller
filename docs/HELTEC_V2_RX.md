@@ -209,7 +209,29 @@ monitor opende de poort zonder reset, zoals bedoeld.
 **Conclusie:** geen RF-wijziging nodig voor eigen apparaten op deze afstanden. RxBw 250 → 125 kHz blijft
 een optie voor zwakke signalen (< −80 dBm), maar alleen als dat ooit nodig blijkt.
 
-## Duurtest 24–72 uur (WiFi + MQTT): criteria
+## Duurtest 24 uur (RX/WiFi, MQTT uit): huidige procedure
+
+Voor firmware `d5c39e1` geldt de passieve procedure in
+[HELTEC_V2_SOAK.md](HELTEC_V2_SOAK.md), met begrensde ruwe UART- en HTTP-logging,
+zelfstandige uitvoering en automatisch eindrapport. De gecontroleerde flash en
+korte OLED-hardwarevalidatie zijn voorafgaande voorwaarden; de meting start pas
+na expliciet akkoord. Deze voorbereiding flasht of reset niets.
+
+MQTT blijft **uit**. Geen netwerkverstoringen, commandoverzoeken of OLED-bediening
+tijdens deze meting. Het scherm staat in Auto en blijft uit; alle monsters leggen
+`oled_mode`/`oled_on` vast. Fysiek schermgedrag en de bron/tijdlijn van buurverkeer
+vereisen daarnaast lokale bewijscontrole. Een bootbanner is tijdens deze opname
+juist een fout: de monitor sluit aan op reeds draaiende firmware zonder reset.
+HTTP-uitval stopt de seriële opname nooit; het rapport geeft het RF-firmwareoordeel
+apart van WiFi/HTTP. Een geslaagde meting heet uitsluitend "PASS (passieve
+RX/WiFi-scope)"; criteria buiten deze meting staan als NOT_TESTED in het rapport.
+
+De onderstaande oorspronkelijke criteria blijven het uitgangspunt. Alleen het
+MQTT-/verstorings-/druktestscenario wordt hier niet uitgevoerd; daarvoor is een
+apart akkoord en meetplan nodig. De 403-controle is al in de korte hardwaretest
+gedaan en wordt niet herhaald in de passieve duurmeting.
+
+## Oorspronkelijk scenario 24–72 uur (WiFi + MQTT): referentie, niet uitvoeren
 
 **Vooraf (stop als één punt niet klopt)**
 - Firmware = een commit waarvan **alle** CI-jobs groen zijn: V2-build, host-tests (gewoon, ASan/UBSan, TSan), V3/CC1101-, V3/SX1262- en 4848-build. Flashen alleen na expliciet akkoord, via `tools/heltec_v2.sh flash`.

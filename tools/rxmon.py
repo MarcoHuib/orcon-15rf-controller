@@ -22,6 +22,18 @@ import re
 import sys
 import time
 
+
+def open_serial(port, timeout=0.2):
+    """Keep the proven Heltec V2 DTR/RTS sequence in one place; never reset."""
+    import serial
+    s = serial.Serial()
+    s.port, s.baudrate, s.timeout = port, 115200, timeout
+    s.dtr = True
+    s.rts = True
+    s.exclusive = True
+    s.open()
+    return s
+
 ID = r"(?:\d\d:\d{6}|--:------)"
 SYNC = re.compile(r"^\[sync (\d+) (\d+) (-?\d+)dBm pre=([0-9A-F]{2})\]$")
 RX = re.compile(r"^\[rx (\d+) (\d+) (-?\d+)dBm\] (I |RQ|RP|W ) --- (%s) (%s) (%s) ([0-9A-F]{4}) (\d{3}) ([0-9A-F]*)$"
@@ -182,20 +194,16 @@ def summary(boots):
 
 def from_file(path):
     boots = []
-    for lineno, raw in enumerate(open(path, encoding="utf-8", errors="replace"), 1):
-        stamp, _, line = raw.rstrip("\n").partition(" ")
-        feed(boots, stamp, line, lineno)
+    with open(path, encoding="utf-8", errors="replace") as source:
+        for lineno, raw in enumerate(source, 1):
+            stamp, _, line = raw.rstrip("\n").partition(" ")
+            feed(boots, stamp, line, lineno)
     return boots
 
 
 def from_serial(port, secs, logpath, reset):
-    import serial
     logf = open(logpath, "a", buffering=1) if logpath else None   # line-buffered: readable while running
-    s = serial.Serial()
-    s.port, s.baudrate, s.timeout = port, 115200, 0.2
-    s.dtr = True
-    s.rts = True
-    s.open()
+    s = open_serial(port)
     if reset:
         s.dtr = False
         time.sleep(0.1)
@@ -213,11 +221,19 @@ def from_serial(port, secs, logpath, reset):
                 logf.write(f"{stamp} {line}\n")
             feed(boots, stamp, line, lineno)
     # an unterminated last line is incomplete: not analysed
+    s.close()
+    if logf:
+        logf.close()
     return boots
 
 
 if __name__ == "__main__":
-    if sys.argv[1] == "--file":
+    if len(sys.argv) > 1 and sys.argv[1] == "soak":
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from rxmon_soak import main
+        main(sys.argv[2:])
+    elif sys.argv[1] == "--file":
         summary(from_file(sys.argv[2]))
     else:
         summary(from_serial(sys.argv[1], float(sys.argv[2]),

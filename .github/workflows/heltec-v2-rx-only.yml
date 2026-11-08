@@ -27,6 +27,10 @@ jobs:
           if python3 tools/check_privacy.py /tmp/privacy-negative.txt; then
             echo "check_privacy.py accepted real-looking data"; exit 1
           fi
+          printf 'cd /Users/%s/project\n' someone > /tmp/privacy-home.txt
+          if python3 tools/check_privacy.py /tmp/privacy-home.txt; then
+            echo "check_privacy.py accepted a personal home path"; exit 1
+          fi
 
       - name: Verify listen-only safety guards
         shell: bash
@@ -140,6 +144,7 @@ jobs:
             echo "check_tick.py accepted a tick() call outside #if !RX_ONLY"; exit 1
           fi
           .venv/bin/python tools/test_rxmon.py
+          .venv/bin/python -B tools/test_rxmon_soak.py
 
       - name: Build for Heltec WiFi LoRa 32 V2
         shell: bash

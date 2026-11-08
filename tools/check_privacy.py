@@ -13,6 +13,7 @@ ALLOWED_IPS = {"0.0.0.0", "127.0.0.1", "10.0.0.5", "192.168.1.10", "192.168.4.1"
 ID = re.compile(r"\b(\d\d):(\d{6})\b")
 MAC = re.compile(r"\b[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}\b")
 IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+HOME = re.compile(r"(?:/Users|/home)/[A-Za-z][\w.-]*")   # personal absolute paths
 SELF = "tools/check_privacy.py"
 
 files = sys.argv[1:] or subprocess.run(["git", "ls-files"], capture_output=True, text=True, check=True).stdout.split()
@@ -38,6 +39,8 @@ for f in files:
             if ip not in ALLOWED_IPS and not ip.startswith(("192.0.2.", "198.51.100.", "203.0.113.")):
                 if all(0 <= int(p) <= 255 for p in ip.split(".")):
                     problems.append(f"{f}:{n}: IPv4 address (use 192.0.2.x)")
+        if HOME.search(line):
+            problems.append(f"{f}:{n}: personal home path (use $HOME or a relative path)")
 for p in problems:
     print("PRIVACY:", p)
 print(f"checked {len(files)} files: {'OK' if not problems else str(len(problems)) + ' problem(s)'}")
