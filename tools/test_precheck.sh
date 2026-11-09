@@ -7,7 +7,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 PART_GOOD="${1:?usage: test_precheck.sh <known-good partitions.bin>}"
 fails=0
-mkdir -p "$W/tools/venv/bin" "$W/d"; ln -s "$(command -v python3)" "$W/tools/venv/bin/python"
+mkdir -p "$W/tools/venv/bin" "$W/d"; touch "$W/ttyFAKE"; ln -s "$(command -v python3)" "$W/tools/venv/bin/python"
 cp "$PART_GOOD" "$W/d/partitions.bin"
 
 python3 - "$W" <<'PY'                      # build bad tables (each with a VALID md5 entry)
@@ -34,13 +34,14 @@ PY
 
 cat > "$W/run.sh" <<EOF
 set -euo pipefail
-REPO="$REPO"; TOOLS="$W/tools"; PORT=/dev/fake
-$(sed -n '/^die()/p; /^ci_ok()/,/^}/p; /^expected_mac()/,/^}/p; /^precheck()/,/^}/p' "$REPO/tools/heltec_v2.sh")
+REPO="$REPO"; TOOLS="$W/tools"; PORT="\${PORT:-$W/ttyFAKE}"; DEV_DIR="$W/nodev"
+$(sed -n '/^die()/p; /^FLASH_HDR=/p; /^ports()/p; /^pick_port()/,/^}/p; /^ci_ok()/,/^}/p; /^expected_mac()/,/^}/p; /^precheck()/,/^}/p' "$REPO/tools/heltec_v2.sh")
 verify() { :; }; fulsha() { echo "\$1"; }; dist() { echo "$W/d"; }
 esptool() {
   case "\$*" in
     *image_info*) echo "Flash size: \${IMG_FS:-8MB}" ;;
     *flash_id*)   printf '%b\n' "\$FLASH_ID"; return \${RC:-0} ;;
+    *read_flash*0x1000*) printf "\${DEVHDR:-\\xe9\\x03\\x02\\x30}" > "\${@: -1}" ;;
     *read_flash*) cp "\${DEVPARTS:-$W/d/partitions.bin}" "\${@: -1}" ;;
   esac
 }
@@ -69,6 +70,9 @@ expect fail "flash size Unknown"             HELTEC_MAC=02:00:00:00:00:08 FLASH_
 expect fail "flash size line missing"        HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="${ID%\\n*}"
 expect fail "esptool error (port busy)"      HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="A fatal error occurred" RC=2
 expect fail "image header not 8MB"           HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" IMG_FS=4MB
+expect fail "board bootloader header 4MB"    HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" DEVHDR='\xe9\x03\x02\x20'
+expect fail "board bootloader header QIO"    HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" DEVHDR='\xe9\x03\x00\x30'
+expect fail "serial port missing"            HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" PORT=/nonexistent/tty
 for t in layout flags extra md5 trail short; do
     expect fail "board partition table: $t"  HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" DEVPARTS="$W/$t.bin"
 done

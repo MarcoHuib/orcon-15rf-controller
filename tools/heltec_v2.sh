@@ -4,7 +4,10 @@
 #
 #   tools/heltec_v2.sh fetch   <commit>        download the CI artifact of <commit> (historical)
 #   tools/heltec_v2.sh package <evidence-dir> <env>   local build -> flash package (no board access)
-#   LOCAL_ENV=<env> tools/heltec_v2.sh verify|precheck|flash <commit>   use that local package
+#   LOCAL_ENV=<env> tools/heltec_v2.sh verify|precheck|plan|flash <commit>   use that local package
+#   tools/heltec_v2.sh ports                    list USB serial ports (no port is opened)
+#   tools/heltec_v2.sh plan    <commit|rollback>  verify offline, print the exact write command
+#   tools/heltec_v2.sh flash   rollback         back to the RX-only image the board ran before the PoC
 #   tools/heltec_v2.sh verify  <commit>        checksums, commit stamp, RX-only, ESP32 target
 #   tools/heltec_v2.sh precheck <commit>       verify + read-only board checks (chip, 8MB, partitions)
 #   tools/heltec_v2.sh flash   <commit>        precheck, then write via USB (asks for "yes")
@@ -16,15 +19,20 @@
 # partition (Wi-Fi/MQTT/IDs at 0x9000) is preserved.
 set -euo pipefail
 
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOOLS="$REPO/.flashtools"
-PORT="${PORT:-/dev/cu.usbserial-0001}"
+PORT="${PORT:-}"               # empty: the single USB serial port found in $DEV_DIR
+DEV_DIR="${DEV_DIR:-/dev}"
 BRANCH="feature/heltec-v2-rx-only"
 ESPTOOL_SHA256="dc4ef26b659e1a8dcb019147c0ea6d94980b34de99fbe09121c7941c8b254531"
 LOCAL_ENV="${LOCAL_ENV:-}"     # set: a local package from tools/test_local.ps1 -Firmware, not Actions
 LOCAL_ENVS="heltec_v2_sx1276 heltec_v2_sx1276_tx_poc_dryrun"   # the only images that may be written
 BOOT_APP0_SHA256="f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0"  # == CI d5c39e1
 # A local package needs these local checks PASS on the same clean commit (RESULTS.json).
+ROLLBACK_COMMIT="${ROLLBACK_COMMIT:-d5c39e1b4d1f0ed37defe69b51e3562c36058208}"  # RX-only, ran before the PoC
+# offset:image:slot size. NVS (0x9000-0xDFFF) is never written; the merged image is never used.
+FLASH_MAP="0x1000:bootloader.bin:0x7000 0x8000:partitions.bin:0xc00 0xe000:boot_app0.bin:0x2000 0x10000:firmware.bin:0x330000"
+FLASH_HDR="0230"   # image header bytes 2-3: DIO, 8 MB / 40 MHz (as the CI d5c39e1 image on the board)
 LOCAL_REQUIRED="codec frames rx log orcon_rx orcon_v3 rxpipe netcfg oled tx_poc safety-and-negative-compiles privacy poc-web"
 
 die() { echo "FAIL: $*" >&2; exit 1; }
@@ -48,7 +56,43 @@ bootstrap() {
 }
 esptool() { PYTHONPATH="$TOOLS/esptool-4.8.1" "$TOOLS/venv/bin/python" -m esptool "$@"; }
 
-fulsha() { git -C "$REPO" rev-parse --verify "$1^{commit}"; }
+fulsha() { [ -n "${1:-}" ] || die "commit argument missing"
+           git -C "$REPO" rev-parse --verify --quiet "$1^{commit}" || die "unknown commit '$1'"; }
+target() {   # <commit>, or "rollback" = the historical RX-only Actions image (only without LOCAL_ENV)
+    if [ "${1:-}" = rollback ]; then
+        [ -z "$LOCAL_ENV" ] || die "rollback is the historical RX-only image: unset LOCAL_ENV (a local RX-only package is flashed by commit)"
+        fulsha "$ROLLBACK_COMMIT"
+    else fulsha "${1:-}"; fi
+}
+
+ports() { ls "$DEV_DIR"/cu.usbserial-* "$DEV_DIR"/cu.SLAB_USBtoUART* "$DEV_DIR"/cu.wchusbserial* 2>/dev/null || true; }
+pick_port() {   # PORT if set (must exist), else exactly one detected USB serial port
+    if [ -n "$PORT" ]; then [ -e "$PORT" ] || die "serial port $PORT not found"; echo "$PORT"; return; fi
+    local list n; list="$(ports)"; n="$(grep -c . <<<"$list" || true)"
+    [ "$n" -ge 1 ] || die "no USB serial port found (connect the Heltec, or set PORT)"
+    [ "$n" -eq 1 ] || die "several USB serial ports, choose one with PORT=: $(tr '\n' ' ' <<<"$list")"
+    echo "$list"
+}
+
+layout_ok() {   # every image fits its slot (so nothing reaches NVS) and carries the board's flash header
+    local d=$1 e off img max size
+    for e in $FLASH_MAP; do
+        IFS=: read -r off img max <<<"$e"
+        [ -f "$d/$img" ] || die "$img missing"
+        size="$(wc -c < "$d/$img" | tr -d ' ')"
+        [ "$size" -gt 0 ] && [ "$size" -le $((max)) ] || die "$img ($size B) does not fit its $max slot at $off"
+    done
+    [ "$(wc -c < "$d/boot_app0.bin" | tr -d ' ')" -eq $((0x2000)) ] || die "boot_app0.bin is not 8 KB"
+    for img in bootloader.bin firmware.bin; do
+        [ "$(xxd -p -l 1 "$d/$img")" = e9 ] || die "$img is not an ESP image"
+        [ "$(xxd -p -s 2 -l 2 "$d/$img")" = "$FLASH_HDR" ] || die "$img flash header is not DIO/8MB/40MHz"
+    done
+}
+flash_args() {   # FLASH_ARGS for <dir> <port>: write_flash only, no erase option, image by image
+    local d=$1 e off img max
+    FLASH_ARGS=(--chip esp32 --port "$2" --baud 460800 write_flash)
+    for e in $FLASH_MAP; do IFS=: read -r off img max <<<"$e"; FLASH_ARGS+=("$off" "$d/$img"); done
+}
 
 ci_ok() {   # every check run on the commit completed with success (and there is at least one)
     local runs
@@ -124,9 +168,11 @@ fetch() {
 }
 
 verify() {
+    local sha; sha="$(fulsha "${1:-}")"
     bootstrap
-    local sha; sha="$(fulsha "$1")"; local d; d="$(fetch "$sha")"
+    local d; d="$(fetch "$sha")"
     ( cd "$d" && shasum -a 256 -c SHA256SUMS.txt ) || die "SHA256SUMS mismatch"
+    layout_ok "$d"
     local env="${LOCAL_ENV:-heltec_v2_sx1276}"
     grep -qx "commit=$sha" "$d/BUILD_INFO.txt"        || die "artifact is not built from $sha"
     grep -qx "env=$env" "$d/BUILD_INFO.txt"           || die "wrong PlatformIO env"
@@ -147,8 +193,9 @@ verify() {
 
 # Read-only device checks. Any deviation, missing value or esptool error stops here.
 precheck() {
-    local sha; sha="$(fulsha "$1")"
+    local sha; sha="$(fulsha "${1:-}")"
     verify "$sha"; local d; d="$(dist "$sha")"
+    PORT="$(pick_port)"; echo "port: $PORT"
     local img
     for img in bootloader.bin firmware.bin; do
         esptool --chip esp32 image_info --version 2 "$d/$img" | grep -qx "Flash size: 8MB" \
@@ -170,17 +217,30 @@ precheck() {
     echo "board partition table:"
     "$TOOLS/venv/bin/python" -I "$REPO/tools/check_parts.py" "$cur" || die "board partition layout unexpected"
     cmp -s "$cur" "$d/partitions.bin" || die "board partition table differs from the new one (NVS could move)"
+    local hdr="$d/device-bootloader-header.bin"; rm -f "$hdr"
+    esptool --chip esp32 --port "$PORT" read_flash 0x1000 0x10 "$hdr" >/dev/null \
+        || die "reading the board's bootloader header failed"
+    [ "$(xxd -p -s 2 -l 2 "$hdr")" = "$FLASH_HDR" ] || die "board bootloader header is not DIO/8MB/40MHz"
     echo "PRECHECK OK ${sha:0:7}: ESP32-D0WDQ6 $mac, 8MB, partition table identical (NVS @0x9000 kept)"
 }
 
+# Offline: full verification, then the exact command flash would run. Never opens a port.
+plan() {
+    local sha; sha="$(target "${1:-}")"
+    verify "$sha"; local d; d="$(dist "$sha")"
+    flash_args "$d" "${PORT:-<detected at flash time>}"
+    echo "PLAN ${sha:0:7} ${LOCAL_ENV:-heltec_v2_sx1276} (no board access; NVS 0x9000-0xDFFF untouched, no erase):"
+    echo "  esptool ${FLASH_ARGS[*]}"
+}
+
 flash() {
-    local sha; sha="$(fulsha "$1")"
+    local sha; sha="$(target "${1:-}")"
     precheck "$sha"; local d; d="$(dist "$sha")"
+    flash_args "$d" "$PORT"
+    echo "will run: esptool ${FLASH_ARGS[*]}"
     read -r -p "Write commit ${sha:0:7} (${LOCAL_ENV:-heltec_v2_sx1276}) to the Heltec on $PORT? Type yes: " ok
     [ "$ok" = "yes" ] || die "aborted by user"
-    esptool --chip esp32 --port "$PORT" --baud 460800 write_flash \
-        0x1000 "$d/bootloader.bin" 0x8000 "$d/partitions.bin" \
-        0xe000 "$d/boot_app0.bin" 0x10000 "$d/firmware.bin"
+    esptool "${FLASH_ARGS[@]}"
 }
 
 # Package a local build (tools/test_local.ps1 -Firmware evidence dir) for verify/precheck/flash.
@@ -207,16 +267,22 @@ package() {
 
 monitor() {
     bootstrap
+    PORT="$(pick_port)"
     "$TOOLS/venv/bin/python" -I "$REPO/tools/rxmon.py" "$PORT" "${1:-60}" "${2:-}" "${3:-}"
 }
 
+# Tests source the functions only (HELTEC_V2_SOURCE_ONLY=1) and stub esptool/gh/ports.
+[ "${HELTEC_V2_SOURCE_ONLY:-}" != 1 ] || return 0
+[ -z "$LOCAL_ENV" ] || [[ " $LOCAL_ENVS " == *" $LOCAL_ENV "* ]] || die "LOCAL_ENV=$LOCAL_ENV may not be flashed"
 cmd="${1:-}"; shift || true
 case "$cmd" in
+    ports)   ports ;;
+    plan)    plan "$@" ;;
     fetch)   fetch "$@" ;;
     package) package "$@" ;;
     verify)  verify "$@" ;;
     precheck) precheck "$@" ;;
     flash)   flash "$@" ;;
     monitor) monitor "$@" ;;
-    *) sed -n '2,16p' "$0"; exit 2 ;;
+    *) sed -n '2,19p' "$0"; exit 2 ;;
 esac

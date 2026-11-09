@@ -144,7 +144,10 @@ if ($Firmware) {
     }
     # Flash tooling (precheck, local_ok, markers) on simulated boards; reference = the local V2 table.
     $parts = Join-Path $OutputDirectory 'artifacts/heltec_v2_sx1276/partitions.bin'
-    if (Test-Path -LiteralPath $parts) { $null = Invoke-Check 'flash-tooling' 'bash' @('tools/test_precheck.sh',$parts) 120 }
+    if (Test-Path -LiteralPath $parts) {
+        $null = Invoke-Check 'flash-tooling' 'bash' @('tools/test_precheck.sh',$parts) 120
+        $null = Invoke-Check 'flash-local' 'bash' @('tools/test_flash_local.sh',$parts) 300
+    }
     else { $rows.Add([ordered]@{name='flash-tooling'; result='FAIL'; exit=1; reason='no local V2 partitions.bin'}); Save-Results }
 }
 Save-Results
