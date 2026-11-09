@@ -1,0 +1,235 @@
+name: Heltec V2 RX-only firmware
+
+on:
+  push:
+    branches:
+      - feature/heltec-v2-rx-only
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Heltec V2 (RX-only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Privacy check (public repo, no real device IDs, MACs, LAN IPs or recordings)
+        shell: bash
+        run: |
+          python3 tools/check_privacy.py
+          # assembled at run time so this workflow itself contains no such values
+          printf 'id 29:%s\nmac 3c:%s\nip 192.168.%s\n' 123456 aa:bb:cc:dd:ee 50.7 > /tmp/privacy-negative.txt
+          if python3 tools/check_privacy.py /tmp/privacy-negative.txt; then
+            echo "check_privacy.py accepted real-looking data"; exit 1
+          fi
+          printf 'cd /Users/%s/project\n' someone > /tmp/privacy-home.txt
+          if python3 tools/check_privacy.py /tmp/privacy-home.txt; then
+            echo "check_privacy.py accepted a personal home path"; exit 1
+          fi
+
+      - name: Verify listen-only safety guards
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          main = Path("src/main.cpp").read_text()
+          radio = Path("src/ramses_radio.cpp").read_text()
+          config = Path("platformio.ini").read_text()
+
+          # the backend block is the one carrying the RX_ONLY #error (include blocks also test RADIO_SX1276)
+          sx = radio.split('#error "SX1276 backend is receive-only', 1)
+          assert len(sx) == 2, "SX1276 backend (with its RX_ONLY #error) not found"
+          tx = sx[1].split("bool sendFrame(const ramses::Frame& f) {", 1)
+          assert len(tx) == 2, "SX1276 sendFrame not found"
+          tx_body = tx[1].split("bool poll(ramses::Frame& out)", 1)[0]
+
+          assert "g_radio.transmit(" not in tx_body, "SX1276 TX path is active"
+          assert "return false;" in tx_body, "SX1276 sendFrame is not blocked"
+          sx_body = sx[1].split("#endif // RADIO_SX1276", 1)[0]
+          for bad in ("g_radio.transmit", "startTransmit", "transmitDirect", "RADIOLIB_SX127X_TX"):
+              assert bad not in sx_body, f"SX1276 backend references {bad}"
+          # RadioLib FSK getRSSI() with default args = startReceive()+standby(): kills direct RX
+          assert "getRSSI()" not in sx_body, "SX1276 backend calls getRSSI() without skipReceive"
+
+          import re
+          net = Path("src/net.cpp").read_text()
+          rxo = Path("src/rx_only.h").read_text()
+          test = Path("test/test_orcon.cpp").read_text()
+          # every applyCommand key must be in the test's refused list or the UI allowlist
+          body = net.split("static const char* applyCommand(JsonDocument& d) {", 1)[1].split("\n}\n", 1)[0]
+          keys = set(re.findall(r'd\["(\w+)"\]', body))
+          allow = set(re.findall(r'"(\w+)"', rxo.split("OK[] = {", 1)[1].split("}", 1)[0]))
+          tested = set(re.findall(r'"(\w+)"', test.split("TX[] = {", 1)[1].split("};", 1)[0]))
+          assert allow == {"maskids", "showfilter", "roomidx"}, f"RX-only allowlist changed: {allow}"
+          assert keys - allow <= tested, f"applyCommand keys not covered by test_orcon: {keys - allow - tested}"
+          assert "#if RX_ONLY\n    for (JsonPair kv" in body, "applyCommand lacks the RX-only gate"
+          for frag in ("ArduinoOTA.begin()", "ArduinoOTA.handle()", 'server.on("/update"'):
+              i = net.index(frag)
+              assert net.rfind("#if !RX_ONLY", 0, i) > net.rfind("#endif", 0, i), f"{frag} not gated by !RX_ONLY"
+          # unit selection: the log page never fills our unit from the single "seen fan" slot
+          web = Path("src/web_page.h").read_text()
+          log_page = web.split("static const char LOG_HTML[]", 1)[1].split(')LOG";', 1)[0]
+          assert "seen_fan" not in log_page and "seenF" not in log_page, "log page uses seen_fan for selection"
+          clone = log_page.split("$('#clone').onclick=", 1)[1].split("\n", 1)[0]
+          assert "#fan" not in clone, "Use-detected/clone button fills the unit"
+          print("PASS: RX-only command, OTA and update gates present; unit is selected explicitly")
+          # periodic TX: tick() is called for TX builds only (tools/check_tick.py, also used by
+          # heltec_v2.sh verify), and tick() refuses itself on RX-only
+          import subprocess
+          subprocess.run(["python3", "tools/check_tick.py"], input=main, text=True, check=True)
+          orcon_src = Path("src/orcon.cpp").read_text()
+          tick_body = orcon_src.split("void tick(uint32_t now) {", 1)[1].lstrip()
+          assert tick_body.startswith("if (RX_ONLY) return;"), "tick() does not refuse first on RX-only"
+          assert "[env:heltec_v2_sx1276]\n" in config
+          assert "platform = espressif32@6.7.0" in config
+          print("PASS: SX1276 transmission path is blocked")
+          # OLED power-save must stay local to the display. Radio diagnostics
+          # (name/RSSI) are read-only; no task or network/radio control here.
+          oled = net.split("// OLED\n", 1)[1].split("// WiFi\n", 1)[0]
+          oled += Path("src/oled_power.h").read_text()
+          for bad in (r"\besp_\w*sleep\w*\s*\(", r"\bvTask(?:Suspend|Delete)\s*\(",
+                      r"\bWiFi\.", r"\bmqtt\.", r"\bSPI\.",
+                      r"\bradio::(?:begin|startReceive|sendFrame|poll)\s*\("):
+              assert not re.search(bad, oled), f"OLED code controls a non-display subsystem: {bad}"
+          print("PASS: OLED power-save does not sleep the CPU or control RX/WiFi/MQTT")
+          PY
+
+      - name: Run host unit tests (plain, ASan+UBSan, TSan)
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          test/run_host_tests.sh
+          CXXFLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all" test/run_host_tests.sh
+          CXXFLAGS="-fsanitize=thread" test/run_host_tests.sh
+
+      - name: Check web page JavaScript syntax
+        shell: bash
+        run: |
+          g++ -std=c++17 -DPROGMEM= -I src -I test/shim test/dump_pages.cpp -o /tmp/dump-pages
+          for i in 0 1 2 3 4 5 6; do
+            /tmp/dump-pages $i | python3 -c 'import re,sys; print("\n;\n".join(re.findall(r"<script>(.*?)</script>", sys.stdin.read(), re.S)))' > /tmp/page$i.js
+            node --check /tmp/page$i.js
+          done
+          echo "PASS: all page scripts parse"
+          /tmp/dump-pages 5 | node test/test_oled_setup.js
+          /tmp/dump-pages 0 | node test/test_oled_main.js
+
+      - name: Install pinned PlatformIO
+        shell: bash
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --disable-pip-version-check "platformio==6.1.18"
+          .venv/bin/pio --version
+
+      - name: Test flash tooling (precheck scenarios, partition table, rxmon pairing)
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, struct
+          e = [("nvs",1,2,0x9000,0x5000),("otadata",1,0,0xE000,0x2000),("app0",0,0x10,0x10000,0x330000),
+               ("app1",0,0x11,0x340000,0x330000),("spiffs",1,0x82,0x670000,0x180000),("coredump",1,3,0x7F0000,0x10000)]
+          body = b"".join(struct.pack("<2sBBII16sI", b"\xaa\x50", t, s, o, z, n.encode(), 0) for n, t, s, o, z in e)
+          raw = body + b"\xeb\xeb" + b"\xff" * 14 + hashlib.md5(body).digest()
+          open("/tmp/good-partitions.bin", "wb").write(raw + b"\xff" * (3072 - len(raw)))
+          PY
+          tools/test_precheck.sh /tmp/good-partitions.bin
+          python3 tools/check_tick.py < src/main.cpp
+          if sed 's/^#if !RX_ONLY$//' src/main.cpp | python3 tools/check_tick.py; then
+            echo "check_tick.py accepted a tick() call outside #if !RX_ONLY"; exit 1
+          fi
+          .venv/bin/python tools/test_rxmon.py
+          .venv/bin/python -B tools/test_rxmon_soak.py
+
+      - name: Build for Heltec WiFi LoRa 32 V2
+        shell: bash
+        env:
+          PLATFORMIO_BUILD_FLAGS: '-DFW_VERSION=\"${{ github.sha }}\"'
+        run: .venv/bin/pio run -e heltec_v2_sx1276
+
+      - name: Package flash images
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp .pio/build/heltec_v2_sx1276/firmware.bin dist/firmware.bin
+          cp .pio/build/heltec_v2_sx1276/partitions.bin dist/partitions.bin
+          python3 tools/check_parts.py dist/partitions.bin
+          cp .pio/build/heltec_v2_sx1276/bootloader.bin dist/bootloader.bin
+          cp "$HOME/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin" dist/boot_app0.bin
+
+          # The image must carry this commit and the RX-only guard string.
+          grep -q -a "$GITHUB_SHA" dist/firmware.bin
+          grep -q -a "SX1276 direct RX (TX disabled)" dist/firmware.bin
+          grep -q -a "RX-ONLY TEST FIRMWARE" dist/firmware.bin
+          grep -q -a "/api/oled" dist/firmware.bin
+          grep -q -a "oled_mode" dist/firmware.bin
+          # network firmware update must be compiled out (no "! grep": set -e ignores it)
+          for s in "Firmware update (OTA)" "ArduinoOTA" "auth_upload" "Updater.cpp"; do
+            if grep -q -a "$s" dist/firmware.bin; then echo "RX-only image contains '$s'"; exit 1; fi
+          done
+          {
+            echo "commit=$GITHUB_SHA"
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "env=heltec_v2_sx1276"
+            echo "chip=esp32"
+            .venv/bin/pio pkg list -e heltec_v2_sx1276 2>/dev/null | grep -E 'RadioLib|framework-arduinoespressif32|espressif32' || true
+          } > dist/BUILD_INFO.txt
+          cat dist/BUILD_INFO.txt
+
+          .venv/bin/python "$HOME/.platformio/packages/tool-esptoolpy/esptool.py" \
+            --chip esp32 merge_bin -o dist/heltec-v2-rx-only-merged.bin \
+            --flash_mode dio --flash_freq 40m --flash_size 8MB \
+            0x1000 dist/bootloader.bin \
+            0x8000 dist/partitions.bin \
+            0xe000 dist/boot_app0.bin \
+            0x10000 dist/firmware.bin
+
+          cat > dist/FLASHING.txt <<'HELP'
+          Heltec WiFi LoRa 32 V2 (classic ESP32 / SX1276) - RECEIVE-ONLY firmware.
+          No 868 MHz transmission, no pairing/commands, no OTA or HTTP firmware update.
+          Commit and CI run: see BUILD_INFO.txt. Verify: shasum -a 256 -c SHA256SUMS.txt
+
+          EXISTING BOARD (keeps NVS = Wi-Fi, MQTT, device IDs at 0x9000):
+            tools/heltec_v2.sh flash <commit>      (checks chip, MAC, 8 MB, partitions)
+          or by hand, four images at their own offsets:
+            esptool.py --chip esp32 write_flash 0x1000 bootloader.bin 0x8000 partitions.bin \
+                0xe000 boot_app0.bin 0x10000 firmware.bin
+
+          BLANK BOARD ONLY: heltec-v2-rx-only-merged.bin at 0x0 (also browser flasher
+          https://espressif.github.io/esptool-js/). WARNING: the merged image is 0xFF
+          over 0x9000-0xDFFF and ERASES NVS (Wi-Fi, MQTT, IDs). Never at 0x10000.
+          HELP
+          (cd dist && shasum -a 256 *.bin > SHA256SUMS.txt)
+
+      - name: Upload firmware artifacts (not flashed automatically)
+        uses: actions/upload-artifact@v4
+        with:
+          name: heltec-v2-rx-only
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  build-other-envs:
+    # Shared code (codec, orcon, net, main) must keep compiling for the TX builds.
+    name: Build ${{ matrix.env }} (compile check, not published)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [heltec_v3_cc1101_ota, heltec_v3_1262_ota, esp32-480480s040]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned PlatformIO
+        shell: bash
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --disable-pip-version-check "platformio==6.1.18"
+      - name: Build ${{ matrix.env }}
+        shell: bash
+        run: .venv/bin/pio run -e ${{ matrix.env }}

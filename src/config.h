@@ -14,6 +14,20 @@
   #define RADIO_SX1262 1
 #endif
 
+// RX-only builds: the SX1276 backend has no TX path. RX_ONLY additionally gates
+// every command, pairing and network firmware-update path (orcon.cpp, net.cpp).
+#ifndef RX_ONLY
+#if defined(RADIO_SX1276)
+#define RX_ONLY 1
+#else
+#define RX_ONLY 0
+#endif
+#endif
+
+#ifndef FW_VERSION
+#define FW_VERSION "dev"     // CI sets the git commit (platformio build flag)
+#endif
+
 // RAMSES-II / Orcon RF parameters (see docs/PROTOCOL.md §1)
 #define RF_FREQ_MHZ        868.300f
 #define RF_BITRATE_KBPS    38.4f
@@ -78,6 +92,10 @@
 #define PIN_OLED_SCL  15
 #define PIN_OLED_RST  16
 #define PIN_VEXT      21      // drive LOW to power the OLED/Vext rail on V2
+#define PIN_PRG_BTN   0       // PRG button -> GND. GPIO0 is the ESP32 boot-mode
+                              // strapping pin: read-only use (INPUT_PULLUP, never
+                              // driven), so reset+hold still enters the ROM
+                              // flasher and short presses only wake the OLED.
 #else
 // On-board SSD1306 OLED (Heltec V3/V4): I2C + Vext power + reset
 #define PIN_OLED_SDA  17
@@ -136,11 +154,25 @@
 #define WIFI_AP_PASS     "orconsetup"  // >= 8 chars
 
 #define MQTT_ENABLED     1
-#define MQTT_HOST        "192.168.1.10"
+#if RX_ONLY
+#define MQTT_HOST        ""             // RX-only: off until a broker is set explicitly
+#else
+#define MQTT_HOST        "192.168.1.10" // TX builds: unchanged default (existing setups)
+#endif
 #define MQTT_PORT        1883
 #define MQTT_USER        ""
 #define MQTT_PASS        ""
+#if RX_ONLY
+// Own namespace so an RX-only test board never overwrites a production board's
+// retained state / Home Assistant entities on the same broker.
+#define MQTT_BASE_TOPIC  "orcon15rf_rx"
+#define MQTT_NODE_ID     "orcon15rf_rx"
+#define MQTT_UID_PREFIX  "orcon_rx_"
+#else
 #define MQTT_BASE_TOPIC  "orcon15rf"   // orcon15rf/state, orcon15rf/cmd, ...
+#define MQTT_NODE_ID     "orcon15rf"
+#define MQTT_UID_PREFIX  "orcon_"      // keep: existing Home Assistant entity IDs
+#endif
 
 // ---------------------------------------------------------------------------
 // Debug

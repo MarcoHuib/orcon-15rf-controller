@@ -1,0 +1,26 @@
+10:00:00 [rxstat] t=500000 uart=900000 ovf=0 sync5=10 sync4=39 frames=4 resets=0 pend=0 pendmax=20 q=0 qmax=0 drop=0 taskus=900 stack=2344 rxst=0 err=0 rec=0 lost=0 op=0D lna=20 rxcfg=08 rxbw=01 rssi=-94 heap=205000 minheap=196000 loopmax=4900000
+10:00:01 [sync 40 536000 -84dBm pre=55]
+10:00:02 [sync 41 536900 -84dBm pre=55]
+10:00:03 [sync 42 537800 -84dBm pre=55]
+10:00:04 [sync 43 538700 -84dBm pre=55]
+10:00:05 [rxstat] t=510000 uart=925000 ovf=0 sync5=10 sync4=43 frames=4 resets=0 pend=0 pendmax=20 q=0 qmax=0 drop=0 taskus=900 stack=2344 rxst=0 err=0 rec=0 lost=0 op=0D lna=20 rxcfg=08 rxbw=01 rssi=-94 heap=205000 minheap=196000 loopmax=4900000
+10:00:06 
+10:00:07 Orcon 15RF emulator starting... fw=0000000011111111111111111111111111111111
+10:00:08 [radio] SX1276 direct RX (TX disabled) up on 868.300 MHz
+10:00:09 [   260][E][Preferences.cpp:483] getString(): nvs_get_str len fail: mqtt NOT_FOUND
+10:00:10 Ready.
+10:00:11 [rxstat] t=10000 uart=24000 ovf=0 sync5=0 sync4=0 frames=0 resets=0 pend=0 pendmax=20 q=0 qmax=0 drop=0 taskus=900 stack=2344 rxst=0 err=0 rec=0 lost=0 op=0D lna=20 rxcfg=08 rxbw=01 rssi=-94 heap=205000 minheap=196000 loopmax=50000
+10:00:12 [sync 1 11000 -28dBm pre=D5]
+10:00:13 [rx 1 11010 -28dBm] I  --- 29:000101 29:000202 --:------ 22F1 003 000104
+10:00:14 [sync 2 11050 -58dBm pre=FF]
+10:00:15 [rx 2 11060 -58dBm] I  --- 29:000202 --:------ 29:000202 31D9 003 000001
+10:00:16 [sync 3 14000 -28dBm pre=D5]
+10:00:17 [rx 3 14010 -28dBm] I  --- 29:000101 29:000202 --:------ 22F1 003 000204
+10:00:18 [sync 4 14050 -58dBm pre=FF]
+10:00:19 [rx 4 14060 -58dBm] I  --- 29:000202 --:------ 29:000202 31D9 003 000002
+10:00:20 [sync 5 17000 -28dBm pre=D5]
+10:00:21 [rx 5 17010 -28dBm] I  --- 29:000101 29:000202 --:------ 22F1 003 000304
+10:00:22 [sync 6 17050 -58dBm pre=FF]
+10:00:23 [rx 6 17060 -58dBm] I  --- 29:000202 --:------ 29:000202 31D9 003 000003
+10:00:24 [sync 7 19000 -83dBm pre=55]
+10:00:25 [rxstat] t=20001 uart=49000 ovf=0 sync5=2 sync4=7 frames=6 resets=0 pend=0 pendmax=20 q=0 qmax=0 drop=0 taskus=900 stack=2344 rxst=0 err=0 rec=0 lost=0 op=0D lna=20 rxcfg=08 rxbw=01 rssi=-94 heap=205000 minheap=196000 loopmax=50000

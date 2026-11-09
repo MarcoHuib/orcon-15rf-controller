@@ -1,0 +1,5 @@
+10:00:00 [rxstat] t=220000 uart=560000 ovf=0 sync5=3 sync4=11 frames=0 resets=0 pend=0 pendmax=20 q=0 qmax=0 drop=0 taskus=900 stack=2344 rxst=0 err=0 rec=0 lost=0 op=0D lna=20 rxcfg=08 rxbw=01 rssi=-94 heap=205000 minheap=196000 loopmax=85000
+10:00:01 sync 12 233801 -74dBm pre=F5]
+10:00:02 [rx 12 233820 -74dBm] I  --- 20:000303 --:------ 20:000303 31D9 003 000003
+10:00:03 [sync 13 240100 -82dBm pre=D5]
+10:00:04 [rxstat] t=240004 uart=600000 ovf=0 sync5=3 sync4=13 frames=1 resets=0 pend=0 pendmax=20 q=0 qmax=0 drop=0 taskus=900 stack=2344 rxst=0 err=0 rec=0 lost=0 op=0D lna=20 rxcfg=08 rxbw=01 rssi=-94 heap=205000 minheap=196000 loopmax=273000

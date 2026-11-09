@@ -4,6 +4,9 @@
 #pragma once
 #include <Arduino.h>
 
+// RX-only builds: banner + disabled controls on every page (the API refuses them anyway).
+#define RXONLY_JS R"JS(function rxOnly(s){if(!s||!s.rx_only||window.rxo)return;window.rxo=1;document.body.insertAdjacentHTML('afterbegin','<div id="rxonly" style="background:#7a2e00;color:#fff;padding:8px 12px;font:600 14px system-ui">RX-ONLY TEST FIRMWARE (fw '+String(s.fw||'?').slice(0,7)+') &mdash; receive only, no 868 MHz transmission. Controls, pairing and firmware upload are disabled.</div>');document.querySelectorAll('[data-m],[data-t],[data-b],[data-bypass],[data-ac],[data-accustom],[data-pair],[data-reapply],[data-forget],[data-selftest],[data-connect],[data-status],[data-raw],.ctl,#ar,#pl').forEach(function(e){e.disabled=true;});document.querySelectorAll('a[href="/update"]').forEach(function(a){a.style.display='none';});})JS"
+
 static const char INDEX_HTML[] PROGMEM = R"HTML(<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -20,6 +23,10 @@ button{font:inherit;color:var(--fg);background:#26303c;border:1px solid #313d4c;
 button:active{transform:scale(.97)}button.sel{background:var(--acc);border-color:var(--acc);color:#04121f;font-weight:600}
 button:has(svg.ic){display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;line-height:1.15}
 .ic{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.icobtn{margin-left:auto;padding:6px 8px;border-radius:9px;color:var(--mut)}
+.icobtn.on{color:var(--acc);border-color:var(--acc)}
+.icobtn .ic{width:20px;height:20px}
+.icobtn[hidden]{display:none}
 .row{display:flex;justify-content:space-between;padding:6px 2px;border-bottom:1px solid #232c38}
 .row:last-child{border:0}.row b{color:var(--mut);font-weight:500}
 .metrics{display:grid;grid-template-columns:1fr 1fr;gap:0 16px}
@@ -40,7 +47,10 @@ input[type=range]{width:100%}label{color:var(--mut);font-size:13px}
 .col{min-width:0}
 @media(min-width:760px){.wrap{max-width:900px}.cols{grid-template-columns:1fr 1fr;column-gap:16px;align-items:start}}
 </style></head><body><div class="wrap">
-<h1><span id="dot" class="dot"></span> Orcon 15RF <span id="mode" class="small"></span></h1>
+<h1><span id="dot" class="dot"></span> Orcon 15RF <span id="mode" class="small"></span>
+<button id="oledbtn" class="icobtn" hidden title="OLED screen">
+<svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M9 21h6M12 17v4"/></svg>
+</button></h1>
 
 <div class="cols"><div class="col">
 <div class="card imgw" style="padding:0;overflow:hidden">
@@ -187,13 +197,13 @@ input[type=range]{width:100%}label{color:var(--mut);font-size:13px}
 <button style="width:100%;margin-top:6px" data-raw>Send raw</button>
 </div>
 <p class="small">Power-cycle the HRC400, then press Pair within 3 minutes.</p>
-<p class="small"><a href="/wifi" style="color:var(--acc)">WiFi &amp; MQTT setup &rarr;</a></p>
+<p class="small"><a href="/wifi" style="color:var(--acc)">WiFi, MQTT &amp; display setup &rarr;</a></p>
 <p class="small"><a href="/log" style="color:var(--acc)">RF log &amp; device ID / clone &rarr;</a></p>
 <p class="small"><a href="/debug" style="color:var(--acc)">RF debug &amp; 31DA calibration &rarr;</a></p>
 <p class="small"><a href="/update" style="color:var(--acc)">Update firmware (OTA upload) &rarr;</a></p>
 </div><!-- /adv -->
 </div>
-<script>
+<script>)HTML" RXONLY_JS R"HTML(
 const $=s=>document.querySelector(s);
 function fmtId(id,mask){if(!id)return id||'';if(!mask)return id;const p=(''+id).split(':');if(p.length!==2||p[1].length<4)return id;return p[0]+':'+p[1].slice(0,2)+'••'+p[1].slice(-2);}
 $('#setBtn').onclick=()=>{const a=$('#adv'),v=a.style.display==='none';a.style.display=v?'block':'none';$('#setBtn').textContent=v?'⚙ Hide settings':'⚙ Settings & advanced';};
@@ -215,13 +225,14 @@ document.querySelectorAll('[data-pair]').forEach(b=>b.onclick=()=>{send({pair:1}
 if($('#pl'))$('#pl').onchange=e=>send({plearn:e.target.checked?1:0});
 if($('#maskids'))$('#maskids').onchange=e=>send({maskids:e.target.checked?1:0}).then(()=>setTimeout(refresh,300));
 if($('#showfilter'))$('#showfilter').onchange=e=>send({showfilter:e.target.checked?1:0}).then(()=>setTimeout(refresh,300));
+if($('#oledbtn'))$('#oledbtn').onclick=async()=>{const b=$('#oledbtn');b.disabled=true;try{await fetch('/api/oled',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({toggle:1})});}catch(e){}refresh();b.disabled=false;};
 if($('#riSave'))$('#riSave').onclick=()=>{var a=[];for(var i=0;i<7;i++){var el=$('#ri'+i);a.push(el&&el.value?+el.value:0);}send({roomidx:a}).then(()=>{if($('#riMsg'))$('#riMsg').textContent='Saved.';setTimeout(refresh,400);});};
 document.querySelector('[data-selftest]').onclick=()=>send({selftest:1});
 document.querySelector('[data-connect]').onclick=()=>send({connect:1});
 document.querySelector('[data-raw]').onclick=()=>send({raw_type:$('#rty').value,raw_code:$('#rco').value.trim(),raw_pl:$('#rpl').value.replace(/\s+/g,'')});
 function num(x){return (x===null||x===undefined)?'–':x}
-function refresh(){fetch('/api/state').then(r=>r.json()).then(s=>{
- $('#mode').textContent=s.mode||'';
+function refresh(){fetch('/api/state').then(r=>r.json()).then(s=>{rxOnly(s);
+ $('#mode').textContent=(s.mode||'')+(s.remote_age>=0&&s.remote_age<300?' · remote→'+s.remote_cmd+(s.remote_confirmed?' ✓ unit confirmed':' (unconfirmed)'):'');
  {var act=(s.cmd_mode&&s.cmd_mode!='unknown')?s.cmd_mode:s.mode;
   document.querySelectorAll('[data-m]').forEach(b=>b.classList.toggle('sel',b.dataset.m===act));}
  $('#sup').textContent=num(s.supply);$('#exh').textContent=num(s.exhaust);
@@ -266,6 +277,7 @@ function refresh(){fetch('/api/state').then(r=>r.json()).then(s=>{
  $('#rssi').textContent=num(s.rssi);$('#radio').textContent=s.radio||'';
  ('cc1101' in s)?($('#cc').textContent=(s.cc1101===0||s.cc1101===255)?('not found ('+s.cc1101+')'):('0x'+s.cc1101.toString(16)+' OK')):($('#cc').textContent='n/a');
  $('#dot').className='dot'+(s.online?' on':'');
+ if($('#oledbtn')){const ob=$('#oledbtn');if(!s.oled_available){ob.hidden=true;}else{ob.hidden=false;ob.classList.toggle('on',!!s.oled_on);ob.title='OLED screen: '+(s.oled_on?'on':'off')+' — tap to toggle';}}
  document.querySelectorAll('[data-m]').forEach(b=>b.classList.toggle('sel',b.dataset.m===s.mode));
  const fa=s.fan_age;
  let t='Fan reports <b>'+(s.mode||'?')+'</b>'+(fa>=0?' · heard '+fa+'s ago':' · not heard yet');
@@ -292,7 +304,17 @@ button{cursor:pointer;margin-top:14px}button.go{background:var(--acc);border-col
 .row{display:flex;gap:8px}.row>*{flex:1}.small{font-size:12px;color:var(--mut)}
 #msg{margin-top:10px}.ok{color:var(--ok)}
 </style></head><body><div class="wrap">
-<h1>WiFi &amp; MQTT setup</h1>
+<h1>WiFi, MQTT &amp; display setup</h1>
+<div class="card" id="oledcard" hidden>
+<label for="oledmode">Heltec V2 OLED</label>
+<select id="oledmode">
+<option value="auto">Auto — off after 30 seconds</option>
+<option value="on">On</option><option value="off">Off</option>
+</select>
+<p class="small">Auto shows the screen for 30 seconds after startup or Apply. WiFi and radio reception stay active.</p>
+<button id="oledsave">Apply display setting</button>
+<div id="oledmsg" class="small" role="status"></div>
+</div>
 <div class="card">
 <label>Network</label>
 <div class="row">
@@ -306,8 +328,8 @@ button{cursor:pointer;margin-top:14px}button.go{background:var(--acc);border-col
 <label><input type="checkbox" id="show" style="width:auto;margin-right:6px">show password</label>
 </div>
 <div class="card">
-<label>MQTT broker host (optional)</label>
-<input id="mqtt" placeholder="e.g. 192.168.1.10  (blank = keep current)">
+<label><input type="checkbox" id="mqtton" style="width:auto;margin-right:6px">MQTT enabled</label>
+<input id="mqtt" placeholder="broker host or IP, e.g. 192.0.2.2 (required when enabled)">
 <div id="curcfg" class="small" style="margin-top:6px"></div>
 </div>
 <button class="go" id="save">Save &amp; reboot</button>
@@ -317,7 +339,19 @@ button{cursor:pointer;margin-top:14px}button.go{background:var(--acc);border-col
 <script>
 const $=s=>document.querySelector(s);
 $('#show').onchange=e=>$('#pass').type=e.target.checked?'text':'password';
-fetch('/api/netcfg').then(r=>r.json()).then(c=>{if(c.mqtt)$('#mqtt').value=c.mqtt;if($('#curcfg'))$('#curcfg').textContent='Current: WiFi “'+(c.ssid||'—')+'”, MQTT '+(c.mqtt||'not set');}).catch(()=>{});
+fetch('/api/state',{cache:'no-store'}).then(r=>r.json()).then(s=>{rxOnly(s);if(s.oled_available){$('#oledcard').hidden=false;$('#oledmode').value=s.oled_mode;}}).catch(()=>{});
+$('#oledsave').onclick=async()=>{
+ const button=$('#oledsave');button.disabled=true;
+ $('#oledmsg').textContent='Saving…';
+ try{
+  const mode=$('#oledmode').value;
+  const r=await fetch('/api/oled',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})});
+  const j=await r.json();
+  $('#oledmsg').textContent=r.ok?(mode==='auto'?'Saved. Screen on for 30 seconds.':mode==='on'?'Saved. Screen on.':'Saved. Screen off.'):'Not saved: '+(j.err||r.status);
+ }catch(e){$('#oledmsg').textContent='Save failed — try again.';}
+ finally{button.disabled=false;}
+};
+fetch('/api/netcfg').then(r=>r.json()).then(c=>{if(c.mqtt)$('#mqtt').value=c.mqtt;$('#mqtton').checked=!!c.mqtt_on;if($('#curcfg'))$('#curcfg').textContent='Current: WiFi “'+(c.ssid||'—')+'”, MQTT '+(c.mqtt_on?c.mqtt:'off');}).catch(()=>{});
 function scan(){
  $('#rescan').textContent='…';
  fetch('/api/scan').then(r=>r.json()).then(list=>{
@@ -331,18 +365,19 @@ function scan(){
 $('#rescan').onclick=scan;
 $('#save').onclick=()=>{
  const ssid=$('#ssidManual').value.trim()||$('#ssid').value;
- const mqtt=$('#mqtt').value.trim();
- if(!ssid && !mqtt){$('#msg').textContent='Enter a network and/or an MQTT host.';return;}
+ const mqtt=$('#mqtt').value.trim(), on=$('#mqtton').checked;
+ if(on && !mqtt){$('#msg').textContent='Enter the broker host, or untick MQTT to switch it off.';return;}
  $('#msg').textContent='Saving…';
  fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify({ssid:ssid,pass:$('#pass').value,mqtt:mqtt})})
- .then(r=>r.json()).then(()=>{
+  body:JSON.stringify({ssid:ssid,pass:$('#pass').value,mqtt:mqtt,mqtt_on:on})})
+ .then(r=>r.json().then(j=>{
+  if(!r.ok){$('#msg').textContent='Not saved: '+(j.err||r.status);return;}
   $('#msg').className='ok small';
-  $('#msg').innerHTML=ssid?('Saved. Rebooting and joining <b>'+ssid+'</b>.'):'Saved MQTT host. Rebooting — WiFi unchanged.';
- }).catch(()=>{$('#msg').textContent='Save failed — try again.';});
+  $('#msg').innerHTML=(ssid?('Saved. Rebooting and joining <b>'+ssid+'</b>.'):'Saved. Rebooting — WiFi unchanged.')+' MQTT '+(on?'on ('+mqtt+')':'off')+'.';
+ })).catch(()=>{$('#msg').textContent='Save failed — try again.';});
 };
 scan();
-</script></body></html>)SETUP";
+)SETUP" RXONLY_JS R"SETUP(</script></body></html>)SETUP";
 
 // --- RF log + device-ID / clone page (served at /log) ------------------------
 static const char LOG_HTML[] PROGMEM = R"LOG(<!doctype html>
@@ -358,24 +393,27 @@ label{display:block;color:var(--mut);font-size:12px;margin:8px 0 4px}
 input,button{font:inherit;color:var(--fg);background:#26303c;border:1px solid #313d4c;border-radius:9px;padding:9px}
 button{cursor:pointer}button.go{background:var(--acc);border-color:var(--acc);color:#04121f;font-weight:600}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:end}.small{font-size:12px;color:var(--mut)}
-pre{background:#0c1016;border-radius:10px;padding:10px;overflow:auto;max-height:60vh;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;margin:0}
-.rx{color:var(--rx)}.tx{color:var(--tx)}.tag{display:inline-block;width:14px}
+pre{background:#0c1016;border-radius:10px;padding:10px;overflow:auto;max-height:60vh;font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.rx{color:var(--rx)}.tx{color:var(--tx)}.tag{display:inline-block;width:14px}.entry{display:block;padding:5px 0;border-bottom:1px solid #232c38}
 b{color:var(--fg)}
 </style></head><body><div class="wrap">
 <h1>RF log &amp; device identity</h1>
 
 <div class="card">
-<div class="small">This unit sends as <b id="usid">–</b> &nbsp; → &nbsp; fan <b id="fanid">–</b></div>
+<div class="small">Our ID <b id="usid">–</b> &nbsp;·&nbsp; selected unit <b id="fanid">–</b></div>
 <div id="seen" class="small" style="margin-top:8px"></div>
+<div id="observed" class="small" style="margin-top:8px">Waiting for decoded RF frames…</div>
+<div id="rfdiag" class="small" style="margin-top:8px">Waiting for raw radio diagnostics…</div>
 <div class="row" style="margin-top:10px">
 <div><label>This device ID (cc:serial)</label><input id="us" placeholder="29:012345" style="width:150px"></div>
-<div><label>Fan ID (cc:serial)</label><input id="fan" placeholder="32:178990" style="width:150px"></div>
+<div><label>Our unit (cc:serial)</label><input id="fan" placeholder="29:000202" style="width:150px"></div>
 <button class="go" id="apply" style="margin-top:18px">Apply &amp; save</button>
-<button id="clone" style="margin-top:18px">Use detected</button>
+<button id="clone" style="margin-top:18px">Copy heard remote as our ID</button>
 </div>
 <div id="idmsg" class="small" style="margin-top:8px"></div>
-<p class="small">Cloning: press a button on your existing remote — its ID appears under "Detected".
-Put that as <b>This device ID</b> and your fan as <b>Fan ID</b>, Apply, and the fan obeys without pairing.</p>
+<p class="small">Choose <b>our unit</b> yourself from the heard units: neighbours share 868 MHz, so a heard
+unit is not necessarily ours (check that it answers your own remote). Nothing is selected automatically.
+Cloning (TX builds): press your remote, copy its ID as our ID, Apply.</p>
 </div>
 
 <div class="card">
@@ -387,25 +425,41 @@ Put that as <b>This device ID</b> and your fan as <b>Fan ID</b>, Apply, and the 
 </div>
 <p class="small"><a href="/" style="color:var(--acc)">&larr; back to controls</a></p>
 </div>
-<script>
+<script>)LOG" RXONLY_JS R"LOG(
 const $=s=>document.querySelector(s);
-let seenR='',seenF='';
-function st(){fetch('/api/state').then(r=>r.json()).then(s=>{
-  $('#usid').textContent=s.us_id;$('#fanid').textContent=s.fan_id;
+let seenR='',selFan='';
+function st(){fetch('/api/state',{cache:'no-store'}).then(r=>r.json()).then(s=>{rxOnly(s);
+  selFan=s.fan_known?s.fan_id:'';
+  $('#usid').textContent=s.us_id;$('#fanid').textContent=selFan||'none selected';
+  if(s.rx_only)$('#clone').style.display='none';   // receive-only: no identity to clone
+  $('#observed').textContent='Decoded RX: '+s.rx_n+' · Last mode from RF: '+(s.mode||'unknown')+' (not verified fan speed)';
+  const age=ms=>ms==null||ms<0?'never':Math.round(ms/1000)+'s ago';
+  $('#rfdiag').textContent='Raw UART bytes: '+(s.rf_uart_bytes??'-')+
+    ' · Sync markers: '+(s.rf_sync_hits??'-')+
+    ' · Last raw data: '+age(s.rf_last_uart_age_ms)+
+    ' · Last sync: '+age(s.rf_last_sync_age_ms)+
+    ' · Buffer resets: '+(s.rf_buffer_resets??'-')+
+    ' · Pending bytes: '+(s.rf_pending_bytes??'-');
   if(!$('#us').value)$('#us').value=s.us_id;
   if(!$('#fan').value&&s.fan_id&&!s.fan_id.startsWith('63'))$('#fan').value=s.fan_id;
 })}
 function fmtAge(t,now){let a=Math.max(0,(now-t)/1000);return a<99?a.toFixed(0)+'s':(a/60).toFixed(0)+'m'}
-function load(){fetch('/api/log').then(r=>r.json()).then(j=>{
-  $('#seen').innerHTML='Detected: remote <b>'+(seenR||'-')+'</b>, fan <b>'+(seenF||'-')+'</b>';
-  const now=Math.max(...j.log.map(e=>e.t),0);
+function load(){fetch('/api/log',{cache:'no-store'}).then(r=>r.json()).then(j=>{
+  seenR=j.seen_remote||'';
+  const devs=j.devices||[], units=devs.filter(d=>d.role.indexOf('unit')>=0), rems=devs.filter(d=>d.role.indexOf('remote')>=0);
+  $('#seen').innerHTML='Heard units ('+units.length+', discovery only — pick ours explicitly):<br>'+
+    (units.map(d=>'<button data-pick="'+d.id+'" style="width:auto;margin:2px 6px 2px 0">'+d.id+(d.id===selFan?' ✓ selected':' select')+'</button>×'+d.n+' · '+d.age_s+'s ago · '+d.rssi+' dBm').join('<br>')||'none yet')+
+    '<br>Heard remotes: '+(rems.map(d=>d.id+' ×'+d.n+' '+d.rssi+' dBm').join(' · ')||'none yet');
+  document.querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>{$('#fan').value=b.dataset.pick;
+    $('#idmsg').textContent='Unit '+b.dataset.pick+' entered. Check it is YOUR unit (it answers your own remote), then Apply & save.';});
+  const now=j.uptime_ms||Math.max(...j.log.map(e=>e.t),0);
   $('#log').innerHTML=j.log.slice().reverse().map(e=>{
     const c=e.d==='R'?'rx':'tx';const r=e.d==='R'?(' '+e.r+'dBm'):'';
-    return '<span class="'+c+'"><span class="tag">'+(e.d==='R'?'←':'→')+'</span>'+
+    return '<span class="entry '+c+'"><span class="tag">'+(e.d==='R'?'←':'→')+'</span>'+
            fmtAge(e.t,now).padStart(4)+r.padStart(7)+'  '+e.s+'</span>';
   }).join('\n')||'(nothing yet)';
 })}
-$('#clone').onclick=()=>{if(seenR)$('#us').value=seenR;if(seenF)$('#fan').value=seenF;};
+$('#clone').onclick=()=>{if(seenR)$('#us').value=seenR;};   // never fills the unit
 $('#apply').onclick=()=>{
   const pa=s=>{const m=(s||'').split(':');return m.length===2?[parseInt(m[0],10),parseInt(m[1],10)]:null};
   const u=pa($('#us').value),f=pa($('#fan').value);
@@ -413,7 +467,7 @@ $('#apply').onclick=()=>{
   const body={us_class:u[0],us_serial:u[1]};
   if(f){body.fan_class=f[0];body.fan_serial=f[1];}
   fetch('/api/ids',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-   .then(r=>r.json()).then(()=>{$('#idmsg').textContent='Saved. Now controlling as '+$('#us').value+'.';st();});
+   .then(r=>r.json().then(j=>{$('#idmsg').textContent=r.ok?'Saved. Selected unit: '+($('#fan').value||'none')+'.':'Not saved: '+(j.err||r.status);st();}));
 };
 st();load();setInterval(()=>{if($('#auto').checked)load();},1500);setInterval(st,4000);
 </script></body></html>)LOG";
@@ -460,12 +514,12 @@ a{color:var(--mut);font-size:11px;text-decoration:none}
 <button data-b="open"><svg class="ic" viewBox="0 0 24 24"><path d="M12 2v20M3.3 7l17.4 10M20.7 7L3.3 17"/></svg>Open</button><button data-b="auto"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.3 15l2.7-6 2.7 6"/><path d="M10.1 13.2h3.8"/></svg>Auto</button><button data-b="close"><svg class="ic" viewBox="0 0 24 24"><path d="M12 3c2.5 3.5 4 5.5 4 8a4 4 0 0 1-8 0c0-1.6.8-2.8 1.6-3.6.8 1.4 1.7 1.6 2.4.4z"/></svg>Close</button>
 </div>
 <a href="/" target="_top">full control &rarr;</a>
-<script>
+<script>)WIDGET" RXONLY_JS R"WIDGET(
 const $=s=>document.querySelector(s);
 function send(b){return fetch('/api/cmd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})}
 document.querySelectorAll('[data-m]').forEach(b=>b.onclick=()=>send({mode:b.dataset.m}).then(()=>setTimeout(refresh,400)));
 document.querySelectorAll('[data-b]').forEach(b=>b.onclick=()=>send({bypass:b.dataset.b}).then(()=>setTimeout(refresh,400)));
-function refresh(){fetch('/api/state').then(r=>r.json()).then(s=>{
+function refresh(){fetch('/api/state').then(r=>r.json()).then(s=>{rxOnly(s);
   $('#dot').className='dot'+(s.online?' on':'');
   $('#mode').textContent=s.mode;
   $('#ti').textContent=s.t_indoor||'–';$('#to').textContent=s.t_outdoor||'–';
@@ -529,7 +583,7 @@ button{font:inherit;color:var(--fg);background:#26303c;border:1px solid #313d4c;
 <table id="codes"><thead><tr><th>code</th><th>count</th><th>last</th><th>latest payload</th></tr></thead><tbody></tbody></table>
 </div>
 
-<script>
+<script>)DBG" RXONLY_JS R"DBG(
 const $=s=>document.querySelector(s);
 const hb=h=>{let a=[];for(let i=0;i+1<h.length;i+=2)a.push(parseInt(h.substr(i,2),16));return a;};
 const t16=(b,i)=>{if(b.length<i+2)return null;let v=(b[i]<<8)|b[i+1];if(v&0x8000)v-=0x10000;if(v==0x7FFF||v==-32768)return null;return v/100;};
@@ -571,7 +625,7 @@ function renderDecoders(map,now){let html='';
    +'<table><thead><tr><th>field</th><th>byte(s)</th><th>decoded</th></tr></thead><tbody>'+rows+'</tbody></table></div>';});
  $('#decoders').innerHTML=html||'<div class="small">waiting for frames… press “Read live status” near the unit.</div>';}
 function tick(){
- fetch('/api/state').then(r=>r.json()).then(s=>{
+ fetch('/api/state').then(r=>r.json()).then(s=>{rxOnly(s);
   $('#radio').textContent=s.radio;$('#cc').textContent=s.cc1101||'n/a';
   $('#rssi').textContent=s.rssi;$('#online').innerHTML=s.online?'<span class=ok>yes</span>':'<span class=warn>no</span>';
   $('#rxn').textContent=s.rx_n;$('#txn').textContent=s.tx_n;
@@ -743,7 +797,7 @@ body{font:14px system-ui,sans-serif;color:var(--fg);padding:6px}
 </div></div>
 </div>
 </div>
-<script>
+<script>)FLOW" RXONLY_JS R"FLOW(
 const $=s=>document.querySelector(s);
 const num=x=>(x==null||x===undefined)?'–':x;
 const f=x=>(x==null||x==='')?'–':(Math.round(x*10)/10);
@@ -756,7 +810,7 @@ var acS=50,acE=50,acT=null,curByp=0;
 function stepAc(w,d){if(w=='s'){acS=Math.max(0,Math.min(100,acS+d));$('#supv').textContent=acS;}else{acE=Math.max(0,Math.min(100,acE+d));$('#exhv').textContent=acE;}clearTimeout(acT);acT=setTimeout(function(){send({ac_sup:acS,ac_exh:acE,ac_byp:curByp});acT=null;},800);}
 document.querySelectorAll('.ctl').forEach(b=>b.onclick=()=>stepAc(b.dataset.w,+b.dataset.step));
 const ROOMS=['attic','bed1','bath','bed2','kitchen','living','office'];
-function up(){fetch('/api/state').then(r=>r.json()).then(s=>{
+function up(){fetch('/api/state').then(r=>r.json()).then(s=>{rxOnly(s);
  curByp=s.bypass?1:0;
  $('#w_mode').textContent=(s.mode||'–').toUpperCase();
  $('#w_byp').innerHTML='bypass <b>'+(s.bypass?'open':'closed')+'</b>';

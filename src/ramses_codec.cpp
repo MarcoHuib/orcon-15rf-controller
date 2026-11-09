@@ -91,7 +91,7 @@ bool parseLogical(const uint8_t* d, size_t n, Frame& f) {
     f.cmd = ((uint16_t)d[p] << 8) | d[p+1]; p += 2;
     f.len = d[p++];
     if (f.len > MAX_PAYLOAD) return false;
-    if (p + f.len + 1 > n) return false;        // +1 for checksum
+    if (p + f.len + 1 != n) return false;       // exactly payload + checksum, nothing after it
     for (uint8_t i = 0; i < f.len; i++) f.payload[i] = d[p++];
     return true;
 }
@@ -228,22 +228,38 @@ bool decodeFrame(const uint8_t* onair, size_t n_bytes, size_t n_bits, Frame& f) 
     return parseLogical(logical, ln, f);
 }
 
-bool extractWireFrame(const uint8_t* s, size_t n, size_t* consumed, Frame& f) {
-    for (size_t i = 0; i + 5 <= n; i++) {
+bool extractWireFrame(const uint8_t* s, size_t n, size_t* consumed, Frame& f, size_t* syncAt) {
+    // Match only SYNC[1..4] (00 33 55 53). A UART locks onto the alternating
+    // 0x55 preamble at any even bit phase; in 4 of 5 phases the 0xFF byte is
+    // absorbed into a misaligned preamble byte and never arrives (test_rx.cpp).
+    for (size_t i = 0; i + 4 <= n; i++) {
         bool sync = true;
-        for (int k = 0; k < 5; k++) if (s[i + k] != SYNC[k]) { sync = false; break; }
+        for (int k = 0; k < 4; k++) if (s[i + k] != SYNC[1 + k]) { sync = false; break; }
         if (!sync) continue;
-        // SYNC found at i; need a STOP marker to have a complete frame.
-        size_t stop = 0; bool haveStop = false;
-        for (size_t j = i + 5; j < n; j++) { if (s[j] == STOP_WIRE) { stop = j; haveStop = true; break; } }
-        if (!haveStop) { if (consumed) *consumed = i; return false; }   // wait for more bytes
+        // Walk Manchester pairs up to STOP. A non-Manchester byte means this
+        // frame is garbled: resume scanning right after this sync so a frame
+        // that follows it is not skipped.
         uint8_t logical[MAX_LOGICAL];
-        size_t ln = logicalFromWire(&s[i], stop - i + 1, logical, sizeof(logical));
-        if (ln && parseLogical(logical, ln, f)) { if (consumed) *consumed = stop + 1; return true; }
-        // bad/garbled frame: drop through this SYNC and keep scanning.
-        i = stop;   // skip to the STOP we found
+        size_t j = i + 4, o = 0;
+        bool garbled = false;
+        for (;;) {
+            if (j >= n) { if (consumed) *consumed = i; return false; }  // still arriving
+            if (s[j] == STOP_WIRE) break;
+            int hi = manchIndex(s[j]);
+            if (hi < 0 || o >= MAX_LOGICAL) { garbled = true; break; }
+            if (j + 1 >= n) { if (consumed) *consumed = i; return false; }
+            int lo = manchIndex(s[j + 1]);
+            if (lo < 0) { garbled = true; break; }
+            logical[o++] = (uint8_t)((hi << 4) | lo);
+            j += 2;
+        }
+        if (!garbled && parseLogical(logical, o, f)) {
+            if (consumed) *consumed = j + 1;
+            if (syncAt) *syncAt = i;
+            return true;
+        }
     }
-    // No frame: drop everything but a possible partial SYNC at the tail.
+    // No frame: drop everything but a possible partial sync at the tail.
     if (consumed) *consumed = (n >= 4) ? n - 4 : 0;
     return false;
 }

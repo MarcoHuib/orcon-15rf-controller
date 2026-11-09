@@ -1,0 +1,19 @@
+10:00:00 ets Jun  8 2016 00:22:57
+10:00:01 
+10:00:02 rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+10:00:03 configsip: 0, SPIWP:0xee
+10:00:04 clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+10:00:05 mode:DIO, clock div:2
+10:00:06 load:0x3fff0030,len:1184
+10:00:07 load:0x40078000,len:13232
+10:00:08 entry 0x400805e4
+10:00:09 
+10:00:10 Orcon 15RF emulator starting... fw=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+10:00:11 [radio] SX1276 direct RX (TX disabled) up on 868.300 MHz
+10:00:12 Ready.
+10:00:13 [rxstat] t=10001 uart=20002 ferr=0 ovf=0 sync5=0 sync4=0 frames=0 resets=0 pend=2 op=0D lna=20 rxcfg=08 rxbw=01 rssi=-90 heap=213500
+10:00:14 [rx 402080 -73dBm] I  --- 20:000303 --:------ 20:000303 31D9 003 000003
+10:00:15 [rx 429330 -77dBm] I  --- 37:000404 --:------ 37:000404 31D9 003 000001
+10:00:16 [rxstat] t=430001 uart=860002 ferr=0 ovf=0 sync5=0 sync4=3 frames=2 resets=0 pend=2 op=0D lna=20 rxcfg=08 rxbw=01 rssi=-90 heap=213500
+10:00:17 [rx 598299 -73dBm] I  --- 20:000303 --:------ 20:000303 31D9 003 000002
+10:00:18 [rxstat] t=600001 uart=1200002 ferr=0 ovf=0 sync5=0 sync4=6 frames=3 resets=0 pend=2 op=0D lna=20 rxcfg=08 rxbw=01 rssi=-90 heap=213500

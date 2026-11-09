@@ -6,6 +6,11 @@
 #if defined(USE_CC1101_TX) || defined(RADIO_CC1101_ASYNC)
 #include "cc1101_tx.h"
 #endif
+#if defined(RADIO_SX1276)
+#include <HardwareSerial.h>
+#include <esp_task_wdt.h>
+#include "rx_stream.h"
+#endif
 
 namespace radio {
 
@@ -191,72 +196,174 @@ bool poll(ramses::Frame& out) {
 //   TX: FSK packet mode — the full on-air frame is stuffed as raw payload.
 // ===========================================================================
 #if defined(RADIO_SX1276)
-#include <HardwareSerial.h>
-
-static SX1276 g_radio = new Module(PIN_SX_NSS, PIN_SX_DIO0, PIN_SX_RST, PIN_SX_DIO1);
+#if !RX_ONLY
+#error "SX1276 backend is receive-only: it must be built with RX_ONLY=1"
+#endif
+// One FreeRTOS task owns the SX1276 after begin(): it alone touches SPI and the RX
+// UART. The main loop (web/MQTT/WiFi, can block for seconds) only pops decoded
+// frames from a bounded queue, so network stalls cannot overflow the UART buffer.
+static Module g_mod(PIN_SX_NSS, PIN_SX_DIO0, PIN_SX_RST, PIN_SX_DIO1);  // own handle: read-only register diagnostics
+static SX1276 g_radio(&g_mod);
 static HardwareSerial rxUart(1);     // reads the demodulated data off DIO2
-static uint8_t  g_rxbuf[320];
-static size_t   g_rxlen = 0;
+static rxs::Decoder        g_dec;    // RX task only (its counters are read by diagnostics)
+static rxs::FrameQueue<32> g_q;      // RX task -> loop; full: newest frame dropped + counted
+static rxs::Recovery       g_rec;    // bounded (re)starts
+static volatile bool     g_rxReady = false;     // configured and in RX
+static volatile bool     g_taskUp = false;
+static volatile int16_t  g_rxErr = 0;           // last RadioLib status of a (re)start
+static volatile uint32_t g_rxLost = 0;          // times RegOpMode showed the radio out of RX
+static volatile uint32_t g_uartOverflows = 0;   // HW FIFO / ring buffer full: bytes LOST
+static volatile uint32_t g_lastUartMs = 0, g_lastSyncMs = 0;
+static volatile uint32_t g_pendMax = 0, g_taskMaxUs = 0, g_stackFree = 0;
+static volatile uint8_t  g_op = 0, g_lna = 0, g_rxcfg = 0, g_rxbw = 0;
+static volatile int16_t  g_rssiNow = 0;
+static uint32_t g_lastSeq = 0;                  // loop: sync number of the frame poll() returned
 
-const char* name() { return "SX1276 direct RX + packet TX"; }
+const char* name() { return "SX1276 direct RX (TX disabled)"; }
 
-static bool configure() {
-    int st = g_radio.beginFSK(RF_FREQ_MHZ, RF_BITRATE_KBPS, RF_DEVIATION_KHZ,
-                              RF_RXBW_KHZ, 17 /*dBm*/, 16 /*preamble bits*/);
-    if (st != RADIOLIB_ERR_NONE) { Serial.printf("[radio] sx1276 beginFSK=%d\n", st); return false; }
+static int16_t configure() {
+    int16_t st = g_radio.beginFSK(RF_FREQ_MHZ, RF_BITRATE_KBPS, RF_DEVIATION_KHZ,
+                                  RF_RXBW_KHZ, 17 /*dBm, unused: no TX*/, 16 /*preamble bits*/);
+    if (st != RADIOLIB_ERR_NONE) return st;
     g_radio.setEncoding(RADIOLIB_ENCODING_NRZ);
     g_radio.setDataShaping(RADIOLIB_SHAPING_NONE);
     g_radio.setCRC(false);
-    return true;
+    return g_radio.receiveDirect();             // continuous FSK; demod streams on DIO2
 }
 
-void startReceive() {
-    g_radio.receiveDirect();                  // continuous FSK; demod streams on DIO2
-    while (rxUart.available()) rxUart.read();  // flush noise/partial bytes
-    g_rxlen = 0;
+// (Re)start RX. A failed RadioLib begin ends SPI (Module::term), so begin it again.
+static bool startRx() {
+    SPI.begin(PIN_SX_SCK, PIN_SX_MISO, PIN_SX_MOSI, PIN_SX_NSS);   // no-op while SPI is up
+    int16_t st = configure();
+    g_rxErr = st;
+    while (rxUart.available()) rxUart.read();   // bytes from before the (re)start
+    if (st != RADIOLIB_ERR_NONE) Serial.printf("[radio] SX1276 start failed: %d (attempt %u/%u)\n",
+                                               st, g_rec.attempts + 1, rxs::Recovery::MAX);
+    return st == RADIOLIB_ERR_NONE;
+}
+
+static void snapshot() {                        // diagnostics registers; RX task only (owns SPI)
+    g_op    = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_OP_MODE);
+    g_lna   = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_LNA);
+    g_rxcfg = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_RX_CONFIG);
+    g_rxbw  = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_RX_BW);
+    g_rssiNow = (int16_t)g_radio.getRSSI(false, true);
+    g_stackFree = uxTaskGetStackHighWaterMark(nullptr);
+}
+
+static void rxTask(void*) {
+    esp_task_wdt_add(nullptr);                  // a hung RX task is reported by the task watchdog
+    uint32_t lastCheck = 0;
+    for (;;) {
+        esp_task_wdt_reset();
+        const uint32_t t0 = micros(), now = millis();
+        if (!g_rxReady && g_rec.due(now)) {
+            bool ok = startRx();
+            g_rec.record(now, ok);
+            g_rxReady = ok;
+        }
+        if (g_rxReady) {
+            uint32_t pend = (uint32_t)rxUart.available();
+            if (pend > g_pendMax) g_pendMax = pend;
+            if (pend) g_lastUartMs = now;
+            while (rxUart.available() && g_dec.room()) {
+                if (g_dec.put((uint8_t)rxUart.read())) {
+                    // skipReceive=true is required: with default args RadioLib does
+                    // startReceive()+standby() in FSK = RX dead.
+                    int16_t rssi = (int16_t)g_radio.getRSSI(false, true);
+                    g_dec.noteSync(rssi, now);
+                    g_lastSyncMs = now;
+#if DEBUG_RX_HEX
+                    // one line per sync: no [rx] line with the same number = garbled frame
+                    Serial.printf("[sync %lu %lu %ddBm pre=%02X]\n", (unsigned long)g_dec.syncs,
+                                  (unsigned long)now, rssi, g_dec.lastPre());
+#endif
+                }
+            }
+            rxs::Item it;
+            while (g_dec.next(it)) g_q.push(it);
+        }
+        if (now - lastCheck >= 1000) {
+            lastCheck = now;
+            snapshot();
+            if (g_rxReady && (g_op & 0x07) != 0x05) {   // radio reset / brown-out / left RX
+                g_rxReady = false; ++g_rxLost;
+                Serial.printf("[radio] SX1276 not in RX (op=%02X): restarting\n", g_op);
+            }
+        }
+        uint32_t us = micros() - t0;
+        if (us > g_taskMaxUs) g_taskMaxUs = us;
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
 }
 
 bool begin() {
-    SPI.begin(PIN_SX_SCK, PIN_SX_MISO, PIN_SX_MOSI, PIN_SX_NSS);
-    bool ok = configure();
     rxUart.setRxBufferSize(8192);
     rxUart.begin(38400, SERIAL_8N1, PIN_SX_DIO2 /*rx*/, -1 /*tx unused*/);
-    return ok;
+    rxUart.onReceiveError([](hardwareSerial_error_t e) {   // runs in the UART event task
+        if (e == UART_FIFO_OVF_ERROR || e == UART_BUFFER_FULL_ERROR) g_uartOverflows = g_uartOverflows + 1;
+    });
+    g_rxReady = startRx();
+    if (!g_rxReady) g_rec.record(millis(), false);         // the RX task retries, bounded
+    // Above the Arduino loop (prio 1) on the loop's core: preempts it whenever it runs.
+    g_taskUp = xTaskCreatePinnedToCore(rxTask, "ramses_rx", 4096, nullptr, 3, nullptr,
+                                       xPortGetCoreID()) == pdPASS;
+    if (!g_taskUp) { Serial.println("[radio] RX task could not be created"); g_rxReady = false; }
+    return g_rxReady && g_taskUp;
 }
 
+void startReceive() {}                          // the RX task keeps the radio in RX
+
 bool sendFrame(const ramses::Frame& f) {
-    size_t bits = 0;
-    size_t n = ramses::encodeFrame(f, g_onair, sizeof(g_onair), RF_PREAMBLE_BYTES, &bits);
-    if (!n) return false;
-    static uint8_t txSync[2] = { 0x55, 0x53 };
-    g_radio.standby();                        // leave continuous/direct RX cleanly
-    g_radio.setEncoding(RADIOLIB_ENCODING_NRZ);
-    g_radio.setSyncWord(txSync, sizeof(txSync));
-    g_radio.fixedPacketLengthMode((uint8_t)n);
-    int st = g_radio.transmit(g_onair, n);
-    startReceive();                           // straight back to listening
-    if (st != RADIOLIB_ERR_NONE) { Serial.printf("[radio] sx1276 tx=%d\n", st); return false; }
+    (void)f;
+    Serial.println("[radio] TX blocked: RX-only firmware");
+    return false;
+}
+
+bool poll(ramses::Frame& out) {                 // loop side: frames the RX task decoded
+    rxs::Item it;
+    if (!g_q.pop(it)) return false;
+    out = it.f;
+    g_rssi = it.rssi;                           // RSSI of this frame's own sync
+    g_lastSeq = it.seq;
     return true;
 }
 
-bool poll(ramses::Frame& out) {
-    while (rxUart.available() && g_rxlen < sizeof(g_rxbuf))
-        g_rxbuf[g_rxlen++] = (uint8_t)rxUart.read();
-    if (g_rxlen < 8) return false;
-    size_t consumed = 0;
-    bool ok = ramses::extractWireFrame(g_rxbuf, g_rxlen, &consumed, out);
-    if (ok) g_rssi = g_radio.getRSSI();
-    if (consumed > 0 && consumed <= g_rxlen) {
-        memmove(g_rxbuf, g_rxbuf + consumed, g_rxlen - consumed);
-        g_rxlen -= consumed;
-    } else if (g_rxlen >= sizeof(g_rxbuf)) {
-        g_rxlen = 0;                          // overflow guard
-    }
-    return ok;
-}
+uint32_t lastSeq() { return g_lastSeq; }
 
 #endif // RADIO_SX1276
 
+RxDiagnostics rxDiagnostics() {
+    RxDiagnostics d;
+#if defined(RADIO_SX1276)
+    d.uartBytes = g_dec.bytes;
+    d.syncHits = g_dec.syncsFF;
+    d.coreSyncHits = g_dec.syncs;
+    d.frames = g_dec.frames;
+    d.bufferResets = g_dec.resets;
+    d.bufferedBytes = (uint16_t)g_dec.buffered();
+    d.uartOverflows = g_uartOverflows;
+    d.pendingBytes = (uint16_t)rxUart.available();
+    d.uartPendMax = (uint16_t)g_pendMax;
+    d.lastUartMs = g_lastUartMs;
+    d.lastSyncMs = g_lastSyncMs;
+    d.opMode = g_op; d.lna = g_lna; d.rxConfig = g_rxcfg; d.rxBw = g_rxbw; d.rssiNow = g_rssiNow;
+    d.queueDepth = (uint16_t)g_q.depth();
+    d.queueHighWater = (uint16_t)g_q.highWater.load();
+    d.queueDrops = g_q.dropped.load();
+    d.taskMaxUs = g_taskMaxUs;
+    d.stackFree = g_stackFree;
+    d.rxState = (g_rxReady && g_taskUp) ? 0 : (g_rec.exhausted() || !g_taskUp) ? 2 : 1;
+    d.rxErr = g_rxErr;
+    d.rxRecoveries = g_rec.attempts;
+    d.rxLost = g_rxLost;
+#endif
+    return d;
+}
+
 float lastRssi() { return g_rssi; }
+#if !defined(RADIO_SX1276)
+uint32_t lastSeq() { return 0; }
+#endif
 
 } // namespace radio

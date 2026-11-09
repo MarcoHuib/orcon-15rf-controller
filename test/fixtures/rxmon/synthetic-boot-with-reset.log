@@ -1,0 +1,9 @@
+10:00:00 
+10:00:01 Orcon 15RF emulator starting... fw=0000000011111111111111111111111111111111
+10:00:02 [radio] SX1276 direct RX (TX disabled) up on 868.300 MHz
+10:00:03 [   260][E][Preferences.cpp:483] getString(): nvs_get_str len fail: mqtt NOT_FOUND
+10:00:04 Ready.
+10:00:05 [rxstat] t=10000 uart=24000 ovf=0 sync5=0 sync4=0 frames=0 resets=0 pend=0 pendmax=20 q=0 qmax=0 drop=0 taskus=900 stack=2344 rxst=0 err=0 rec=0 lost=0 op=0D lna=20 rxcfg=08 rxbw=01 rssi=-94 heap=205000 minheap=196000 loopmax=50000
+10:00:06 [sync 1 17799 -82dBm pre=55]
+10:00:07 [rxstat] t=20001 uart=49000 ovf=0 sync5=0 sync4=1 frames=0 resets=0 pend=0 pendmax=20 q=0 qmax=0 drop=0 taskus=900 stack=2344 rxst=0 err=0 rec=0 lost=0 op=0D lna=20 rxcfg=08 rxbw=01 rssi=-94 heap=205000 minheap=196000 loopmax=50000
+10:00:08 [rxstat] t=30001 uart=75000 ovf=0 sync5=0 sync4=1 frames=0 resets=0 pend=0 pendmax=20 q=0 qmax=0 drop=0 taskus=900 stack=2344 rxst=0 err=0 rec=0 lost=0 op=0D lna=20 rxcfg=08 rxbw=01 rssi=-94 heap=205000 minheap=196000 loopmax=50000

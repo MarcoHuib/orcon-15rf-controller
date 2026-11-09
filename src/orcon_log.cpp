@@ -17,6 +17,8 @@ static Entry  g_buf[CAP];
 static size_t g_head = 0;
 static size_t g_count = 0;
 static Seen   g_seen;
+static Device g_dev[MAX_DEVICES];
+static size_t g_devN = 0;
 
 static const char* msgType(ramses::MsgType t) {
     switch (t) {
@@ -45,15 +47,63 @@ size_t format(const ramses::Frame& f, char* out, size_t cap) {
     return (size_t)n;
 }
 
-static void learn(const ramses::Frame& f) {
-    // Class 0x20 = FAN; controllers are class 0x1D (29, REM) or 0x25 (37, CO2 /
-    // 15RF display). Capture both so the UI can offer "clone this controller".
-    for (int i = 0; i < 3; i++) {
-        if (!f.has_addr[i]) continue;
-        uint8_t c = f.addr[i].cls;
-        if (c == 0x20)                   { g_seen.fan    = f.addr[i]; g_seen.haveFan    = true; }
-        else if (c == 0x1D || c == 0x25) { g_seen.remote = f.addr[i]; g_seen.haveRemote = true; }
+static void noteDevice(const ramses::DeviceId& id, uint8_t role, uint16_t cmd, int rssi);
+
+static void learn(const ramses::Frame& f, int rssi) {
+    // Roles come from what a device SENDS, not its class: on the MVS-15RHBP the
+    // fan AND its remote are both class 29 (HRC400 fans are 32), e.g.
+    //   I 29:000101 -> 29:000202 22F1 000104  (remote -> fan)
+    //   I 29:000202 ...          31D9 000003  (fan state broadcast)
+    if (!f.has_addr[0]) return;
+    const ramses::DeviceId& src = f.addr[0];
+    uint8_t role = 0;
+    if ((f.cmd == 0x31D9 || f.cmd == 0x31DA) &&            // only a ventilation unit reports these
+        f.type != ramses::MsgType::RQ) {                   // (an RQ for them comes from a controller)
+        g_seen.fan = src; g_seen.haveFan = true;
+        role = ROLE_UNIT;
+    } else if ((f.cmd == 0x22F1 || f.cmd == 0x22F3) &&     // fan-mode / timer command
+               f.type != ramses::MsgType::RP) {
+        g_seen.remote = src; g_seen.haveRemote = true;
+        role = ROLE_REMOTE;
+        int dst = f.has_addr[1] ? 1 : (f.has_addr[2] ? 2 : -1);
+        if (dst > 0 && !(f.addr[dst] == src)) { g_seen.fan = f.addr[dst]; g_seen.haveFan = true; }
     }
+    noteDevice(src, role, f.cmd, rssi);
+}
+
+static void noteDevice(const ramses::DeviceId& id, uint8_t role, uint16_t cmd, int rssi) {
+    size_t k = 0;
+    while (k < g_devN && !(g_dev[k].id == id)) k++;
+    const uint32_t now = millis();
+    if (k == g_devN) {
+        if (g_devN < MAX_DEVICES) {
+            g_devN++;
+        } else {                                   // full: reuse the least recently heard slot
+            k = 0;
+            for (size_t i = 1; i < MAX_DEVICES; i++)
+                if (now - g_dev[i].lastMs > now - g_dev[k].lastMs) k = i;
+        }
+        g_dev[k] = Device(); g_dev[k].id = id;
+    }
+    Device& d = g_dev[k];
+    d.roles |= role; d.lastCmd = cmd; d.count++; d.lastMs = now; d.rssi = (int16_t)rssi;
+}
+
+size_t devices(const Device** out) { if (out) *out = g_dev; return g_devN; }
+
+size_t devicesJson(char* out, size_t cap) {
+    static const char* const ROLE[] = { "other", "unit", "remote", "unit+remote" };
+    size_t n = 0;
+    if (cap < 3) return 0;
+    out[n++] = '[';
+    for (size_t k = 0; k < g_devN && n + 100 < cap; k++) {
+        const Device& d = g_dev[k];
+        n += snprintf(out + n, cap - n, "%s{\"id\":\"%02u:%06lu\",\"role\":\"%s\",\"n\":%lu,\"age_s\":%lu,\"rssi\":%d,\"cmd\":\"%04X\"}",
+                      k ? "," : "", d.id.cls, (unsigned long)d.id.serial, ROLE[d.roles & 3], (unsigned long)d.count,
+                      (unsigned long)((millis() - d.lastMs) / 1000), d.rssi, d.lastCmd);
+    }
+    out[n++] = ']'; out[n] = 0;
+    return n;
 }
 
 void add(char dir, const ramses::Frame& f, int rssi) {
@@ -64,7 +114,7 @@ void add(char dir, const ramses::Frame& f, int rssi) {
     format(f, e.str, sizeof(e.str));
     g_head = (g_head + 1) % CAP;
     if (g_count < CAP) g_count++;
-    if (dir == 'R') learn(f);
+    if (dir == 'R') learn(f, rssi);
 }
 
 size_t toJson(char* out, size_t cap) {
@@ -74,11 +124,11 @@ size_t toJson(char* out, size_t cap) {
     for (size_t k = 0; k < g_count; k++) {
         size_t idx = (start + k) % CAP;
         Entry& e = g_buf[idx];
+        if (n + 160 >= cap) break;           // one entry (<= ~140 B) + "]" + NUL must fit
         if (k) out[n++] = ',';
         n += snprintf(out + n, cap - n,
                       "{\"t\":%lu,\"d\":\"%c\",\"r\":%d,\"s\":\"%s\"}",
                       (unsigned long)e.t, e.dir, e.rssi, e.str);
-        if (n > cap - 120) break;
     }
     out[n++] = ']';
     out[n] = '\0';

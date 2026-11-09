@@ -8,6 +8,13 @@ namespace orcon {
 
 struct State {
     Mode     mode           = Mode::Unknown; // FAN-reported (31D9) only
+    uint32_t modeMs         = 0;   // when the selected unit last reported its mode
+    // Last remote command addressed to the selected unit. A request, not unit state:
+    // "confirmed" only when the unit itself reports that mode within 10 s.
+    Mode     remoteMode     = Mode::Unknown;
+    ramses::DeviceId remoteId;
+    uint32_t remoteMs       = 0;
+    uint32_t remoteConfirmedMs = 0;
     uint8_t  supplyPct      = 0;
     uint8_t  exhaustPct     = 0;
     float    tempSupply     = 0;
@@ -30,6 +37,7 @@ struct State {
     // --- debug / keeper ---
     uint32_t rxCount        = 0;
     uint32_t txCount        = 0;
+    uint32_t txRefused      = 0;   // TX attempts refused (RX-only) or not sent by the radio
     char     raw31DA[65]    = "";  // last 31DA payload as hex (for offset calibration)
     uint32_t raw31DAms      = 0;
     char     lastRx[80]     = "";  // last decoded RX frame, human string

@@ -23,8 +23,8 @@ void add(char dir, const ramses::Frame& f, int rssi);
 size_t toJson(char* out, size_t cap);
 
 // --- clone auto-detect ------------------------------------------------------
-// When we hear an I 22F1/22F3/31D9 involving a REM (class 0x1D) and a FAN
-// (class 0x20), remember those ids so the UI can offer "clone this remote".
+// Roles by message, not device class: the sender of 31D9/31DA is the fan; the
+// sender of 22F1/22F3 is a remote and its destination the fan.
 struct Seen {
     bool             haveRemote = false;
     bool             haveFan    = false;
@@ -32,5 +32,20 @@ struct Seen {
     ramses::DeviceId fan;
 };
 const Seen& seen();
+
+// --- discovered devices ------------------------------------------------------
+// Every sender heard, with the role its messages imply. Discovery only: nothing
+// here ever selects or replaces the unit (that is orcon::ids().fan, set explicitly).
+enum : uint8_t { ROLE_UNIT = 1, ROLE_REMOTE = 2 };   // sent 31D9/31DA | sent 22F1/22F3
+struct Device {
+    ramses::DeviceId id;
+    uint8_t  roles = 0;
+    uint16_t lastCmd = 0;
+    uint32_t count = 0, lastMs = 0;
+    int16_t  rssi = 0;
+};
+static const size_t MAX_DEVICES = 12;
+size_t devices(const Device** out);      // returns how many entries are valid
+size_t devicesJson(char* out, size_t cap); // [{"id","role","n","age_s","rssi","cmd"}...]
 
 } // namespace rlog
