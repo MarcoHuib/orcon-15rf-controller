@@ -783,10 +783,8 @@ static void pocToken(char out[33]) {
     for(unsigned i=0;i<16;++i) { out[2*i]=TOKEN_HEX[bytes[i]>>4]; out[2*i+1]=TOKEN_HEX[bytes[i]&15]; }
     out[32]=0;
 }
-static bool pocReady() {
-    const radio::RxDiagnostics d=radio::rxDiagnostics();
-    return g_pocIdentityValid && orcon::state().fanKnown && txpoc::validIds(orcon::ids()) &&
-        d.rxState==0 && (d.opMode&7)==5;
+static bool pocReady() {   // RX health only via the owner's atomic heartbeat
+    return g_pocIdentityValid && orcon::state().fanKnown && txpoc::validIds(orcon::ids()) && txpoc::rxReady();
 }
 static bool pocAuthorize(bool mutation) {
     if(uint32_t(millis()-g_pocBootMs)>=600000) {
@@ -794,11 +792,9 @@ static bool pocAuthorize(bool mutation) {
     }
     String host=server.header("Host"),local=WiFi.localIP().toString();
     String auth=server.header("Authorization"),csrf=server.header("X-CSRF-Token");
-    txpoc::Access a;
-    a.station=!g_apMode && WiFi.getMode()==WIFI_STA && WiFi.status()==WL_CONNECTED;
-    a.host=host==local || host==local+":80";
-    a.origin=server.header("Origin")==String("http://")+host;
-    a.json=server.header("Content-Type")=="application/json";
+    String origin=server.header("Origin"),type=server.header("Content-Type");
+    txpoc::Access a=txpoc::accessFrom(!g_apMode && WiFi.getMode()==WIFI_STA && WiFi.status()==WL_CONNECTED,
+        host.c_str(),local.c_str(),origin.c_str(),type.c_str());
     const char* token=auth.startsWith("Bearer ")?auth.c_str()+7:"";
     txpoc::AccessResult result=g_pocSecurity.check(token,csrf.c_str(),a,mutation,millis());
     if(result!=txpoc::AccessResult::Allowed) {
@@ -823,8 +819,10 @@ static void pocStateBody(int code) {
     idStr(pinned.us,source,sizeof(source)); idStr(pinned.fan,unit,sizeof(unit));
     d["source_id"]=source; d["unit_id"]=unit;
     d["ready"]=pocReady(); d["csrf"]=g_pocSecurity.csrf();
+    if(s.haveUnit) { d["unit_mode"]=s.unitMode; d["unit_age_s"]=(millis()-s.unitMs)/1000; }
+    d["remote_seen"]=s.haveRemote;
     d["rx_check"]="dry-run observation; no radio mode switch";
-    char body[768];
+    char body[1024];
     if(measureJson(d)>=sizeof(body)) { server.send(500,"application/json","{\"error\":\"state-too-large\"}"); return; }
     serializeJson(d,body,sizeof(body));
     server.sendHeader("Cache-Control","no-store"); server.sendHeader("X-Content-Type-Options","nosniff");
@@ -838,8 +836,10 @@ static void handlePocMode() {
         server.send(400,"application/json","{\"error\":\"expected-mode-1-2-3-and-request\"}"); return;
     }
     txpoc::controller().tick(millis());
+    const rlog::Device* heard=nullptr; const size_t heardN=rlog::devices(&heard);
+    const bool identityClear=!txpoc::identityConflict(orcon::ids(),rlog::seen(),heard,heardN);
     txpoc::Admission result=txpoc::controller().submit(input,orcon::ids(),
-        g_pocIdentityValid && orcon::state().fanKnown,pocReady(),millis());
+        g_pocIdentityValid && orcon::state().fanKnown,pocReady(),identityClear,millis());
     if(result==txpoc::Admission::Accepted || result==txpoc::Admission::Duplicate) {
         pocStateBody(result==txpoc::Admission::Accepted?202:200); return;
     }
@@ -851,6 +851,11 @@ static void handlePocMode() {
         case txpoc::Admission::Limited:error="rate-limited"; code=429; break;
         case txpoc::Admission::Replay:error="request-sequence"; code=409; break;
         case txpoc::Admission::Conflict:error="idempotency-conflict"; code=409; break;
+        case txpoc::Admission::IdentityConflict:error="source-id-heard-on-air"; code=403; break;
+        case txpoc::Admission::IdentityUnverified:error="press-physical-remote-first"; code=409; break;
+        case txpoc::Admission::UnitStateUnknown:error="unit-mode-unknown-or-stale"; code=409; break;
+        case txpoc::Admission::Unchanged:error="unit-already-in-mode"; code=409; break;
+        case txpoc::Admission::RemoteActive:error="remote-recently-active"; code=409; break;
         default:break;
     }
     char response[96]; snprintf(response,sizeof(response),"{\"error\":\"%s\"}",error);

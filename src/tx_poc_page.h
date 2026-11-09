@@ -21,7 +21,7 @@ async function state(){
  if(!r.ok)throw Error('Toegang geweigerd ('+r.status+')');
  const s=await r.json();csrf=s.csrf;next=s.next_request;busy=s.busy||s.locked||!s.ready;
  $('access').textContent='Dry-run-sessie. Bron: '+s.source_id+'; vergrendelde unit: '+s.unit_id+'. RF-capable: nee; RF-vrijgave: nee.';
- $('status').textContent='Transactie '+s.request+': '+s.phase+'\nFout: '+s.error+'\nRX-controle: '+s.rx_restored+'\nFramebytes: '+s.bytes+'\nRF verzonden: nee\nUnitbevestiging: geen (dry-run)';
+ $('status').textContent='Transactie '+s.request+': '+s.phase+'\nFout: '+s.error+'\nRX-controle: '+s.rx_restored+'\nFramebytes: '+s.bytes+'\nRF verzonden: nee\nUnitbevestiging: geen (dry-run)'+'\nUnitstand laatst gemeld: '+(s.unit_mode===undefined?'onbekend':s.unit_mode+' ('+s.unit_age_s+' s geleden)')+'\nFysieke afstandsbediening gehoord: '+(s.remote_seen?'ja':'nee');
  }catch(e){csrf='';busy=true;$('access').textContent=e.message}finally{refreshing=false;lock()}
 }
 $('login').onclick=async()=>{token=$('token').value;$('token').value='';pending=null;await state()};

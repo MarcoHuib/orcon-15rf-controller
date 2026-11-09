@@ -5,5 +5,6 @@
 namespace txpoc {
 Controller& controller(); // Arduino loop only
 void serviceOwner(uint32_t now,bool rxHealthy); // existing radio owner only
+bool rxReady(); // any task: fresh, healthy heartbeat published by the radio owner
 }
 #endif

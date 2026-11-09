@@ -51,13 +51,18 @@ bool parseInput(const char* json,size_t len,Input& out) {
     ws(); if(p!=len||!mode||!request) return false;
     out=parsed; return true;
 }
+bool identityConflict(const orcon::Ids& ids,const rlog::Seen& seen,const rlog::Device* devs,size_t n) {
+    if((seen.haveRemote&&seen.remote==ids.us)||(seen.haveFan&&seen.fan==ids.us)) return true;
+    for(size_t i=0;i<n;++i) if(devs[i].id==ids.us) return true;
+    return false;
+}
 const char* errorName(Error e) {
     switch(e) {
 #define E(a,b) case Error::a:return b
         E(None,"none"); E(Expired,"queue-expired"); E(RadioUnavailable,"radio-unavailable");
         E(Prepare,"prepare-failed"); E(Start,"start-failed"); E(Send,"send-failed");
         E(SendTimeout,"send-timeout"); E(Cleanup,"cleanup-failed"); E(RxRestore,"rx-restore-failed");
-        E(OwnerTimeout,"owner-timeout"); E(UnitTimeout,"unit-timeout"); E(Ambiguous,"remote-overlap");
+        E(OwnerTimeout,"owner-timeout");
 #undef E
     }
     return "invalid";
@@ -69,6 +74,9 @@ const char* phaseName(Phase p) {
         case Phase::DryRunComplete:return "dry-run-complete";
         case Phase::AwaitUnit:return "await-unit-status";
         case Phase::UnitReported:return "unit-reported-mode";
+        case Phase::Unchanged:return "unchanged";
+        case Phase::NotConfirmed:return "not-confirmed";
+        case Phase::Ambiguous:return "ambiguous";
         case Phase::Failed:return "failed";
     }
     return "invalid";
@@ -80,20 +88,23 @@ bool DryRunBackend::prepare(const Request& r,size_t& bytes) {
     return bytes==50&&bits==400;
 }
 void Owner::fail(Error e) { if(result_.error==Error::None) result_.error=e; step_=Step::Cleanup; }
+void Owner::finish(Error e) { if(result_.error==Error::None) result_.error=e; step_=Step::Publish; }
 void Owner::tick(uint32_t now,bool rxHealthy) {
     switch(step_) {
         case Step::Idle: {
             Request request; if(!ex_.requests.pop(request)) return;
-            result_=Result{}; result_.request=request; retries_=0; deadline_=now+OWNER_MS;
-            if(due(now,request.expires)) fail(Error::Expired);
-            else if(!rxHealthy) fail(Error::RadioUnavailable);
+            result_=Result{}; result_.request=request; deadline_=now+OWNER_MS;
+            if(due(now,request.expires)) finish(Error::Expired);
+            else if(!rxHealthy) finish(Error::RadioUnavailable);
             else step_=Step::Prepare;
             break;
         }
         case Step::Prepare:
-            if(due(now,result_.request.expires)) { fail(Error::Expired); break; }
-            if(due(now,deadline_)) fail(Error::SendTimeout);
-            else if(!port_.prepare(result_.request,result_.bytes)) fail(Error::Prepare);
+            if(due(now,result_.request.expires)) { finish(Error::Expired); break; }
+            if(!rxHealthy) { finish(Error::RadioUnavailable); break; }
+            if(due(now,deadline_)) { finish(Error::SendTimeout); break; }
+            result_.touched=true; // from here a hardware backend may have changed radio state
+            if(!port_.prepare(result_.request,result_.bytes)) fail(Error::Prepare);
             else if(!port_.start(now)) fail(Error::Start);
             else step_=Step::Simulate;
             break;
@@ -108,16 +119,11 @@ void Owner::tick(uint32_t now,bool rxHealthy) {
             if(!port_.cleanup()&&result_.error==Error::None) result_.error=Error::Cleanup;
             step_=Step::Restore; break;
         case Step::Restore:
-            if(port_.restoreRx()) { result_.rxRestored=true; result_.restoredMs=now; step_=Step::Publish; }
-            else { retryAt_=now+RECOVERY_MS; step_=Step::Recover; }
-            break;
-        case Step::Recover:
-            if(!due(now,retryAt_)) break;
-            ++retries_;
-            if(port_.reinitializeRx()) { result_.rxRestored=true; result_.restoredMs=now; step_=Step::Publish; }
-            else if(retries_>=RECOVERY_MAX) { result_.error=Error::RxRestore; step_=Step::Publish; }
-            else retryAt_=now+RECOVERY_MS;
-            break;
+            // One fast restore. Failure is published and latched by the controller; any
+            // radio restart belongs to the existing RX recovery, never to this owner.
+            if(port_.restoreRx()) { result_.rxRestored=true; result_.restoredMs=now; }
+            else if(result_.error==Error::None) result_.error=Error::RxRestore;
+            step_=Step::Publish; break;
         case Step::Publish:
             // Retain ownership on backpressure, never block or drop completion.
             if(ex_.results.push(result_)) step_=Step::Idle;
@@ -125,7 +131,7 @@ void Owner::tick(uint32_t now,bool rxHealthy) {
     }
 }
 static bool sameIds(const orcon::Ids& a,const orcon::Ids& b) { return a.us==b.us&&a.fan==b.fan; }
-Admission Controller::submit(Input input,const orcon::Ids& ids,bool known,bool ready,uint32_t now) {
+Admission Controller::submit(Input input,const orcon::Ids& ids,bool known,bool ready,bool identityClear,uint32_t now) {
     if(!input.request||input.mode<1||input.mode>3) return Admission::Invalid;
     if(!known||!validIds(ids)) return Admission::UnknownUnit;
     const Request& last=status_.result.request;
@@ -134,9 +140,15 @@ Admission Controller::submit(Input input,const orcon::Ids& ids,bool known,bool r
     if(input.request!=status_.nextRequest) return Admission::Replay;
     if(status_.busy) return Admission::Busy;
     if(!ready||status_.locked) return Admission::Unavailable;
+    if(!identityClear||(status_.haveRemote&&status_.remoteId==ids.us)) return Admission::IdentityConflict;
+    if(!status_.haveRemote) return Admission::IdentityUnverified; // physical remote not heard this boot
     if(haveAccepted_&&(uint32_t)(now-lastAcceptedMs_)<RATE_MS) return Admission::Limited;
+    if(!status_.haveUnit||(uint32_t)(now-status_.unitMs)>=UNIT_STATE_MAX_AGE_MS) return Admission::UnitStateUnknown;
+    if(status_.unitMode==input.mode) return Admission::Unchanged;
+    if(!due(now,status_.remoteMs+REMOTE_GUARD_MS)) return Admission::RemoteActive;
     if(input.request==UINT32_MAX) return Admission::Replay; // never wrap/replay IDs
     Request request; request.input=input; request.ids=ids; request.expires=now+QUEUE_MS;
+    request.prior=status_.unitMode;
     if(!ex_.requests.push(request)) return Admission::Busy;
     status_.result=Result{}; status_.result.request=request;
     status_.phase=Phase::Queued; status_.busy=true; ++status_.nextRequest;
@@ -145,16 +157,16 @@ Admission Controller::submit(Input input,const orcon::Ids& ids,bool known,bool r
 }
 void Controller::consumeResult() {
     Result result;
-    if(ex_.results.pop(result)&&status_.busy&&result.request.input.request==status_.result.request.input.request) {
-        status_.result=result;
-        if(ownerTimedOut_) status_.result.error=Error::OwnerTimeout;
-        if(!result.rxRestored||result.error==Error::Cleanup||ownerTimedOut_) status_.locked=true;
-        if(status_.result.error!=Error::None||!result.rxRestored) {
-            if(status_.result.error==Error::None) status_.result.error=Error::RxRestore;
-            status_.phase=Phase::Failed; status_.busy=false;
-        } else if(result.rfSent) status_.phase=Phase::AwaitUnit;
-        else { status_.phase=Phase::DryRunComplete; status_.busy=false; }
-    }
+    if(!ex_.results.pop(result)||!status_.busy||result.request.input.request!=status_.result.request.input.request) return;
+    status_.result=result;
+    if(ownerTimedOut_&&result.error==Error::None) status_.result.error=Error::OwnerTimeout;
+    // Uncertain radio health after our own radio work blocks TX until a future boot.
+    if(ownerTimedOut_||(result.touched&&(!result.rxRestored||result.error==Error::Cleanup))) status_.locked=true;
+    if(status_.result.error!=Error::None) settle(Phase::Failed);
+    else if(!result.touched||!result.rxRestored) {   // defensive: "success" without a restore
+        status_.result.error=Error::RxRestore; status_.locked=true; settle(Phase::Failed);
+    } else if(result.rfSent) { status_.phase=Phase::AwaitUnit; if(interfered()) settle(Phase::Ambiguous); }
+    else settle(Phase::DryRunComplete);
 }
 void Controller::tick(uint32_t now) {
     consumeResult();
@@ -162,21 +174,47 @@ void Controller::tick(uint32_t now) {
         status_.phase=Phase::Failed; status_.result.error=Error::OwnerTimeout;
         ownerTimedOut_=true; // hold reservation until owner returns cleanup result
     }
-    if(status_.phase==Phase::AwaitUnit&&due(now,status_.result.sentMs+CONFIRM_MS)) {
-        status_.phase=Phase::Failed; status_.result.error=Error::UnitTimeout; status_.busy=false;
-    }
+    if(status_.phase==Phase::AwaitUnit&&due(now,status_.result.sentMs+CONFIRM_MS+EXPIRY_GRACE_MS))
+        settle(interfered()?Phase::Ambiguous:Phase::NotConfirmed);
 }
-void Controller::onFrame(const ramses::Frame& f,uint32_t receivedMs) {
-    if(status_.phase!=Phase::AwaitUnit||!status_.result.rfSent||!f.has_addr[0]) return;
-    const Result& r=status_.result;
-    if(!due(receivedMs,r.restoredMs)||!due(receivedMs,r.sentMs+1)||due(receivedMs,r.sentMs+CONFIRM_MS)) return;
-    bool toUnit=f.has_addr[1]&&f.addr[1]==r.request.ids.fan;
-    if(f.cmd==0x22F1&&toUnit&&!(f.addr[0]==r.request.ids.us)) {
-        status_.phase=Phase::Failed; status_.result.error=Error::Ambiguous; status_.busy=false; return;
+// A relevant remote action shortly before, or after, our transmission.
+bool Controller::interfered() const {
+    return status_.haveRemote&&due(status_.remoteMs,status_.result.sentMs-REMOTE_GUARD_MS);
+}
+static bool toUnit(const ramses::Frame& f,const ramses::DeviceId& unit) {   // orcon::toUnit semantics
+    return (f.has_addr[1]&&f.addr[1]==unit)||(f.has_addr[2]&&!(f.addr[2]==f.addr[0])&&f.addr[2]==unit);
+}
+void Controller::onFrame(const ramses::Frame& f,uint32_t receivedMs,uint32_t now,const orcon::Ids& current) {
+    if(!f.has_addr[0]) return;
+    const bool timed=receivedMs!=0&&due(now,receivedMs);
+    const ramses::DeviceId unit=status_.busy?status_.result.request.ids.fan:current.fan; // pinned while open
+    if((f.cmd==0x22F1||f.cmd==0x22F3)&&f.type!=ramses::MsgType::RP&&toUnit(f,unit)) {
+        const uint32_t at=timed?receivedMs:now;  // untimed: cannot be placed, so count it as now
+        if(!status_.haveRemote||due(at,status_.remoteMs)) status_.remoteMs=at;
+        status_.haveRemote=true; status_.remoteId=f.addr[0];
+        if(status_.phase==Phase::AwaitUnit&&interfered()) settle(Phase::Ambiguous);
+        return;
     }
-    if(!(f.addr[0]==r.request.ids.fan)||(f.type!=ramses::MsgType::I&&f.type!=ramses::MsgType::RP)||
-        f.cmd!=0x31D9||f.len<3||f.payload[0]!=0||f.payload[2]!=r.request.input.mode) return;
-    status_.phase=Phase::UnitReported; status_.busy=false;
+    if(!timed||!(f.addr[0]==unit)||(f.type!=ramses::MsgType::I&&f.type!=ramses::MsgType::RP)||
+       f.cmd!=0x31D9||f.len<3||f.payload[0]!=0||f.payload[2]>7) return;
+    const uint8_t mode=f.payload[2];
+    if(!status_.haveUnit||due(receivedMs,status_.unitMs)) { status_.unitMode=mode; status_.unitMs=receivedMs; status_.haveUnit=true; }
+    if(status_.phase!=Phase::AwaitUnit) return;
+    const Result& r=status_.result;
+    if(!due(receivedMs,r.restoredMs)||!due(receivedMs,r.sentMs+1)||due(receivedMs,r.sentMs+CONFIRM_MS)) return; // old or late
+    if(interfered()) settle(Phase::Ambiguous);
+    else if(mode==r.request.input.mode) settle(Phase::UnitReported);
+    else if(mode==r.request.prior) settle(Phase::Unchanged);
+    else settle(Phase::Ambiguous);
+}
+Access accessFrom(bool station,const char* host,const char* localIp,const char* origin,const char* contentType) {
+    host=host?host:""; localIp=localIp?localIp:""; origin=origin?origin:""; contentType=contentType?contentType:"";
+    Access a; a.station=station;
+    const size_t n=strlen(localIp);
+    a.host=n&&strcmp(localIp,"0.0.0.0")&&!strncmp(host,localIp,n)&&(!host[n]||!strcmp(host+n,":80"));
+    a.origin=a.host&&!strncmp(origin,"http://",7)&&!strcmp(origin+7,host);
+    a.json=!strcmp(contentType,"application/json");
+    return a;
 }
 static bool tokenValid(const char* s) {
     if(!s||strlen(s)!=32) return false;

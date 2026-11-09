@@ -16,7 +16,7 @@ async function page(){
    if(fail)throw Error('synthetic disconnect');
    return {ok:true,json:async()=>({})};
   }
-  return {ok:true,json:async()=>({csrf:'csrf-test',next_request:1,busy:false,ready:true,phase:'idle',error:'none',rx_restored:false,bytes:0,request:0,source_id:'29:000101',unit_id:'29:000202'})};
+  return {ok:true,json:async()=>({csrf:'csrf-test',next_request:1,busy:false,ready:true,phase:'idle',error:'none',rx_restored:false,bytes:0,request:0,source_id:'29:000101',unit_id:'29:000202',unit_mode:1,unit_age_s:12,remote_seen:true})};
  };
  vm.runInNewContext(script,{document,fetch,setInterval:()=>0});
  return {elements,buttons,requests,setFail:value=>{fail=value}};
@@ -27,7 +27,7 @@ async function page(){
  assert(p.buttons.every(b=>!b.disabled));assert.equal(p.requests.filter(r=>r.method==='POST').length,0);
  await p.buttons[1].onclick();let posts=p.requests.filter(r=>r.method==='POST');
  assert.equal(posts.length,1);assert.deepEqual(JSON.parse(posts[0].body),{mode:2,request:1});
- assert.match(p.elements.status.textContent,/RF verzonden: nee/);assert.match(p.elements.status.textContent,/Unitbevestiging: geen/);
+ assert.match(p.elements.status.textContent,/RF verzonden: nee/);assert.match(p.elements.status.textContent,/Unitstand laatst gemeld: 1 \(12 s geleden\)/);assert.match(p.elements.status.textContent,/afstandsbediening gehoord: ja/);assert.match(p.elements.status.textContent,/Unitbevestiging: geen/);
  p=await page();p.elements.token.value=token;await p.elements.login.onclick();p.setFail(true);
  await p.buttons[2].onclick();assert(p.buttons.every(b=>b.disabled));
  await p.elements.check.onclick();assert.equal(p.requests.filter(r=>r.method==='POST').length,1,'poll cannot resend');

@@ -36,9 +36,20 @@ assert radio.count('txpoc::serviceOwner(')==1
 owner=radio.split('static void rxTask(void*) {',1)[1].split('\nbool begin()',1)[0]
 assert 'txpoc::serviceOwner(' in owner
 net=Path('src/net.cpp').read_text()
-routes=net.split('    char csrf[33]; pocToken(',1)[1].split('\n#else\n',1)[0]
-for route in ('/api/cmd','/api/ids','/api/wifi','/api/log','/update'):
-    assert 'server.on("'+route+'"' not in routes
+routes,legacy=net.split('    char csrf[33]; pocToken(',1)[1].split('\n#else\n',1)
+legacy=legacy.split('#endif // ORCON_TX_POC routes',1)[0]
+on=lambda block:set(re.findall(r'server\.on\(\s*"([^"]+)"',block))
+# Static route proof (runtime 403 needs hardware): exactly these PoC routes, every legacy one absent.
+assert on(routes)=={'/','/api/tx-poc/state','/api/tx-poc/mode','/api/oled'},on(routes)
+legacy_routes=on(legacy); assert {'/api/cmd','/api/ids','/api/wifi','/api/log','/update','/api/state'}<=legacy_routes
+assert not (legacy_routes-{'/','/api/oled'})&on(routes)
+assert 'server.onNotFound([](){ server.send(403,' in routes
+assert 'pocAuthorize(true)' in routes.split('"/api/oled"',1)[1].split('\n',1)[0]
+ready=net.split('static bool pocReady()',1)[1].split('\n}',1)[0]
+assert 'txpoc::rxReady()' in ready and 'rxDiagnostics' not in ready  # RX health only via the atomic heartbeat
+runtime=Path('src/tx_poc_runtime.cpp').read_text()
+assert 'health.store(packHealth(now,rxHealthy),std::memory_order_release)' in runtime
+assert 'health.load(std::memory_order_acquire)' in runtime
 assert 'pocAuthorize(true)' in net.split('static void handlePocMode()',1)[1].split('\n}',1)[0]
 assert 'radio::sendFrame' not in net.split('static void handlePocMode()',1)[1].split('\n}',1)[0]
 main=Path('src/main.cpp').read_text()
