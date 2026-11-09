@@ -393,25 +393,25 @@ static void security() {
     CHECK(s.check(token,csrf,a,true,0xFFFFF001u)==AccessResult::Unauthorized);
     CHECK(!s.begin("bad",csrf));CHECK(s.check(token,csrf,a,true,4000)==AccessResult::Unauthorized);
     // Header validation as net.cpp feeds it (missing header = "").
-    const char* ip="192.168.1.20";
-    Access g=accessFrom(true,ip,ip,"http://192.168.1.20","application/json");
+    const char* ip="192.0.2.20";
+    Access g=accessFrom(true,ip,ip,"http://192.0.2.20","application/json");
     CHECK(g.station&&g.host&&g.origin&&g.json);
-    CHECK(accessFrom(true,"192.168.1.20:80",ip,"http://192.168.1.20:80","application/json").host);
+    CHECK(accessFrom(true,"192.0.2.20:80",ip,"http://192.0.2.20:80","application/json").host);
     struct { const char *host,*local,*origin,*type; bool host_ok,origin_ok,json_ok; } cases[]={
-        {"192.168.1.20:8080",ip,"http://192.168.1.20:8080","application/json",false,false,true},
-        {"192.168.1.200",ip,"http://192.168.1.200","application/json",false,false,true},   // prefix trick
+        {"192.0.2.20:8080",ip,"http://192.0.2.20:8080","application/json",false,false,true},
+        {"192.0.2.200",ip,"http://192.0.2.200","application/json",false,false,true},   // prefix trick
         {"orcon.local",ip,"http://orcon.local","application/json",false,false,true},      // DNS name / rebinding
         {"",ip,"","",false,false,false},                                                     // all headers missing
-        {ip,"0.0.0.0","http://192.168.1.20","application/json",true&&false,false,true},    // no station IP
+        {ip,"0.0.0.0","http://192.0.2.20","application/json",true&&false,false,true},    // no station IP
         {ip,"",ip,"application/json",false,false,true},
         {ip,ip,"","application/json",true,false,true},                                       // Origin missing
         {ip,ip,"null","application/json",true,false,true},
-        {ip,ip,"https://192.168.1.20","application/json",true,false,true},
-        {ip,ip,"http://192.168.1.21","application/json",true,false,true},
-        {ip,ip,"http://192.168.1.20/","application/json",true,false,true},
-        {ip,ip,"http://192.168.1.20","application/json; charset=utf-8",true,true,false},
-        {ip,ip,"http://192.168.1.20","text/plain",true,true,false},
-        {ip,ip,"http://192.168.1.20","Application/JSON",true,true,false},
+        {ip,ip,"https://192.0.2.20","application/json",true,false,true},
+        {ip,ip,"http://192.0.2.21","application/json",true,false,true},
+        {ip,ip,"http://192.0.2.20/","application/json",true,false,true},
+        {ip,ip,"http://192.0.2.20","application/json; charset=utf-8",true,true,false},
+        {ip,ip,"http://192.0.2.20","text/plain",true,true,false},
+        {ip,ip,"http://192.0.2.20","Application/JSON",true,true,false},
     };
     for(auto& k:cases){Access x=accessFrom(true,k.host,k.local,k.origin,k.type);
         CHECK(x.host==k.host_ok&&x.origin==k.origin_ok&&x.json==k.json_ok);
