@@ -192,7 +192,7 @@ verify() {
 
 # Read-only device checks. Any deviation, missing value or esptool error stops here.
 precheck() {
-    local sha; sha="$(fulsha "${1:-}")"
+    local sha; sha="$(target "${1:-}")"
     verify "$sha"; local d; d="$(dist "$sha")"
     PORT="$(pick_port)"; echo "port: $PORT"
     local img info
@@ -258,7 +258,10 @@ flash() {
     precheck "$sha"; local d; d="$(dist "$sha")"
     # Freeze verified bytes before confirmation; verify the snapshot again after it.
     local snapshot; snapshot="$(mktemp -d)"; trap 'rm -rf "$snapshot"' EXIT
-    cp "$d/"{bootloader.bin,partitions.bin,boot_app0.bin,firmware.bin,SHA256SUMS.txt} "$snapshot/"
+    cp "$d/"{bootloader.bin,partitions.bin,boot_app0.bin,firmware.bin} "$snapshot/"
+    # The historical manifest also covers an unused merged image. Keep the
+    # original checksums of all four verified flash inputs, without staging it.
+    sed '/  heltec-v2-rx-only-merged.bin$/d' "$d/SHA256SUMS.txt" > "$snapshot/SHA256SUMS.txt"
     flash_args "$snapshot" "$PORT"
     echo "will write app0 only: esptool ${FLASH_ARGS[*]}"
     read -r -p "Write ${sha:0:7} (${LOCAL_ENV:-heltec_v2_sx1276}) on $PORT? Type yes: " ok

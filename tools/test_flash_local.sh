@@ -38,7 +38,9 @@ files = {
     "boot_app0.bin": open(os.environ["ROLL_DIR"] + "/boot_app0.bin", "rb").read()[:4096 if mut == "boot-app0-size" else 8192],
     "firmware.bin": b"" if mut == "empty-firmware" else img(0x05, fw_hdr, fw_body, 0x330001 if mut == "firmware-too-big" else 65536),
 }
-if kind == "ci": files["firmware.bin"] = open(os.environ["ROLL_DIR"] + "/firmware.bin", "rb").read()
+if kind == "ci":
+    for n in ("firmware.bin", "heltec-v2-rx-only-merged.bin"):
+        files[n] = open(os.environ["ROLL_DIR"] + "/" + n, "rb").read()
 if mut == "not-esp": files["firmware.bin"] = b"\x00" + files["firmware.bin"][1:]
 if mut == "bad-partitions": p = bytearray(files["partitions.bin"]); p[40] ^= 1; files["partitions.bin"] = bytes(p)
 for n, b in files.items(): open(f"{d}/{n}", "wb").write(b)
@@ -150,6 +152,16 @@ LOCAL_ENV=$DRY run fail "rollback with LOCAL_ENV dry-run"   "" target rollback
 LOCAL_ENV=$RX run fail "rollback with LOCAL_ENV RX-only"    "" target rollback
 run pass "plan rollback"                     "" plan rollback
 assert "rollback plan is the RX-only env"    grep -q "PLAN ${ROLL:0:7} $RX" <<<"$out"
+PORT="$W/tty" HELTEC_MAC=02:00:00:00:00:08 run pass "precheck rollback alias" "" precheck rollback
+PORT="$W/tty" HELTEC_MAC=02:00:00:00:00:08 run pass "flash rollback with historical manifest" $'yes\n' flash rollback
+assert "rollback writes only app0 and boots after readback" python3 -c '
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+w = [x.split() for x in lines if "write_flash" in x]
+assert len(w) == 1 and w[0][w[0].index("write_flash") + 1] == "0x10000"
+assert "read_flash 0x10000" in "\n".join(lines)
+assert "--after hard_reset read_mac" in lines[-1]
+' "$W/esptool.log"
 mkpkg "$W/tools/fw/$ROLL" "$ROLL" "$DRY" local none; perl -pi -e 's/^env=.*/env=heltec_v2_sx1276/' "$W/tools/fw/$ROLL/BUILD_INFO.txt"
 run fail "rollback image containing the TX-PoC" "" plan rollback
 

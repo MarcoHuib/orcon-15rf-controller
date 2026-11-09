@@ -16,6 +16,11 @@ De bestaande lokale esptool 4.8.1-installatie, het gepinde sdist-archief,
 pyserial 3.5 en intelhex 2.3.0 moeten aanwezig zijn in `.flashtools/`.
 De tool controleert de archivehash, de werkelijk uitgevoerde Pythonbronnen en
 dependencyversies. Bij ontbreken wordt afgebroken; er wordt niets gedownload.
+De synthetische rxmon-tests gebruiken deze lokale Pythonomgeving met pyserial;
+`-SerialPython` kan een andere reeds voorbereide interpreter selecteren. De tests
+maken uitsluitend eigen pseudo-terminals en een loopback-HTTP-server aan. In een
+sandbox is voor die lokale socket mogelijk expliciete tooltoestemming nodig;
+er wordt geen Heltec-poort geopend.
 Voor builds moeten de lokale PlatformIO-platformen, toolchains en bibliotheken
 beschikbaar zijn. De runner bouwt uitsluitend expliciete omgevingen, nooit upload.
 

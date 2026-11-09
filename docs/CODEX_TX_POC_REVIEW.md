@@ -79,3 +79,11 @@ WiFi/OLED operation can still update NVS. The preserved boot infrastructure make
 manual ROM USB recovery the intended path after an interrupted application write;
 there is **no proven automatic rollback or guaranteed recovery**. The exact local
 procedure and primary Espressif references are in [LOCAL_USB_RELEASE.md](LOCAL_USB_RELEASE.md).
+
+Two further rollback probes failed before the final follow-up fix: direct
+`precheck rollback` did not resolve its alias, and the frozen snapshot omitted
+the unused merged image still listed in the historical checksum manifest.
+Both are covered through simulated full precheck/write/readback/reset on the
+real historical manifest; only the four input checksum rows enter the snapshot.
+The synthetic log-tool tests use the installed pyserial interpreter and require
+loopback-socket capability; their pseudo-terminals do not access physical serial.
