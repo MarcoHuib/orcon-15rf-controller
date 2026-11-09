@@ -62,6 +62,9 @@ RxDiagnostics rxDiagnostics();
 float lastRssi();
 // Sync number of the frame poll() returned last (SX1276; 0 elsewhere), pairs [rx] with [sync] lines.
 uint32_t lastSeq();
+// SX1276 PoC: owner-observed sync time, not main-loop dequeue time.
+// This is not an ISR/air timestamp; hardware timing remains unvalidated.
+uint32_t lastReceivedMs();
 
 // Human-readable back-end name ("SX1262" / "CC1101").
 const char* name();

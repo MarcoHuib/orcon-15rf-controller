@@ -27,6 +27,11 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 #include <Preferences.h>
+#if ORCON_TX_POC
+#include <esp_system.h>
+#include "tx_poc_runtime.h"
+#include "tx_poc_page.h"
+#endif
 
 namespace net {
 
@@ -34,6 +39,12 @@ static WebServer    server(80);
 static WiFiClient   wifiClient;
 static PubSubClient mqtt(wifiClient);
 static Preferences  prefs;
+#if ORCON_TX_POC
+static txpoc::Security g_pocSecurity;
+static char g_pocBootToken[33] = "";
+static uint32_t g_pocBootMs = 0;
+static bool g_pocIdentityValid = false, g_pocAuthenticated = false;
+#endif
 
 #if !defined(NO_OLED)
 static U8G2_SSD1306_128X64_NONAME_F_HW_I2C
@@ -92,12 +103,24 @@ static void loadConfig() {
 #endif
     for (int i = 0; i < 7; i++) { char rk[4]; snprintf(rk, sizeof(rk), "r%d", i); g_roomIdx[i] = prefs.getUInt(rk, 0); }
     prefs.end();
+#if ORCON_TX_POC
+    // Only existing, fully valid NVS identities are authorized; never generate/write IDs.
+    prefs.begin("orcon", true);
+    uint32_t storedUc = prefs.getUInt("uc", 0), storedFc = prefs.getUInt("fc", 0);
+    uint32_t storedUs = prefs.getUInt("us", 0), storedFs = prefs.getUInt("fs", 0);
+    prefs.end();
+    g_pocIdentityValid = storedUc > 0 && storedUc < 63 && storedFc > 0 && storedFc < 63 &&
+        storedUs > 0 && storedUs <= 0x3FFFF && storedFs > 0 && storedFs <= 0x3FFFF;
+#endif
     bool freshId = (us == 0);
+#if !ORCON_TX_POC
     if (freshId) {                               // first boot: a unique serial from the chip ID
         us = (uint32_t)(ESP.getEfuseMac() & 0x3FFFFUL);   // 18-bit RAMSES serial space
         if (us == 0) us = 1;
         saveIds(uc, us, fc, fs);                 // lock the generated identity into NVS
     }
+#endif
+    (void)freshId;
     orcon::setIds(uc, us, fc, fs);               // apply stored / generated identities
     for (int i = 0; i < 7; i++) orcon::setFanSaved(i, fsv[i]);
     orcon::setBypassSaved(bpv);
@@ -650,6 +673,15 @@ static void oledDraw() {
     int fage = s.lastFanMs ? (int)((millis() - s.lastFanMs) / 1000) : -1;
     snprintf(l3, sizeof(l3), "fan %ds  CO2 %u", fage, s.co2);
     snprintf(l4, sizeof(l4), g_apMode ? "AP %s" : "%s", g_ip);
+#if ORCON_TX_POC
+    if (!g_pocAuthenticated && g_pocBootToken[0] && uint32_t(millis() - g_pocBootMs) < 60000) {
+        // Physical bootstrap only: never put this credential in HTTP, serial or NVS.
+        char first[17]; memcpy(first,g_pocBootToken,16); first[16]=0;
+        oled.clearBuffer(); oled.drawStr(0,11,"DRY-RUN ONLY / NO RF");
+        oled.drawStr(0,26,"Local boot key:"); oled.drawStr(0,41,first);
+        oled.drawStr(0,56,g_pocBootToken+16); oled.sendBuffer(); return;
+    }
+#endif
     oled.clearBuffer();
     oled.drawStr(0, 11, l1); oled.drawStr(0, 26, l2);
     oled.drawStr(0, 41, l3); oled.drawStr(0, 56, l4);
@@ -744,6 +776,92 @@ static void wifiConnect() {
 }
 
 // ---------------------------------------------------------------------------
+#if ORCON_TX_POC
+static void pocToken(char out[33]) {
+    uint8_t bytes[16]; esp_fill_random(bytes,sizeof(bytes));
+    static const char TOKEN_HEX[]="0123456789abcdef";
+    for(unsigned i=0;i<16;++i) { out[2*i]=TOKEN_HEX[bytes[i]>>4]; out[2*i+1]=TOKEN_HEX[bytes[i]&15]; }
+    out[32]=0;
+}
+static bool pocReady() {
+    const radio::RxDiagnostics d=radio::rxDiagnostics();
+    return g_pocIdentityValid && orcon::state().fanKnown && txpoc::validIds(orcon::ids()) &&
+        d.rxState==0 && (d.opMode&7)==5;
+}
+static bool pocAuthorize(bool mutation) {
+    if(uint32_t(millis()-g_pocBootMs)>=600000) {
+        server.send(401,"application/json","{\"error\":\"boot-session-expired\"}"); return false;
+    }
+    String host=server.header("Host"),local=WiFi.localIP().toString();
+    String auth=server.header("Authorization"),csrf=server.header("X-CSRF-Token");
+    txpoc::Access a;
+    a.station=!g_apMode && WiFi.getMode()==WIFI_STA && WiFi.status()==WL_CONNECTED;
+    a.host=host==local || host==local+":80";
+    a.origin=server.header("Origin")==String("http://")+host;
+    a.json=server.header("Content-Type")=="application/json";
+    const char* token=auth.startsWith("Bearer ")?auth.c_str()+7:"";
+    txpoc::AccessResult result=g_pocSecurity.check(token,csrf.c_str(),a,mutation,millis());
+    if(result!=txpoc::AccessResult::Allowed) {
+        int code=result==txpoc::AccessResult::Limited?429:result==txpoc::AccessResult::Unauthorized?401:403;
+        server.send(code,"application/json","{\"error\":\"access-denied\"}"); return false;
+    }
+    g_pocAuthenticated=true; return true;
+}
+static void pocStateBody(int code) {
+    txpoc::controller().tick(millis());
+    const txpoc::Status& s=txpoc::controller().status();
+    JsonDocument d;
+    d["firmware_mode"]="tx-poc-dryrun"; d["fw"]=FW_VERSION;
+    d["dry_run"]=true; d["rf_capable"]=false; d["rf_armed"]=false;
+    d["rf_sent"]=false; d["unit_confirmed"]=false;
+    d["request"]=s.result.request.input.request; d["next_request"]=s.nextRequest;
+    d["mode"]=s.result.request.input.mode; d["busy"]=s.busy; d["locked"]=s.locked;
+    d["phase"]=txpoc::phaseName(s.phase); d["error"]=txpoc::errorName(s.result.error);
+    d["rx_restored"]=s.result.rxRestored; d["bytes"]=(unsigned)s.result.bytes;
+    char source[16],unit[16];
+    const orcon::Ids& pinned=s.result.request.input.request?s.result.request.ids:orcon::ids();
+    idStr(pinned.us,source,sizeof(source)); idStr(pinned.fan,unit,sizeof(unit));
+    d["source_id"]=source; d["unit_id"]=unit;
+    d["ready"]=pocReady(); d["csrf"]=g_pocSecurity.csrf();
+    d["rx_check"]="dry-run observation; no radio mode switch";
+    char body[768];
+    if(measureJson(d)>=sizeof(body)) { server.send(500,"application/json","{\"error\":\"state-too-large\"}"); return; }
+    serializeJson(d,body,sizeof(body));
+    server.sendHeader("Cache-Control","no-store"); server.sendHeader("X-Content-Type-Options","nosniff");
+    server.send(code,"application/json",body);
+}
+static void handlePocState() { if(pocAuthorize(false)) pocStateBody(200); }
+static void handlePocMode() {
+    if(!pocAuthorize(true)) return;
+    String body=server.arg("plain"); txpoc::Input input;
+    if(!txpoc::parseInput(body.c_str(),body.length(),input)) {
+        server.send(400,"application/json","{\"error\":\"expected-mode-1-2-3-and-request\"}"); return;
+    }
+    txpoc::controller().tick(millis());
+    txpoc::Admission result=txpoc::controller().submit(input,orcon::ids(),
+        g_pocIdentityValid && orcon::state().fanKnown,pocReady(),millis());
+    if(result==txpoc::Admission::Accepted || result==txpoc::Admission::Duplicate) {
+        pocStateBody(result==txpoc::Admission::Accepted?202:200); return;
+    }
+    const char* error="invalid"; int code=400;
+    switch(result) {
+        case txpoc::Admission::UnknownUnit:error="unknown-or-invalid-identities"; code=403; break;
+        case txpoc::Admission::Unavailable:error="radio-unavailable"; code=503; break;
+        case txpoc::Admission::Busy:error="transaction-busy"; code=409; break;
+        case txpoc::Admission::Limited:error="rate-limited"; code=429; break;
+        case txpoc::Admission::Replay:error="request-sequence"; code=409; break;
+        case txpoc::Admission::Conflict:error="idempotency-conflict"; code=409; break;
+        default:break;
+    }
+    char response[96]; snprintf(response,sizeof(response),"{\"error\":\"%s\"}",error);
+    server.send(code,"application/json",response);
+}
+static void handlePocRoot() {
+    server.sendHeader("Cache-Control","no-store"); server.sendHeader("X-Frame-Options","DENY");
+    server.sendHeader("Content-Security-Policy","default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+    server.send_P(200,"text/html",TX_POC_HTML);
+}
+#endif
 void begin() {
     loadConfig();          // also applies stored device IDs via orcon::setIds
     oledInit();
@@ -756,6 +874,19 @@ void begin() {
     }
 #endif
 
+#if ORCON_TX_POC
+    char csrf[33]; pocToken(g_pocBootToken); pocToken(csrf);
+    if(!g_pocSecurity.begin(g_pocBootToken,csrf,millis())) g_pocBootToken[0]=0;
+    memset(csrf,0,sizeof(csrf)); g_pocBootMs=millis();
+    const char* headers[]={"Host","Origin","Authorization","X-CSRF-Token","Content-Type"};
+    server.collectHeaders(headers,sizeof(headers)/sizeof(headers[0]));
+    server.on("/",HTTP_GET,handlePocRoot);
+    server.on("/api/tx-poc/state",HTTP_GET,handlePocState);
+    server.on("/api/tx-poc/mode",HTTP_POST,handlePocMode);
+    server.on("/api/oled",HTTP_POST,[](){ if(pocAuthorize(true)) handleOledSave(); });
+    // No legacy command, ID, WiFi/config, log, setup or update routes in the PoC.
+    server.onNotFound([](){ server.send(403,"application/json","{\"error\":\"route-disabled-in-poc\"}"); });
+#else
     server.on("/",          handleRoot);
     server.on("/wifi",      handleWifi);
     server.on("/log",       handleLogPg);
@@ -778,6 +909,7 @@ void begin() {
 #if defined(BOARD_HELTEC_V2)
     server.on("/api/oled",  HTTP_POST, handleOledSave);
 #endif
+#endif // ORCON_TX_POC routes
     server.begin();
 
 #if MQTT_ENABLED
@@ -815,6 +947,9 @@ void publishState() {
 }
 
 void loop() {
+#if ORCON_TX_POC
+    g_pocSecurity.expire(millis());
+#endif
     oledTick();  // runs independently of state publishing and RF activity
 #if defined(BOARD_HELTEC_V2)
     prgPoll(millis());   // OLED wake button; a plain GPIO read, no RF/WiFi impact

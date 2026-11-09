@@ -1,6 +1,9 @@
 // ramses_radio.cpp — see ramses_radio.h
 #include "ramses_radio.h"
 #include "config.h"
+#if ORCON_TX_POC
+#include "tx_poc_runtime.h"
+#endif
 #include <Arduino.h>
 #include <RadioLib.h>
 #if defined(USE_CC1101_TX) || defined(RADIO_CC1101_ASYNC)
@@ -217,6 +220,9 @@ static volatile uint32_t g_lastUartMs = 0, g_lastSyncMs = 0;
 static volatile uint32_t g_pendMax = 0, g_taskMaxUs = 0, g_stackFree = 0;
 static volatile uint8_t  g_op = 0, g_lna = 0, g_rxcfg = 0, g_rxbw = 0;
 static volatile int16_t  g_rssiNow = 0;
+#if ORCON_TX_POC
+static uint32_t g_lastReceivedMs = 0;
+#endif
 static uint32_t g_lastSeq = 0;                  // loop: sync number of the frame poll() returned
 
 const char* name() { return "SX1276 direct RX (TX disabled)"; }
@@ -291,6 +297,10 @@ static void rxTask(void*) {
                 Serial.printf("[radio] SX1276 not in RX (op=%02X): restarting\n", g_op);
             }
         }
+#if ORCON_TX_POC
+        // Dry-run model only. No radio, SPI, DIO, UART or decoder state changes.
+        txpoc::serviceOwner(now, g_rxReady && (g_op & 0x07) == 0x05);
+#endif
         uint32_t us = micros() - t0;
         if (us > g_taskMaxUs) g_taskMaxUs = us;
         vTaskDelay(pdMS_TO_TICKS(5));
@@ -326,10 +336,16 @@ bool poll(ramses::Frame& out) {                 // loop side: frames the RX task
     out = it.f;
     g_rssi = it.rssi;                           // RSSI of this frame's own sync
     g_lastSeq = it.seq;
+#if ORCON_TX_POC
+    g_lastReceivedMs = it.ms;
+#endif
     return true;
 }
 
 uint32_t lastSeq() { return g_lastSeq; }
+#if ORCON_TX_POC
+uint32_t lastReceivedMs() { return g_lastReceivedMs; }
+#endif
 
 #endif // RADIO_SX1276
 
