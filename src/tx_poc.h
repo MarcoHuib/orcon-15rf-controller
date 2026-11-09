@@ -53,6 +53,7 @@ const char* errorName(Error e);
 struct Result {
     Request request;
     Error error=Error::None;          // the FIRST failure; later steps never overwrite it
+    bool cleanupFailed=false;          // independent of the first diagnostic
     bool touched=false;               // radio work began (prepare called): cleanup/restore needed
     bool rxRestored=false, rfSent=false;
     uint32_t sentMs=0, restoredMs=0;
@@ -118,7 +119,7 @@ public:
     explicit Controller(Exchange& ex):ex_(ex) {}
     // identityClear: identityConflict() was false for these ids.
     Admission submit(Input,const orcon::Ids&,bool known,bool ready,bool identityClear,uint32_t now);
-    void consumeResult();
+    void consumeResult(uint32_t now);
     void tick(uint32_t now);
     // receivedMs: owner-observed sync time; 0 or later than now = invalid (never evidence).
     void onFrame(const ramses::Frame&,uint32_t receivedMs,uint32_t now,const orcon::Ids& current);
@@ -128,7 +129,9 @@ private:
     void settle(Phase p) { status_.phase=p; status_.busy=false; }
     Exchange& ex_; Status status_;
     uint32_t acceptedMs_=0,lastAcceptedMs_=0;
-    bool haveAccepted_=false,ownerTimedOut_=false;
+    bool haveAccepted_=false,ownerTimedOut_=false,identityCollided_=false,priorChanged_=false;
+    Phase observed_=Phase::NotConfirmed;
+    uint32_t observedMs_=0;
 };
 struct Access { bool station=false,host=false,origin=false,json=false; };
 // Header checks; missing headers are passed as "". localIp "" or "0.0.0.0" never matches.

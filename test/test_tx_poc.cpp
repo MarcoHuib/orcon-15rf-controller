@@ -245,7 +245,7 @@ static void armSent(Exchange& ex,Controller& c,uint8_t prior=1,uint8_t mode=2) {
     publishSent(ex,c,admit(ex,c,prior,mode));CHECK(c.status().phase==Phase::AwaitUnit);
 }
 static Phase outcome(void (*scenario)(Controller&)) {
-    Exchange ex;Controller c(ex);armSent(ex,c);scenario(c);return c.status().phase;
+    Exchange ex;Controller c(ex);armSent(ex,c);scenario(c);c.tick(SENT+CONFIRM_MS+EXPIRY_GRACE_MS);return c.status().phase;
 }
 static void correlation() {
     // Baseline: the unit reports the requested stand inside the window.
@@ -265,7 +265,7 @@ static void correlation() {
         CHECK(sub(c,input(1,2),ADMIT)==Admission::Accepted);Request r;CHECK(ex.requests.pop(r));
         Result s;s.request=r;s.touched=s.rfSent=s.rxRestored=true;s.sentMs=T0-1+REMOTE_GUARD_MS+1;s.restoredMs=s.sentMs+20;
         CHECK(ex.results.push(s));c.tick(s.restoredMs+10);CHECK(c.status().phase==Phase::AwaitUnit);
-        see(c,statusFrame(ids().fan,2),s.restoredMs+50);CHECK(c.status().phase==Phase::UnitReported);
+        see(c,statusFrame(ids().fan,2),s.restoredMs+50);c.tick(s.sentMs+CONFIRM_MS+EXPIRY_GRACE_MS);CHECK(c.status().phase==Phase::UnitReported);
     }
     // B: remote addressed to the unit through the third address slot.
     CHECK(outcome([](Controller& c){see(c,remoteFrame(2,true),RESTORED+50);
@@ -286,39 +286,39 @@ static void correlation() {
     }
     // ...and a late (+9.9 s) status is outside the 3 s window: not confirmed.
     {   Exchange ex;Controller c(ex);armSent(ex,c);see(c,statusFrame(ids().fan,2),SENT+9900);
-        CHECK(c.status().phase==Phase::AwaitUnit);c.tick(SENT+9900);CHECK(c.status().phase==Phase::NotConfirmed);
+        CHECK(c.status().phase==Phase::NotConfirmed);c.tick(SENT+9900);CHECK(c.status().phase==Phase::NotConfirmed);
     }
     // Unit keeps reporting its prior stand: unchanged. Any third stand: ambiguous.
     CHECK(outcome([](Controller& c){see(c,statusFrame(ids().fan,1),RESTORED+100);})==Phase::Unchanged);
     CHECK(outcome([](Controller& c){see(c,statusFrame(ids().fan,3),RESTORED+100);})==Phase::Ambiguous);
     // Window edges: before send/restore and at the deadline are ignored; LAST still counts.
     CHECK(outcome([](Controller& c){see(c,statusFrame(ids().fan,2),SENT-1,RESTORED+50);
-        see(c,statusFrame(ids().fan,2),SENT+5,RESTORED+50);see(c,statusFrame(ids().fan,2),SENT+CONFIRM_MS);})==Phase::AwaitUnit);
+        see(c,statusFrame(ids().fan,2),SENT+5,RESTORED+50);see(c,statusFrame(ids().fan,2),SENT+CONFIRM_MS);})==Phase::Ambiguous);
     CHECK(outcome([](Controller& c){see(c,statusFrame(ids().fan,2),LAST);})==Phase::UnitReported);
     // Missing or future receive time is never evidence.
     CHECK(outcome([](Controller& c){c.onFrame(statusFrame(ids().fan,2),0,RESTORED+100,ids());
-        c.onFrame(statusFrame(ids().fan,2),RESTORED+200,RESTORED+100,ids());})==Phase::AwaitUnit);
+        c.onFrame(statusFrame(ids().fan,2),RESTORED+200,RESTORED+100,ids());})==Phase::NotConfirmed);
     // Neighbour unit, wrong verb, nonzero domain byte: ignored.
     CHECK(outcome([](Controller& c){see(c,statusFrame(NEIGHBOUR_UNIT,2),RESTORED+100);
         Frame w=statusFrame(ids().fan,2);w.type=MsgType::W;see(c,w,RESTORED+110);
-        Frame d=statusFrame(ids().fan,2);d.payload[0]=1;see(c,d,RESTORED+120);})==Phase::AwaitUnit);
+        Frame d=statusFrame(ids().fan,2);d.payload[0]=1;see(c,d,RESTORED+120);})==Phase::NotConfirmed);
     {   // Expiry: only after deadline + grace, so a timely frame drained late still counts.
         Exchange ex;Controller c(ex);armSent(ex,c);c.tick(SENT+CONFIRM_MS);CHECK(c.status().phase==Phase::AwaitUnit);
-        see(c,statusFrame(ids().fan,2),LAST,SENT+CONFIRM_MS+100);CHECK(c.status().phase==Phase::UnitReported);
+        see(c,statusFrame(ids().fan,2),LAST,SENT+CONFIRM_MS+100);c.tick(SENT+CONFIRM_MS+EXPIRY_GRACE_MS);CHECK(c.status().phase==Phase::UnitReported);
         Exchange e2;Controller c2(e2);armSent(e2,c2);c2.tick(SENT+CONFIRM_MS+EXPIRY_GRACE_MS-1);
         CHECK(c2.status().phase==Phase::AwaitUnit);
         c2.tick(SENT+CONFIRM_MS+EXPIRY_GRACE_MS);CHECK(c2.status().phase==Phase::NotConfirmed&&!c2.status().busy);
     }
-    {   // A timely received frame remains evidence even after a long main-loop stall.
+    {   // A report dequeued beyond grace cannot become evidence after a main-loop stall.
         Exchange ex;Controller c(ex);Request r=admit(ex,c);Result s;s.request=r;s.touched=s.rfSent=s.rxRestored=true;
         s.sentMs=SENT;s.restoredMs=RESTORED;CHECK(ex.results.push(s));
-        c.consumeResult();see(c,statusFrame(ids().fan,2),RESTORED+100,SENT+20000);
-        c.tick(SENT+20000);CHECK(c.status().phase==Phase::UnitReported);
+        c.consumeResult(RESTORED);see(c,statusFrame(ids().fan,2),RESTORED+100,SENT+20000);
+        c.tick(SENT+20000);CHECK(c.status().phase==Phase::NotConfirmed);
     }
-    {   // After a terminal outcome later frames change nothing.
+    {   // Keep collecting through the full window: later interference invalidates an early match.
         Exchange ex;Controller c(ex);armSent(ex,c);see(c,statusFrame(ids().fan,2),RESTORED+100);
         see(c,remoteFrame(3),RESTORED+200);see(c,statusFrame(ids().fan,3),RESTORED+300);
-        CHECK(c.status().phase==Phase::UnitReported);
+        c.tick(SENT+CONFIRM_MS+EXPIRY_GRACE_MS);CHECK(c.status().phase==Phase::Ambiguous);
     }
     {   // Dry-run completion must never open a confirmation window.
         Exchange ex;Controller c(ex);Request r=admit(ex,c);Result s;s.request=r;s.touched=s.rxRestored=true;
@@ -443,5 +443,58 @@ static void concurrency() {
     stop=true;radio.join();
     CHECK(completed==transactions&&other==0);
 }
-int main(){golden();schema();faults();ownerTrace();dryRunFaults();transactions();correlation();identity();health();security();concurrency();
+static void independentRegressions() {
+    { Exchange ex; Controller c(ex); armSent(ex,c);
+      see(c,statusFrame(ids().fan,2),RESTORED+100);
+      CHECK(c.status().phase==Phase::AwaitUnit&&c.status().busy);
+      see(c,remoteFrame(2),RESTORED+50,RESTORED+110);
+      c.tick(SENT+CONFIRM_MS+EXPIRY_GRACE_MS); CHECK(c.status().phase==Phase::Ambiguous); }
+    { Exchange ex; Controller c(ex); Request r=admit(ex,c);
+      see(c,statusFrame(ids().fan,2),ADMIT+1);
+      publishSent(ex,c,r); see(c,statusFrame(ids().fan,2),RESTORED+100);
+      c.tick(SENT+CONFIRM_MS+EXPIRY_GRACE_MS); CHECK(c.status().phase==Phase::Ambiguous); }
+    { struct Both: Fake { bool cleanup() override {++cleanups; return false;} } f;
+      f.fault=Error::Send; Exchange ex; Controller c(ex); Owner o(ex,f); prime(c,T0);
+      CHECK(sub(c,input(1,2),ADMIT)==Admission::Accepted);
+      for(uint32_t t=ADMIT;t<ADMIT+200;t+=5){o.tick(t,true);c.tick(t);}
+      CHECK(c.status().result.error==Error::Send);
+      CHECK(c.status().result.cleanupFailed&&c.status().locked&&f.restores==1); }
+    { Exchange ex; Controller c(ex); prime(c,T0);
+      Frame clone=statusFrame(ids().us,1); clone.cmd=0x0001; see(c,clone,T0+100);
+      // Simulate eviction of the source ID from rlog: identityClear becomes true.
+      prime(c,T0+200); CHECK(sub(c,input(1,2),T0+4000)==Admission::IdentityConflict); }
+    { Exchange ex; Fake f; Owner o(ex,f); CHECK(ex.requests.push(req()));
+      o.tick(1000,true);o.tick(1005,true);o.tick(1010,true);
+      CHECK(o.step()==Step::Cleanup);o.tick(1200,true);o.tick(1205,true);o.tick(1210,true);
+      Result r;CHECK(ex.results.pop(r)&&r.error==Error::SendTimeout&&r.rxRestored);
+      CHECK(f.cleanups==1&&f.restores==1); }
+    { Exchange ex;Controller c(ex);armSent(ex,c);
+      see(c,statusFrame(ids().fan,3),RESTORED+30);see(c,statusFrame(ids().fan,2),RESTORED+40);
+      c.tick(SENT+CONFIRM_MS+EXPIRY_GRACE_MS);CHECK(c.status().phase==Phase::Ambiguous); }
+    { Exchange ex;Controller c(ex);Request q=admit(ex,c);Result r;
+      r.request=q;r.touched=r.rxRestored=true;CHECK(ex.results.push(r));
+      c.tick(ADMIT+TRANSACTION_MS);
+      CHECK(c.status().phase==Phase::Failed&&c.status().result.error==Error::OwnerTimeout&&c.status().locked); }
+    // All command/address combinations, including missing/future remote timestamps.
+    for(bool slot:{false,true}) for(uint16_t cmd:{0x22F1,0x22F3}) {
+      Exchange ex;Controller c(ex);armSent(ex,c);see(c,statusFrame(ids().fan,2),RESTORED+30);
+      c.onFrame(remoteFrame(2,slot,cmd),0,RESTORED+40,ids());
+      CHECK(c.status().phase==Phase::Ambiguous);
+    }
+    { Exchange ex;Controller c(ex);armSent(ex,c);
+      c.onFrame(remoteFrame(2),RESTORED+200,RESTORED+50,ids());
+      CHECK(c.status().phase==Phase::Ambiguous); }
+    { Exchange ex;Controller c(ex);armSent(ex,c);
+      see(c,statusFrame(ids().fan,2),LAST,SENT+CONFIRM_MS+EXPIRY_GRACE_MS);
+      CHECK(c.status().phase==Phase::NotConfirmed); }
+    { // Entire transaction and correlation across millis overflow.
+      Exchange ex;Controller c(ex);const uint32_t start=0xfffff000u;
+      prime(c,start);const uint32_t a=start+REMOTE_GUARD_MS+100;
+      CHECK(sub(c,input(1,2),a)==Admission::Accepted);Request q;CHECK(ex.requests.pop(q));
+      Result r;r.request=q;r.touched=r.rxRestored=r.rfSent=true;r.sentMs=a+10;r.restoredMs=a+30;
+      CHECK(ex.results.push(r));c.consumeResult(r.restoredMs);see(c,statusFrame(ids().fan,2),r.sentMs+CONFIRM_MS-1);
+      c.tick(r.sentMs+CONFIRM_MS+EXPIRY_GRACE_MS);CHECK(c.status().phase==Phase::UnitReported);
+    }
+}
+int main(){independentRegressions();golden();schema();faults();ownerTrace();dryRunFaults();transactions();correlation();identity();health();security();concurrency();
     printf("TX-PoC: %d checks, %d failures\n",checks,fails);return fails?1:0;}

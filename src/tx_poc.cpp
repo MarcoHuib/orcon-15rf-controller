@@ -90,6 +90,10 @@ bool DryRunBackend::prepare(const Request& r,size_t& bytes) {
 void Owner::fail(Error e) { if(result_.error==Error::None) result_.error=e; step_=Step::Cleanup; }
 void Owner::finish(Error e) { if(result_.error==Error::None) result_.error=e; step_=Step::Publish; }
 void Owner::tick(uint32_t now,bool rxHealthy) {
+    // A resumed owner must not report successful work after its hardware deadline.
+    // Cleanup/restore still run once even if scheduling was interrupted.
+    if((step_==Step::Cleanup||step_==Step::Restore)&&due(now,deadline_)&&result_.error==Error::None)
+        result_.error=Error::SendTimeout;
     switch(step_) {
         case Step::Idle: {
             Request request; if(!ex_.requests.pop(request)) return;
@@ -116,7 +120,8 @@ void Owner::tick(uint32_t now,bool rxHealthy) {
             break;
         }
         case Step::Cleanup:
-            if(!port_.cleanup()&&result_.error==Error::None) result_.error=Error::Cleanup;
+            result_.cleanupFailed=!port_.cleanup();
+            if(result_.cleanupFailed&&result_.error==Error::None) result_.error=Error::Cleanup;
             step_=Step::Restore; break;
         case Step::Restore:
             // One fast restore. Failure is published and latched by the controller; any
@@ -140,7 +145,7 @@ Admission Controller::submit(Input input,const orcon::Ids& ids,bool known,bool r
     if(input.request!=status_.nextRequest) return Admission::Replay;
     if(status_.busy) return Admission::Busy;
     if(!ready||status_.locked) return Admission::Unavailable;
-    if(!identityClear||(status_.haveRemote&&status_.remoteId==ids.us)) return Admission::IdentityConflict;
+    if(identityCollided_||!identityClear||(status_.haveRemote&&status_.remoteId==ids.us)) return Admission::IdentityConflict;
     if(!status_.haveRemote) return Admission::IdentityUnverified; // physical remote not heard this boot
     if(haveAccepted_&&(uint32_t)(now-lastAcceptedMs_)<RATE_MS) return Admission::Limited;
     if(!status_.haveUnit||(uint32_t)(now-status_.unitMs)>=UNIT_STATE_MAX_AGE_MS) return Admission::UnitStateUnknown;
@@ -153,29 +158,33 @@ Admission Controller::submit(Input input,const orcon::Ids& ids,bool known,bool r
     status_.result=Result{}; status_.result.request=request;
     status_.phase=Phase::Queued; status_.busy=true; ++status_.nextRequest;
     acceptedMs_=lastAcceptedMs_=now; haveAccepted_=true; ownerTimedOut_=false;
+    priorChanged_=false; observed_=Phase::NotConfirmed; observedMs_=0;
     return Admission::Accepted;
 }
-void Controller::consumeResult() {
+void Controller::consumeResult(uint32_t now) {
     Result result;
     if(!ex_.results.pop(result)||!status_.busy||result.request.input.request!=status_.result.request.input.request) return;
+    // A completion first consumed after the controller deadline cannot bypass
+    // timeout simply because consumeResult runs before tick's queued-state check.
+    if(due(now,acceptedMs_+TRANSACTION_MS)) ownerTimedOut_=true;
     status_.result=result;
     if(ownerTimedOut_&&result.error==Error::None) status_.result.error=Error::OwnerTimeout;
     // Uncertain radio health after our own radio work blocks TX until a future boot.
-    if(ownerTimedOut_||(result.touched&&(!result.rxRestored||result.error==Error::Cleanup))) status_.locked=true;
+    if(ownerTimedOut_||(result.touched&&(!result.rxRestored||result.cleanupFailed||result.error==Error::Cleanup))) status_.locked=true;
     if(status_.result.error!=Error::None) settle(Phase::Failed);
     else if(!result.touched||!result.rxRestored) {   // defensive: "success" without a restore
         status_.result.error=Error::RxRestore; status_.locked=true; settle(Phase::Failed);
-    } else if(result.rfSent) { status_.phase=Phase::AwaitUnit; if(interfered()) settle(Phase::Ambiguous); }
+    } else if(result.rfSent) { status_.phase=Phase::AwaitUnit; if(interfered()||priorChanged_) settle(Phase::Ambiguous); }
     else settle(Phase::DryRunComplete);
 }
 void Controller::tick(uint32_t now) {
-    consumeResult();
+    consumeResult(now);
     if(status_.phase==Phase::Queued&&!ownerTimedOut_&&due(now,acceptedMs_+TRANSACTION_MS)) {
         status_.phase=Phase::Failed; status_.result.error=Error::OwnerTimeout;
         ownerTimedOut_=true; // hold reservation until owner returns cleanup result
     }
     if(status_.phase==Phase::AwaitUnit&&due(now,status_.result.sentMs+CONFIRM_MS+EXPIRY_GRACE_MS))
-        settle(interfered()?Phase::Ambiguous:Phase::NotConfirmed);
+        settle(interfered()||priorChanged_?Phase::Ambiguous:observed_);
 }
 // A relevant remote action shortly before, or after, our transmission.
 bool Controller::interfered() const {
@@ -186,6 +195,11 @@ static bool toUnit(const ramses::Frame& f,const ramses::DeviceId& unit) {   // o
 }
 void Controller::onFrame(const ramses::Frame& f,uint32_t receivedMs,uint32_t now,const orcon::Ids& current) {
     if(!f.has_addr[0]) return;
+    // The PoC identity is immutable this boot. Never forget a collision when
+    // rlog's bounded discovery table or its last-seen slots are overwritten.
+    if(f.addr[0]==current.us) identityCollided_=true;
+    if(status_.phase==Phase::AwaitUnit&&due(now,status_.result.sentMs+CONFIRM_MS+EXPIRY_GRACE_MS))
+        tick(now); // exact grace boundary: delayed dequeue is no longer evidence
     const bool timed=receivedMs!=0&&due(now,receivedMs);
     const ramses::DeviceId unit=status_.busy?status_.result.request.ids.fan:current.fan; // pinned while open
     if((f.cmd==0x22F1||f.cmd==0x22F3)&&f.type!=ramses::MsgType::RP&&toUnit(f,unit)) {
@@ -199,13 +213,24 @@ void Controller::onFrame(const ramses::Frame& f,uint32_t receivedMs,uint32_t now
        f.cmd!=0x31D9||f.len<3||f.payload[0]!=0||f.payload[2]>7) return;
     const uint8_t mode=f.payload[2];
     if(!status_.haveUnit||due(receivedMs,status_.unitMs)) { status_.unitMode=mode; status_.unitMs=receivedMs; status_.haveUnit=true; }
-    if(status_.phase!=Phase::AwaitUnit) return;
     const Result& r=status_.result;
+    // Fail closed when the admission-time prior state changed while queued, or
+    // a delayed pre-send report proves it had already changed before our send.
+    if((status_.phase==Phase::Queued&&due(receivedMs,acceptedMs_))||
+       (status_.phase==Phase::AwaitUnit&&!due(receivedMs,r.sentMs+1))) {
+        if(mode!=r.request.prior) priorChanged_=true;
+    }
+    if(status_.phase!=Phase::AwaitUnit) return;
     if(!due(receivedMs,r.restoredMs)||!due(receivedMs,r.sentMs+1)||due(receivedMs,r.sentMs+CONFIRM_MS)) return; // old or late
-    if(interfered()) settle(Phase::Ambiguous);
-    else if(mode==r.request.input.mode) settle(Phase::UnitReported);
-    else if(mode==r.request.prior) settle(Phase::Unchanged);
-    else settle(Phase::Ambiguous);
+    if(interfered()||priorChanged_) settle(Phase::Ambiguous);
+    else if(mode!=r.request.input.mode&&mode!=r.request.prior) observed_=Phase::Ambiguous;
+    else if(observed_!=Phase::Ambiguous&&(!observedMs_||due(receivedMs,observedMs_))) {
+        observedMs_=receivedMs;
+        observed_=mode==r.request.input.mode?Phase::UnitReported:
+                  mode==r.request.prior?Phase::Unchanged:Phase::Ambiguous;
+        // Retain the reservation through the whole window: later interference
+        // must not be hidden by an early matching report.
+    }
 }
 Access accessFrom(bool station,const char* host,const char* localIp,const char* origin,const char* contentType) {
     host=host?host:""; localIp=localIp?localIp:""; origin=origin?origin:""; contentType=contentType?contentType:"";

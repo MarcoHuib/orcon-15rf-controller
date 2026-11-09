@@ -27,6 +27,7 @@ function Invoke-Check([string]$Name,[string]$Program,[string[]]$Argv,[int]$Timeo
     $info.UseShellExecute = $false; $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true; $info.RedirectStandardInput = $true
     foreach ($arg in $Argv) { $info.ArgumentList.Add($arg) }
     $info.Environment['PYTHONDONTWRITEBYTECODE'] = '1'
+    if ($Name -eq 'ubsan-host') { $info.Environment['CXXFLAGS'] = '-fsanitize=undefined -fno-sanitize-recover=all'; $info.Environment['CXX'] = $Compiler }
     if ($Name.StartsWith('firmware-')) { $info.Environment['PLATFORMIO_BUILD_FLAGS'] = '-DFW_VERSION=\"' + $script:commit + '\"' }
     $process = [Diagnostics.Process]::new(); $process.StartInfo = $info
     $code = 127; $stdout = ''; $stderr = ''
@@ -94,6 +95,9 @@ foreach ($suite in $suites.GetEnumerator()) {
 }
 if ($Sanitizer -eq 'None') {
     $null = Invoke-Check 'safety-and-negative-compiles' 'python3' @('-B','tools/test_tx_poc_safety.py','--compiler',$Compiler)
+    $null = Invoke-Check 'ubsan-host' 'bash' @('test/run_host_tests.sh') 180
+    $null = Invoke-Check 'rxmon' 'python3' @('-B','tools/test_rxmon.py')
+    $null = Invoke-Check 'rxmon-soak' 'python3' @('-B','tools/test_rxmon_soak.py')
     $null = Invoke-Check 'privacy' 'python3' (@('-B','tools/check_privacy.py') + $files)
     $null = Invoke-Check 'node-version' 'node' @('--version')
     foreach ($page in @('legacy','poc')) {
@@ -127,6 +131,14 @@ if ($Firmware) {
         foreach ($image in @('firmware.bin','partitions.bin','bootloader.bin')) {
             Copy-Item -LiteralPath (Join-Path $root ('.pio/build/' + $envName + '/' + $image)) -Destination $dest
         }
+        if ($envName -eq 'heltec_v2_sx1276' -or $envName -eq 'heltec_v2_sx1276_tx_poc_dryrun') {
+            $core = if ($env:PLATFORMIO_CORE_DIR) {$env:PLATFORMIO_CORE_DIR} else {Join-Path $HOME '.platformio'}
+            $boot = @(Get-ChildItem (Join-Path $core 'packages/framework-arduinoespressif32*/tools/partitions/boot_app0.bin') | Where-Object {
+                (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -eq 'f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0'
+            })
+            if (-not $boot.Count) { throw 'pinned local boot_app0.bin missing' }
+            Copy-Item $boot[0].FullName (Join-Path $dest 'boot_app0.bin')
+        }
         $firmwareText = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes((Join-Path $dest 'firmware.bin')))
         $imageOk = $firmwareText.Contains($commit)
         if ($envName -eq 'heltec_v2_sx1276' -or $envName -eq 'heltec_v2_sx1276_tx_poc_dryrun') {
@@ -150,6 +162,16 @@ if ($Firmware) {
     }
     else { $rows.Add([ordered]@{name='flash-tooling'; result='FAIL'; exit=1; reason='no local V2 partitions.bin'}); Save-Results }
 }
+# Detect edits during the run, including an untracked-file/branch change.
+$endCommit = & git rev-parse HEAD
+$endDirty = ((& git status --porcelain) -join "`n")
+$endFiles = @(& git ls-files --cached --others --exclude-standard)
+$stable = $endCommit -eq $commit -and $endDirty -eq $dirty -and ($endFiles -join "`n") -eq ($files -join "`n")
+foreach ($entry in $hashes) {
+    if (-not (Test-Path -LiteralPath $entry.path -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $entry.path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.sha256) { $stable = $false }
+}
+$rows.Add([ordered]@{name='source-stability'; result=$(if ($stable) {'PASS'} else {'FAIL'}); exit=$(if ($stable) {0} else {1})})
 Save-Results
 Write-Host "Local evidence: $manifest"
 if (@($rows | Where-Object {$_.result -eq 'FAIL'}).Count) { exit 1 }

@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# test_precheck.sh — run the real precheck/ci_ok/expected_mac functions of heltec_v2.sh
-# against simulated esptool/gh output, and check_parts.py against bad tables.
+# test_precheck.sh — run the real precheck/expected_mac functions of heltec_v2.sh
+# against simulated esptool output, and check_parts.py against bad tables.
 # Only the good case may pass; every bad case must stop (exit 1) before any write.
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 PART_GOOD="${1:?usage: test_precheck.sh <known-good partitions.bin>}"
+BOOT_GOOD="$(dirname "$PART_GOOD")/bootloader.bin"
+BOOT_APP_GOOD="$REPO/.flashtools/fw/d5c39e1b4d1f0ed37defe69b51e3562c36058208/boot_app0.bin"
+export LOCAL_REQUIRED="$(sed -n 's/^LOCAL_REQUIRED="\(.*\)"/\1/p' "$REPO/tools/heltec_v2.sh")"
 fails=0
 mkdir -p "$W/tools/venv/bin" "$W/d"; touch "$W/ttyFAKE"; ln -s "$(command -v python3)" "$W/tools/venv/bin/python"
 cp "$PART_GOOD" "$W/d/partitions.bin"
+cp "$BOOT_GOOD" "$W/d/bootloader.bin"
+cp "$BOOT_APP_GOOD" "$W/d/boot_app0.bin"
 
 python3 - "$W" <<'PY'                      # build bad tables (each with a VALID md5 entry)
 import hashlib, struct, sys
@@ -34,18 +39,21 @@ PY
 
 cat > "$W/run.sh" <<EOF
 set -euo pipefail
-REPO="$REPO"; TOOLS="$W/tools"; PORT="\${PORT:-$W/ttyFAKE}"; DEV_DIR="$W/nodev"
-$(sed -n '/^die()/p; /^FLASH_HDR=/p; /^ports()/p; /^pick_port()/,/^}/p; /^ci_ok()/,/^}/p; /^expected_mac()/,/^}/p; /^precheck()/,/^}/p' "$REPO/tools/heltec_v2.sh")
+HELTEC_V2_SOURCE_ONLY=1 source "$REPO/tools/heltec_v2.sh"
+TOOLS="$W/tools"; PORT="\${PORT:-$W/ttyFAKE}"; DEV_DIR="$W/nodev"
 verify() { :; }; fulsha() { echo "\$1"; }; dist() { echo "$W/d"; }
 esptool() {
   case "\$*" in
     *image_info*) echo "Flash size: \${IMG_FS:-8MB}" ;;
+    *read_mem*0x3ff5a000*) echo "0x3ff5a000 = \${SEC_CRYPT:-0x00000000}" ;;
+    *read_mem*0x3ff5a018*) echo "0x3ff5a018 = \${SEC_BOOT:-0x00000000}" ;;
     *flash_id*)   printf '%b\n' "\$FLASH_ID"; return \${RC:-0} ;;
-    *read_flash*0x1000*) printf "\${DEVHDR:-\\xe9\\x03\\x02\\x30}" > "\${@: -1}" ;;
+    *read_flash*0x1000*) if [ -n "\${DEVHDR:-}" ]; then printf "\$DEVHDR" > "\${@: -1}"; else cp "$BOOT_GOOD" "\${@: -1}"; fi ;;
+    *read_flash*0xe000*) cp "\${DEVOTA:-$BOOT_APP_GOOD}" "\${@: -1}" ;;
     *read_flash*) cp "\${DEVPARTS:-$W/d/partitions.bin}" "\${@: -1}" ;;
   esac
 }
-gh() { printf '%b' "\${CI_RUNS:-}"; return \${GH_RC:-0}; }
+gh() { echo "FORBIDDEN GitHub access" >&2; exit 99; }
 if [ -n "\${BOARDMAC:-}" ]; then echo 02:00:00:00:00:08 > "\$TOOLS/board.mac"; else rm -f "\$TOOLS/board.mac"; fi
 \${WHAT:-precheck} 0123456789abcdef0123456789abcdef01234567
 EOF
@@ -65,6 +73,10 @@ expect fail "ESP32-S3 board"                 HELTEC_MAC=02:00:00:00:00:08 FLASH_
 expect fail "ESP32-D0WD-V3 (other model)"    HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="Chip is ESP32-D0WD-V3 (revision v3.0)\nMAC: 02:00:00:00:00:08\nDetected flash size: 8MB"
 expect fail "other board (MAC mismatch)"     HELTEC_MAC=02:00:00:00:00:09 FLASH_ID="$ID"
 expect fail "expected MAC not configured"    FLASH_ID="$ID"
+expect fail "flash encryption enabled"       HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" SEC_CRYPT=0x00100000
+expect fail "secure boot v1 enabled"         HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" SEC_BOOT=0x00000010
+expect fail "secure boot v2 enabled"         HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" SEC_BOOT=0x00000020
+expect fail "unreadable security word"       HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" SEC_BOOT=unknown
 expect fail "4MB flash"                      HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="${ID/8MB/4MB}"
 expect fail "flash size Unknown"             HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="${ID/8MB/Unknown}"
 expect fail "flash size line missing"        HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="${ID%\\n*}"
@@ -73,16 +85,10 @@ expect fail "image header not 8MB"           HELTEC_MAC=02:00:00:00:00:08 FLASH_
 expect fail "board bootloader header 4MB"    HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" DEVHDR='\xe9\x03\x02\x20'
 expect fail "board bootloader header QIO"    HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" DEVHDR='\xe9\x03\x00\x30'
 expect fail "serial port missing"            HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" PORT=/nonexistent/tty
+expect fail "wrong app0 boot selection" HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" DEVOTA="$W/d/partitions.bin"
 for t in layout flags extra md5 trail short; do
     expect fail "board partition table: $t"  HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" DEVPARTS="$W/$t.bin"
 done
-echo "ci_ok:"
-S='completed/success'
-expect pass "all check runs green"           WHAT=ci_ok CI_RUNS="$S Build A\n$S Build B\n"
-expect fail "one check run failed"           WHAT=ci_ok CI_RUNS="$S Build A\ncompleted/failure Build B\n"
-expect fail "check run still running"        WHAT=ci_ok CI_RUNS="in_progress/null Build A\n"
-expect fail "no check runs"                  WHAT=ci_ok CI_RUNS=""
-expect fail "GitHub API error"               WHAT=ci_ok GH_RC=1
 echo "check_parts.py on the artifact table:"
 for t in good layout flags extra md5 trail short; do
     f="$W/$t.bin"; [ $t = good ] && f="$W/d/partitions.bin"
@@ -102,24 +108,27 @@ EOF
 mkpkg() {   # mkpkg <name> <mutation>: evidence dir + package dir, then one mutation
     local e="$L/$1/ev" d="$L/$1/pkg" sha=0123456789abcdef0123456789abcdef01234567 env=heltec_v2_sx1276_tx_poc_dryrun
     mkdir -p "$e/artifacts/$env" "$d"
-    for n in bootloader partitions firmware; do echo "$n" > "$d/$n.bin"; done
+    for n in bootloader partitions boot_app0 firmware; do echo "$n" > "$d/$n.bin"; done
     python3 - "$e" "$d" "$sha" "$env" "$2" <<'PY'
-import hashlib, json, sys
+import hashlib, json, os, sys
 e, d, sha, env, mut = sys.argv[1:]
-names = "codec frames rx log orcon_rx orcon_v3 rxpipe netcfg oled tx_poc safety-and-negative-compiles privacy poc-web".split()
-names += [f"firmware-{env}", f"image-{env}", f"partitions-{env}"]
-checks = [{"name": n, "result": "PASS"} for n in names]
+names = os.environ["LOCAL_REQUIRED"].split()
+names += [f"image-{env}", f"partitions-{env}"]
+checks = [{"name": n, "result": "PASS", "exit": 0} for n in names]
 if mut == "fail-row": checks.append({"name": "rx", "result": "FAIL"})
 if mut == "not-tested": checks.append({"name": "asan", "result": "NOT TESTED"})
 if mut == "missing-firmware": checks = [c for c in checks if c["name"] != f"firmware-{env}"]
 r = {"commit": "f" * 40 if mut == "commit" else sha, "dirty": " M src/x.cpp" if mut == "dirty" else "", "checks": checks}
 open(f"{e}/RESULTS.json", "w").write(json.dumps(r))
-files = [{"name": n, "sha256": hashlib.sha256(open(f"{d}/{n}", "rb").read()).hexdigest()} for n in ("bootloader.bin", "partitions.bin", "firmware.bin")]
+open(f"{e}/SOURCE_HASHES.json", "w").write("[]")
+files = [{"name": n, "sha256": hashlib.sha256(open(f"{d}/{n}", "rb").read()).hexdigest()} for n in ("bootloader.bin", "partitions.bin", "boot_app0.bin", "firmware.bin")]
 if mut == "artifact-hash": files[2]["sha256"] = "0" * 64
 open(f"{e}/artifacts/{env}/BUILD_INFO.json", "w").write(json.dumps({"files": files}))
 PY
     { echo "commit=$sha"; echo "env=$env"; echo "evidence=$e"
-      echo "evidence_sha256=$(shasum -a 256 "$e/RESULTS.json" | cut -d' ' -f1)"; } > "$d/BUILD_INFO.txt"
+      echo "evidence_sha256=$(shasum -a 256 "$e/RESULTS.json" | cut -d' ' -f1)"
+      echo "source_sha256=$(shasum -a 256 "$e/SOURCE_HASHES.json" | cut -d' ' -f1)"
+      echo "build_sha256=$(shasum -a 256 "$e/artifacts/$env/BUILD_INFO.json" | cut -d' ' -f1)"; } > "$d/BUILD_INFO.txt"
     [ "$2" = evidence-edited ] && echo " " >> "$e/RESULTS.json"
     echo "$d $sha"
 }

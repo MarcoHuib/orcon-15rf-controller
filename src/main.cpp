@@ -68,7 +68,7 @@ void loop() {
     const uint32_t loopStart = micros();
     // 1) drain any received RAMSES frames into the state model
 #if ORCON_TX_POC
-    txpoc::controller().consumeResult();
+    txpoc::controller().consumeResult(millis());
 #endif
     ramses::Frame f;
     while (radio::poll(f)) {

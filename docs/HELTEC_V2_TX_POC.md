@@ -1,8 +1,8 @@
 # Heltec V2 TX-PoC — phase 1, dry-run only
 
 Baseline: `8e1821b316ddb5168ffa228817c459ec4f4d4405` on
-`feature/heltec-v2-rx-only`. Phase 1 is local development only: no Actions,
-Actions artifacts, push/PR, flash/reset, serial connection or RF test.
+`feature/heltec-v2-rx-only`. Phase 1 is dry-run only. Builds and release verification are local; no Actions
+are used. Serial access, flash and reset need separate hardware consent. RF is blocked.
 
 ## Capabilities and boundaries
 
@@ -46,7 +46,8 @@ Idle -> Prepare -> Simulate -> Cleanup -> Restore -> Publish -> Idle
 Radio work starts at `prepare()` (`touched`). Only touched transactions run
 cleanup and one fast restore; an expired request or unhealthy RX before that
 publishes directly, with nothing to clean up. The **first** error is kept; a
-later restore failure never overwrites it. The owner has no recovery loop of its
+later restore failure never overwrites it. Cleanup failure is recorded separately
+and still locks admission even when an earlier error is retained. The owner has no recovery loop of its
 own: a hardware backend's failed fast restore must mark the radio not-ready
 (`g_rxReady=false`) so the existing bounded `g_rec` recovery restarts it. The
 phase 1 backend only encodes bytes and observes RX health: it never changes
@@ -82,7 +83,8 @@ action for the unit in the last 3 s. The prior mode is pinned in the request.
 
 Identity (software-checkable part): the source ID is refused if it equals any
 sender in `rlog` (all devices heard, the last remote and the last unit) or the
-sender of a remote command to the selected unit. Without such a remote heard
+sender of a remote command to the selected unit. A collision with the configured
+source is latched for the entire boot, independent of discovery-table eviction. Without such a remote heard
 this boot the identity is unverified and refused, so a clone of an unheard
 remote cannot pass silently. Not checkable in software: devices that never
 transmitted while we listened, and whether the unit accepts this source ID at
@@ -159,7 +161,11 @@ unit, received after send and restore and before the deadline, counts:
 
 Frames without a receive time, or with one later than the loop clock, are never
 evidence. An untimed remote command is counted as happening now (interference).
-Old queued frames and neighbours are ignored. `unit_confirmed` stays false: a
+Old queued frames and neighbours are ignored. Matching and unchanged observations
+remain provisional until the end of the 3 s + 250 ms window. Later remote
+interference or any third mode makes the outcome ambiguous. A changed unit mode
+while queued/before sending also makes it ambiguous. A frame dequeued at or after
+the grace deadline cannot provide positive evidence. `unit_confirmed` stays false: a
 matching report is an observation, not proof that this transmission caused it.
 The model never uses legacy `txAckMs`.
 
@@ -207,84 +213,12 @@ is allowed until the owner separately guarantees that it cannot start Actions.
 
 ## Local USB flashing (no Actions)
 
-`tools/heltec_v2.sh` keeps its board checks and adds a local artifact source.
-Nothing below is run by the PoC tooling itself; every write needs the owner's
-consent for that specific commit.
-
-1. Build and test locally on a clean, committed tree:
-   `pwsh -NoProfile -File tools/test_local.ps1 -OutputDirectory build/<name> -Firmware`
-2. Package one image: `tools/heltec_v2.sh package build/<name> heltec_v2_sx1276_tx_poc_dryrun`
-   (or `heltec_v2_sx1276`). Only these two environments are accepted. The package
-   lands in `.flashtools/local/<commit>-<env>/` with `SHA256SUMS.txt` and
-   `BUILD_INFO.txt` and is verified at once.
-3. Offline dry run: `LOCAL_ENV=<env> tools/heltec_v2.sh plan <commit>` verifies
-   everything below and prints the exact `esptool write_flash` command. It opens
-   no port.
-4. With the board connected: `tools/heltec_v2.sh ports` lists USB serial ports
-   (`/dev/cu.usbserial-*`, `cu.SLAB_USBtoUART*`, `cu.wchusbserial*`) without
-   opening them. Exactly one is used automatically; with several, set `PORT=`.
-5. `LOCAL_ENV=<env> tools/heltec_v2.sh precheck <commit>`, then `... flash <commit>`.
-   `flash` repeats the precheck, prints the command and writes only after `yes`.
-   Note: `precheck` opens the port, which resets the ESP32 into its ROM loader
-   (DTR/RTS); that already interrupts RX and needs the same consent as a flash.
-
-Verification replaces the Actions check with local evidence: `RESULTS.json` of
-the same commit, `dirty` empty, every row PASS (a `NOT TESTED` row also blocks),
-the required suites present, the firmware/image/partition rows for the env, and
-image hashes equal to those recorded by the runner. `RESULTS.json` is hashed at
-packaging; any later edit blocks. Image checks: commit stamp, SX1276 RX-only
-backend string, no OTA/HTTP-update code, the env's marker (`RX-ONLY TEST
-FIRMWARE` without PoC, or the dry-run markers), ESP32 chip ID, valid image hash,
-8 MB headers, and the exact partition layout (`tools/check_parts.py`).
-`boot_app0.bin` is pinned by SHA-256 (identical to the historical CI image).
-Every image must fit its slot, so nothing reaches NVS: bootloader ≤ 0x7000,
-partition table ≤ 0xC00, `boot_app0` exactly 8 KB, app ≤ 0x330000. Bootloader and
-app must be ESP images (`0xE9`) with flash header bytes `02 30` (DIO, 8 MB,
-40 MHz), as the image now on the board. Measured on this machine: the local
-bootloader and both local partition tables are byte-identical to the `d5c39e1`
-Actions image the board runs.
-
-Board precheck (read-only on flash): ESP32-D0WDQ6, the expected MAC
-(`HELTEC_MAC` or `.flashtools/board.mac`), exactly 8 MB flash, the board's
-partition table at 0x8000 (0xC00 bytes) byte-identical to the new one, and the
-board's bootloader header at 0x1000 with the same flash metadata (`02 30`).
-Nothing ever erases the whole flash: there is no `erase_flash`, no `--erase-all`,
-and esptool only erases the sectors of the four images it writes.
-
-| Image | Offset |
-| --- | --- |
-| `bootloader.bin` | 0x1000 |
-| `partitions.bin` | 0x8000 |
-| `boot_app0.bin` (otadata init) | 0xE000 |
-| `firmware.bin` | 0x10000 |
-
-Partition table (default 8 MB, espressif32@6.7.0): nvs 0x9000/0x5000,
-otadata 0xE000/0x2000, app0 0x10000/0x330000, app1 0x340000/0x330000,
-spiffs 0x670000/0x180000, coredump 0x7F0000/0x10000. No image covers
-0x9000–0xDFFF, so NVS (Wi-Fi, IDs, settings) is kept; the merged image is never
-used because it would erase NVS. esptool verifies each written region's hash.
-
-Rollback to RX-only, either:
-- `tools/heltec_v2.sh plan rollback`, then `tools/heltec_v2.sh flash rollback`:
-  the image the board ran before the PoC (`d5c39e1`, historical Actions
-  artifact, already in `.flashtools/fw/`). It only reads that commit's
-  historical check-run status; it starts nothing. `rollback` refuses to run with
-  `LOCAL_ENV` set, and an image carrying the TX-PoC markers fails the RX-only
-  check; or
-- a local RX-only build: `LOCAL_ENV=heltec_v2_sx1276 tools/heltec_v2.sh flash <commit>`.
-Both keep NVS (Wi-Fi, MQTT, Orcon IDs, OLED setting) and the partition table:
-the tables of the PoC and of `d5c39e1` are identical, so the precheck passes in
-both directions. After any flash: `tools/heltec_v2.sh
-monitor 40 boot.log reset` must show the expected `fw=` and `op=x5`.
-
-Hardware-free tests (local, run by `test_local.ps1 -Firmware`):
-`tools/test_precheck.sh` (board checks, board metadata, port missing, partition
-tables, `local_ok`, image markers) and `tools/test_flash_local.sh` (argument
-validation on the real script, port selection, invalid and mismatching
-packages, layout, `plan` output, rollback selection, and flashing against a
-simulated board: no write without `yes`, never to a wrong board, exactly one
-`write_flash` with four regions and no erase). Both use the real script
-functions with esptool and gh replaced by local stubs.
+The active procedure, exact commands, trust anchors, power-failure limits and
+hardware gates are in [LOCAL_USB_RELEASE.md](LOCAL_USB_RELEASE.md). `fetch`,
+`ci_ok` and GitHub run/API calls have been removed from the flash tool. Both local
+updates and the retained historical RX-only rollback are verified offline.
+Only the firmware application at `0x10000` is written; full equality of the
+existing bootloader, table and app0 boot selection is a mandatory hardware gate.
 
 ## Gates before any hardware/RF work
 

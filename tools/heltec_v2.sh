@@ -1,66 +1,63 @@
 #!/usr/bin/env bash
-# heltec_v2.sh — fetch, verify, flash and monitor the Heltec V2 builds without
-# PlatformIO uploads: historical GitHub Actions artifacts, or local builds.
-#
-#   tools/heltec_v2.sh fetch   <commit>        download the CI artifact of <commit> (historical)
-#   tools/heltec_v2.sh package <evidence-dir> <env>   local build -> flash package (no board access)
-#   LOCAL_ENV=<env> tools/heltec_v2.sh verify|precheck|plan|flash <commit>   use that local package
-#   tools/heltec_v2.sh ports                    list USB serial ports (no port is opened)
-#   tools/heltec_v2.sh plan    <commit|rollback>  verify offline, print the exact write command
-#   tools/heltec_v2.sh flash   rollback         back to the RX-only image the board ran before the PoC
-#   tools/heltec_v2.sh verify  <commit>        checksums, commit stamp, RX-only, ESP32 target
-#   tools/heltec_v2.sh precheck <commit>       verify + read-only board checks (chip, 8MB, partitions)
-#   tools/heltec_v2.sh flash   <commit>        precheck, then write via USB (asks for "yes")
-#   tools/heltec_v2.sh monitor <secs> [log] [reset]  serial log + RX summary
-#
-# esptool 4.8.1 runs from its PyPI source tarball (SHA-256 pinned below) in a
-# local venv with hash-pinned pure-Python wheels; nothing is built or installed
-# system-wide. The four images are written at their own offsets so the NVS
-# partition (Wi-Fi/MQTT/IDs at 0x9000) is preserved.
+# heltec_v2.sh — OFFLINE local packages and pinned historical RX-only rollback.
+# package <evidence-dir> <env> : create and verify a local package
+# LOCAL_ENV=<env> verify|plan <commit> : offline, no serial access
+# verify|plan rollback : independently pinned, already-local historical RX-only image
+# ports : list device names only (no serial access)
+# LOCAL_ENV=<env> precheck|flash <commit> : HARDWARE ACCESS, separate consent required
+# flash rollback : same hardware gates, local RX-only firmware
+# monitor <secs> [log] [reset] : HARDWARE ACCESS, separate consent required
+# Only app0 is written. Bootloader, partition table, otadata, NVS and app1 stay intact.
+# There is NO automatic/power-fail rollback. Interrupted app0 writes may require ROM USB repair.
+# esptool/dependencies must already be installed locally; this script never downloads tools.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TOOLS="$REPO/.flashtools"
 PORT="${PORT:-}"               # empty: the single USB serial port found in $DEV_DIR
 DEV_DIR="${DEV_DIR:-/dev}"
-BRANCH="feature/heltec-v2-rx-only"
 ESPTOOL_SHA256="dc4ef26b659e1a8dcb019147c0ea6d94980b34de99fbe09121c7941c8b254531"
-LOCAL_ENV="${LOCAL_ENV:-}"     # set: a local package from tools/test_local.ps1 -Firmware, not Actions
+LOCAL_ENV="${LOCAL_ENV:-}"     # empty permits ONLY the pinned historical rollback
 LOCAL_ENVS="heltec_v2_sx1276 heltec_v2_sx1276_tx_poc_dryrun"   # the only images that may be written
-BOOT_APP0_SHA256="f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0"  # == CI d5c39e1
 # A local package needs these local checks PASS on the same clean commit (RESULTS.json).
-ROLLBACK_COMMIT="${ROLLBACK_COMMIT:-d5c39e1b4d1f0ed37defe69b51e3562c36058208}"  # RX-only, ran before the PoC
+ROLLBACK_COMMIT="d5c39e1b4d1f0ed37defe69b51e3562c36058208"  # immutable local trust anchor
 # offset:image:slot size. NVS (0x9000-0xDFFF) is never written; the merged image is never used.
 FLASH_MAP="0x1000:bootloader.bin:0x7000 0x8000:partitions.bin:0xc00 0xe000:boot_app0.bin:0x2000 0x10000:firmware.bin:0x330000"
 FLASH_HDR="0230"   # image header bytes 2-3: DIO, 8 MB / 40 MHz (as the CI d5c39e1 image on the board)
-LOCAL_REQUIRED="codec frames rx log orcon_rx orcon_v3 rxpipe netcfg oled tx_poc safety-and-negative-compiles privacy poc-web"
+LOCAL_REQUIRED="codec frames rx log orcon_rx orcon_v3 rxpipe netcfg oled tx_poc safety-and-negative-compiles privacy poc-web ubsan-host rxmon rxmon-soak flash-tooling flash-local source-stability firmware-heltec_v2_sx1276 firmware-heltec_v2_sx1276_tx_poc_dryrun firmware-heltec_v3_cc1101_ota firmware-heltec_v3_1262_ota firmware-esp32-480480s040"
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 
 bootstrap() {
-    [ -x "$TOOLS/venv/bin/python" ] && [ -d "$TOOLS/esptool-4.8.1" ] && return
-    local py; py="$(command -v python3.12 || command -v python3)"
-    mkdir -p "$TOOLS/dl"
-    curl -sSfL -o "$TOOLS/dl/esptool-4.8.1.tar.gz" \
-        https://files.pythonhosted.org/packages/source/e/esptool/esptool-4.8.1.tar.gz
+    [ -x "$TOOLS/venv/bin/python" ] && [ -d "$TOOLS/esptool-4.8.1" ] \
+        || die "offline esptool 4.8.1 installation missing; no automatic download"
+    [ -f "$TOOLS/dl/esptool-4.8.1.tar.gz" ] || die "pinned local esptool archive missing"
     echo "$ESPTOOL_SHA256  $TOOLS/dl/esptool-4.8.1.tar.gz" | shasum -a 256 -c - >/dev/null \
-        || die "esptool tarball checksum mismatch"
-    tar -xzf "$TOOLS/dl/esptool-4.8.1.tar.gz" -C "$TOOLS"
-    "$py" -m venv "$TOOLS/venv"
-    printf '%s\n' \
-        'pyserial==3.5 --hash=sha256:c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0' \
-        'intelhex==2.3.0 --hash=sha256:87cc5225657524ec6361354be928adfd56bcf2a3dcc646c40f8f094c39c07db4' \
-        > "$TOOLS/requirements.txt"
-    "$TOOLS/venv/bin/pip" install -q --disable-pip-version-check --require-hashes \
-        --only-binary=:all: --no-deps -r "$TOOLS/requirements.txt"
+        || die "esptool archive checksum mismatch"
+    # Verify the actual Python sources we execute, independently of the install directory name.
+    "$TOOLS/venv/bin/python" -I - "$TOOLS" <<'CHECK' || die "local esptool sources/dependencies invalid"
+import importlib.metadata, pathlib, sys, tarfile
+root = pathlib.Path(sys.argv[1])
+with tarfile.open(root / 'dl/esptool-4.8.1.tar.gz') as archive:
+    expected = set()
+    for member in archive.getmembers():
+        if member.isfile() and member.name.endswith('.py'):
+            target = root / member.name
+            assert target.read_bytes() == archive.extractfile(member).read(), member.name
+            if '/esptool/' in member.name: expected.add(target.resolve())
+    actual = {p.resolve() for p in (root / 'esptool-4.8.1/esptool').rglob('*.py')}
+    assert actual == expected, 'unexpected esptool Python sources'
+assert importlib.metadata.version('pyserial') == '3.5'
+assert importlib.metadata.version('intelhex') == '2.3.0'
+CHECK
 }
 esptool() { PYTHONPATH="$TOOLS/esptool-4.8.1" "$TOOLS/venv/bin/python" -m esptool "$@"; }
 
 fulsha() { [ -n "${1:-}" ] || die "commit argument missing"
            git -C "$REPO" rev-parse --verify --quiet "$1^{commit}" || die "unknown commit '$1'"; }
-target() {   # <commit>, or "rollback" = the historical RX-only Actions image (only without LOCAL_ENV)
+target() {   # <commit>, or the pinned, already-local historical rollback (no network)
     if [ "${1:-}" = rollback ]; then
-        [ -z "$LOCAL_ENV" ] || die "rollback is the historical RX-only image: unset LOCAL_ENV (a local RX-only package is flashed by commit)"
+        [ -z "$LOCAL_ENV" ] || die "rollback is the pinned local historical RX-only image: unset LOCAL_ENV (a local RX-only package is flashed by commit)"
         fulsha "$ROLLBACK_COMMIT"
     else fulsha "${1:-}"; fi
 }
@@ -88,19 +85,9 @@ layout_ok() {   # every image fits its slot (so nothing reaches NVS) and carries
         [ "$(xxd -p -s 2 -l 2 "$d/$img")" = "$FLASH_HDR" ] || die "$img flash header is not DIO/8MB/40MHz"
     done
 }
-flash_args() {   # FLASH_ARGS for <dir> <port>: write_flash only, no erase option, image by image
-    local d=$1 e off img max
-    FLASH_ARGS=(--chip esp32 --port "$2" --baud 460800 write_flash)
-    for e in $FLASH_MAP; do IFS=: read -r off img max <<<"$e"; FLASH_ARGS+=("$off" "$d/$img"); done
-}
-
-ci_ok() {   # every check run on the commit completed with success (and there is at least one)
-    local runs
-    runs="$(gh api "repos/{owner}/{repo}/commits/$1/check-runs" \
-            --jq '.check_runs[] | "\(.status)/\(.conclusion) \(.name)"')" || die "cannot read CI status"
-    [ -n "$runs" ] || die "no CI check runs for ${1:0:7}"
-    echo "$runs" >&2
-    ! grep -qv '^completed/success ' <<<"$runs" || die "CI is not green for ${1:0:7}"
+flash_args() {   # The only write operation: app0, with no reset until verified readback
+    local d=$1
+    FLASH_ARGS=(--chip esp32 --port "$2" --baud 460800 --after no_reset write_flash 0x10000 "$d/firmware.bin")
 }
 
 expected_mac() {   # the one board we may write to: HELTEC_MAC or .flashtools/board.mac
@@ -115,11 +102,20 @@ local_ok() {   # local evidence: clean commit, every required check PASS, image 
     [ -f "$ev/RESULTS.json" ] || die "local evidence $ev/RESULTS.json missing"
     grep -qx "evidence_sha256=$(shasum -a 256 "$ev/RESULTS.json" | cut -d' ' -f1)" "$d/BUILD_INFO.txt" \
         || die "local evidence changed since packaging"
+    local name key
+    for name in SOURCE_HASHES.json "artifacts/$env/BUILD_INFO.json"; do
+        key=source_sha256; [ "$name" = SOURCE_HASHES.json ] || key=build_sha256
+        [ -f "$ev/$name" ] || die "evidence $name missing"
+        grep -qx "$key=$(shasum -a 256 "$ev/$name" | cut -d' ' -f1)" "$d/BUILD_INFO.txt" \
+            || die "evidence $name changed since packaging"
+    done
     python3 -I - "$ev" "$d" "$sha" "$env" $LOCAL_REQUIRED <<'PY' || die "local evidence does not cover this image"
 import hashlib, json, sys
 ev, d, sha, env, *required = sys.argv[1:]
 r = json.load(open(f"{ev}/RESULTS.json"))
 rows = {c["name"]: c["result"] for c in r["checks"]}
+if len(rows) != len(r['checks']): raise ValueError('duplicate evidence checks')
+if any(c.get('exit') != 0 for c in r['checks']): raise ValueError('evidence exit code missing/nonzero')
 problems = []
 if r.get("commit") != sha: problems.append(f"evidence commit {r.get('commit')} != {sha}")
 if r.get("dirty") != "": problems.append("evidence from a dirty tree")
@@ -127,7 +123,7 @@ problems += [f"{n}: {v}" for n, v in rows.items() if v != "PASS"]
 for n in required + [f"firmware-{env}", f"image-{env}", f"partitions-{env}"]:
     if rows.get(n) != "PASS": problems.append(f"{n} not PASS")
 recorded = {f["name"]: f["sha256"] for f in json.load(open(f"{ev}/artifacts/{env}/BUILD_INFO.json"))["files"]}
-for n in ("bootloader.bin", "partitions.bin", "firmware.bin"):
+for n in ("bootloader.bin", "partitions.bin", "boot_app0.bin", "firmware.bin"):
     if hashlib.sha256(open(f"{d}/{n}", "rb").read()).hexdigest() != recorded.get(n): problems.append(f"{n} hash differs from evidence")
 for p in problems: print("  " + p, file=sys.stderr)
 sys.exit(1 if problems else 0)
@@ -154,40 +150,43 @@ markers() {   # image contents per environment; network firmware update must be 
 
 dist()   { if [ -n "$LOCAL_ENV" ]; then echo "$TOOLS/local/$(fulsha "$1")-$LOCAL_ENV"; else echo "$TOOLS/fw/$(fulsha "$1")"; fi; }
 
-fetch() {
-    local sha; sha="$(fulsha "$1")"; local d; d="$(dist "$sha")"
-    [ -f "$d/BUILD_INFO.txt" ] && { echo "$d"; return; }
-    [ -z "$LOCAL_ENV" ] || die "no local package $d (run: tools/heltec_v2.sh package <evidence-dir> $LOCAL_ENV)"
-    local run
-    run="$(gh run list --branch "$BRANCH" --commit "$sha" --status success --limit 1 \
-           --json databaseId --jq '.[0].databaseId')"
-    [ -n "$run" ] || die "no successful CI run for $sha on $BRANCH"
-    rm -rf "$d"; mkdir -p "$d"
-    gh run download "$run" -n heltec-v2-rx-only -D "$d" >&2
+local_dist() {
+    local sha=$1 d; d="$(dist "$sha")"
+    [ -f "$d/BUILD_INFO.txt" ] || die "local package missing: $d (no download is attempted)"
+    [ -n "$LOCAL_ENV" ] || [ "$sha" = "$ROLLBACK_COMMIT" ] || die "historical image is not the pinned rollback"
     echo "$d"
 }
 
+# Exact manifest coverage, regular files, and independently pinned infrastructure/rollback.
+files_ok() {
+    python3 -I "$REPO/tools/check_flash_package.py" "$1" "$2" || die "package integrity"
+}
+
 verify() {
-    local sha; sha="$(fulsha "${1:-}")"
+    local sha; sha="$(target "${1:-}")"
     bootstrap
-    local d; d="$(fetch "$sha")"
-    ( cd "$d" && shasum -a 256 -c SHA256SUMS.txt ) || die "SHA256SUMS mismatch"
+    local d; d="$(local_dist "$sha")"
+    files_ok "$d" "$sha"
     layout_ok "$d"
     local env="${LOCAL_ENV:-heltec_v2_sx1276}"
     grep -qx "commit=$sha" "$d/BUILD_INFO.txt"        || die "artifact is not built from $sha"
     grep -qx "env=$env" "$d/BUILD_INFO.txt"           || die "wrong PlatformIO env"
     grep -q -a "$sha" "$d/firmware.bin"                || die "firmware.bin lacks commit stamp"
     markers "$d/firmware.bin" "$env"
-    local info; info="$(esptool --chip esp32 image_info --version 2 "$d/firmware.bin")"
-    grep -q "Chip ID: 0 (ESP32)" <<<"$info"            || die "firmware.bin is not for ESP32 (classic)"
-    grep -q "Validation hash: .* (valid)" <<<"$info"   || die "firmware.bin hash invalid"
+    local info img
+    for img in bootloader.bin firmware.bin; do
+        info="$(esptool --chip esp32 image_info --version 2 "$d/$img")" || die "$img image_info failed"
+        grep -q "Chip ID: 0 (ESP32)" <<<"$info" || die "$img is not for classic ESP32"
+        grep -q "Validation hash: .* (valid)" <<<"$info" || die "$img image hash invalid"
+        grep -qE '^Checksum: .* \(valid\)$' <<<"$info" || die "$img checksum invalid"
+    done
     "$TOOLS/venv/bin/python" -I "$REPO/tools/check_parts.py" "$d/partitions.bin" || die "partition layout"
     # source-level guard (same as CI) on the exact commit
-    git -C "$REPO" show "$sha:src/ramses_radio.cpp" | grep -q 'Serial.println("\[radio\] TX blocked' \
+    git -C "$REPO" show "$sha:src/ramses_radio.cpp" | grep 'Serial.println("\[radio\] TX blocked' >/dev/null \
         || die "sendFrame not blocked in source"
     git -C "$REPO" show "$sha:src/main.cpp" | python3 -I "$REPO/tools/check_tick.py" \
         || die "periodic TX: orcon::tick() not excluded from RX-only"
-    if [ -n "$LOCAL_ENV" ]; then local_ok "$d" "$sha"; else ci_ok "$sha"; fi
+    if [ -n "$LOCAL_ENV" ]; then local_ok "$d" "$sha"; else echo "pinned historical RX-only image verified locally (no remote attestation)"; fi
     echo "VERIFIED $sha $env ($d)"
 }
 
@@ -196,13 +195,13 @@ precheck() {
     local sha; sha="$(fulsha "${1:-}")"
     verify "$sha"; local d; d="$(dist "$sha")"
     PORT="$(pick_port)"; echo "port: $PORT"
-    local img
+    local img info
     for img in bootloader.bin firmware.bin; do
-        esptool --chip esp32 image_info --version 2 "$d/$img" | grep -qx "Flash size: 8MB" \
-            || die "$img header is not set for 8MB flash"
+        info="$(esptool --chip esp32 image_info --version 2 "$d/$img")" || die "$img image_info failed"
+        grep -qx "Flash size: 8MB" <<<"$info" || die "$img header is not set for 8MB flash"
     done
     local id
-    id="$(esptool --chip esp32 --port "$PORT" flash_id 2>&1)" \
+    id="$(esptool --chip esp32 --port "$PORT" --after no_reset flash_id 2>&1)" \
         || { echo "$id" >&2; die "flash_id failed (port busy, no board, or not an ESP32)"; }
     grep -E '^(Chip is|MAC:|Detected flash size:) ' <<<"$id"
     grep -qE '^Chip is ESP32-D0WDQ6 \(revision ' <<<"$id" || die "board is not an ESP32-D0WDQ6 (Heltec V2)"
@@ -210,18 +209,39 @@ precheck() {
     grep -qix "MAC: $mac" <<<"$id"                         || die "board MAC is not $mac (another board?)"
     [ "$(grep -c '^Detected flash size: ' <<<"$id")" = 1 ] || die "flash size not reported"
     grep -qx 'Detected flash size: 8MB' <<<"$id"           || die "flash is not exactly 8MB"
-    # The board's current partition table must equal the new one, so NVS keeps its place.
-    local cur="$d/device-partitions.bin"; rm -f "$cur"
-    esptool --chip esp32 --port "$PORT" read_flash 0x8000 0xc00 "$cur" >/dev/null \
-        || die "reading the board's partition table failed"
-    echo "board partition table:"
+    # Read only the public security configuration words, never keys or eFuse writes.
+    # Classic ESP32 does not implement get_security_info; these masks/addresses
+    # match esptool 4.8.1 targets/esp32.py.
+    local crypt boot
+    crypt="$(esptool --chip esp32 --port "$PORT" --after no_reset read_mem 0x3ff5a000)" || die "security word read failed"
+    boot="$(esptool --chip esp32 --port "$PORT" --after no_reset read_mem 0x3ff5a018)" || die "secure boot word read failed"
+    python3 -I - "$crypt" "$boot" <<'SECURITY' || die "security state unknown/enabled; plaintext app update refused"
+import re, sys
+def word(text, address):
+    found = re.findall(r'^' + address + r' = (0x[0-9a-f]{8})$', text, re.I | re.M)
+    assert len(found) == 1, 'missing/duplicate security word'
+    return int(found[0], 16)
+assert bin((word(sys.argv[1], '0x3ff5a000') >> 20) & 0x7f).count('1') % 2 == 0, 'flash encryption enabled'
+assert word(sys.argv[2], '0x3ff5a018') & 0x30 == 0, 'secure boot enabled'
+SECURITY
+    # A temporary readback directory, never mutable files inside the release package.
+    local curdir; curdir="$(mktemp -d)"; trap 'rm -rf "$curdir"' EXIT
+    local cur="$curdir/partitions.bin"
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x8000 0xc00 "$cur" >/dev/null \
+        || die "reading the board partition table failed"
     "$TOOLS/venv/bin/python" -I "$REPO/tools/check_parts.py" "$cur" || die "board partition layout unexpected"
-    cmp -s "$cur" "$d/partitions.bin" || die "board partition table differs from the new one (NVS could move)"
-    local hdr="$d/device-bootloader-header.bin"; rm -f "$hdr"
-    esptool --chip esp32 --port "$PORT" read_flash 0x1000 0x10 "$hdr" >/dev/null \
-        || die "reading the board's bootloader header failed"
-    [ "$(xxd -p -s 2 -l 2 "$hdr")" = "$FLASH_HDR" ] || die "board bootloader header is not DIO/8MB/40MHz"
-    echo "PRECHECK OK ${sha:0:7}: ESP32-D0WDQ6 $mac, 8MB, partition table identical (NVS @0x9000 kept)"
+    cmp -s "$cur" "$d/partitions.bin" || die "board partition table differs (NVS could move)"
+    # Application-only is safe only with this EXACT known bootloader and app0 selection.
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x1000 \
+        "$(wc -c < "$d/bootloader.bin" | tr -d ' ')" "$curdir/bootloader.bin" >/dev/null \
+        || die "reading the board bootloader failed"
+    cmp -s "$curdir/bootloader.bin" "$d/bootloader.bin" || die "board bootloader differs; app-only update refused"
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0xe000 0x2000 "$curdir/otadata.bin" >/dev/null \
+        || die "reading the board boot selection failed"
+    cmp -s "$curdir/otadata.bin" "$d/boot_app0.bin" || die "boot selection differs from pinned app0 selection; refused"
+    rm -rf "$curdir"; trap - EXIT
+    echo "PRECHECK OK ${sha:0:7}: ESP32-D0WDQ6 $mac, 8MB, exact bootloader/table/app0 selection; NVS untouched"
+
 }
 
 # Offline: full verification, then the exact command flash would run. Never opens a port.
@@ -229,18 +249,31 @@ plan() {
     local sha; sha="$(target "${1:-}")"
     verify "$sha"; local d; d="$(dist "$sha")"
     flash_args "$d" "${PORT:-<detected at flash time>}"
-    echo "PLAN ${sha:0:7} ${LOCAL_ENV:-heltec_v2_sx1276} (no board access; NVS 0x9000-0xDFFF untouched, no erase):"
+    echo "PLAN ${sha:0:7} ${LOCAL_ENV:-heltec_v2_sx1276} (no board access; app0 only, NVS/bootloader/table/otadata/app1 untouched):"
     echo "  esptool ${FLASH_ARGS[*]}"
 }
 
 flash() {
     local sha; sha="$(target "${1:-}")"
     precheck "$sha"; local d; d="$(dist "$sha")"
-    flash_args "$d" "$PORT"
-    echo "will run: esptool ${FLASH_ARGS[*]}"
-    read -r -p "Write commit ${sha:0:7} (${LOCAL_ENV:-heltec_v2_sx1276}) to the Heltec on $PORT? Type yes: " ok
+    # Freeze verified bytes before confirmation; verify the snapshot again after it.
+    local snapshot; snapshot="$(mktemp -d)"; trap 'rm -rf "$snapshot"' EXIT
+    cp "$d/"{bootloader.bin,partitions.bin,boot_app0.bin,firmware.bin,SHA256SUMS.txt} "$snapshot/"
+    flash_args "$snapshot" "$PORT"
+    echo "will write app0 only: esptool ${FLASH_ARGS[*]}"
+    read -r -p "Write ${sha:0:7} (${LOCAL_ENV:-heltec_v2_sx1276}) on $PORT? Type yes: " ok
     [ "$ok" = "yes" ] || die "aborted by user"
-    esptool "${FLASH_ARGS[@]}"
+    files_ok "$snapshot" "$sha"
+    esptool "${FLASH_ARGS[@]}" || die "app write failed; no reset; use approved USB rollback procedure"
+    local size; size="$(wc -c < "$snapshot/firmware.bin" | tr -d ' ')"
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x10000 "$size" "$snapshot/readback.bin" \
+        || die "app readback failed; no reset; USB recovery may be needed"
+    cmp -s "$snapshot/readback.bin" "$snapshot/firmware.bin" || die "app readback SHA-256/bytes mismatch; no reset"
+    echo "READBACK SHA256 $(shasum -a 256 "$snapshot/readback.bin" | cut -d' ' -f1)"
+    # Only a successful, identical readback permits the final normal boot.
+    esptool --chip esp32 --port "$PORT" --after hard_reset read_mac
+    rm -rf "$snapshot"; trap - EXIT
+
 }
 
 # Package a local build (tools/test_local.ps1 -Firmware evidence dir) for verify/precheck/flash.
@@ -253,15 +286,12 @@ package() {
     local sha; sha="$(fulsha "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$ev/RESULTS.json")")"
     LOCAL_ENV="$env"; local d; d="$(dist "$sha")"
     rm -rf "$d"; mkdir -p "$d"
-    cp "$src/bootloader.bin" "$src/partitions.bin" "$src/firmware.bin" "$d/"
-    local b
-    for b in "$HOME"/.platformio/packages/framework-arduinoespressif32*/tools/partitions/boot_app0.bin; do
-        [ "$(shasum -a 256 "$b" | cut -d' ' -f1)" = "$BOOT_APP0_SHA256" ] && { cp "$b" "$d/boot_app0.bin"; break; }
-    done
-    [ -f "$d/boot_app0.bin" ] || die "no boot_app0.bin with the pinned SHA-256"
+    cp "$src/"{bootloader.bin,partitions.bin,boot_app0.bin,firmware.bin} "$d/"
     ( cd "$d" && shasum -a 256 bootloader.bin partitions.bin boot_app0.bin firmware.bin > SHA256SUMS.txt )
     { echo "commit=$sha"; echo "env=$env"; echo "chip=esp32"; echo "source=local"; echo "evidence=$ev"
-      echo "evidence_sha256=$(shasum -a 256 "$ev/RESULTS.json" | cut -d' ' -f1)"; } > "$d/BUILD_INFO.txt"
+      echo "evidence_sha256=$(shasum -a 256 "$ev/RESULTS.json" | cut -d' ' -f1)"
+      echo "source_sha256=$(shasum -a 256 "$ev/SOURCE_HASHES.json" | cut -d' ' -f1)"
+      echo "build_sha256=$(shasum -a 256 "$src/BUILD_INFO.json" | cut -d' ' -f1)"; } > "$d/BUILD_INFO.txt"
     verify "$sha"
 }
 
@@ -271,14 +301,13 @@ monitor() {
     "$TOOLS/venv/bin/python" -I "$REPO/tools/rxmon.py" "$PORT" "${1:-60}" "${2:-}" "${3:-}"
 }
 
-# Tests source the functions only (HELTEC_V2_SOURCE_ONLY=1) and stub esptool/gh/ports.
+# Tests source functions only; all hardware operations are replaced by failing/local stubs.
 [ "${HELTEC_V2_SOURCE_ONLY:-}" != 1 ] || return 0
 [ -z "$LOCAL_ENV" ] || [[ " $LOCAL_ENVS " == *" $LOCAL_ENV "* ]] || die "LOCAL_ENV=$LOCAL_ENV may not be flashed"
 cmd="${1:-}"; shift || true
 case "$cmd" in
     ports)   ports ;;
     plan)    plan "$@" ;;
-    fetch)   fetch "$@" ;;
     package) package "$@" ;;
     verify)  verify "$@" ;;
     precheck) precheck "$@" ;;

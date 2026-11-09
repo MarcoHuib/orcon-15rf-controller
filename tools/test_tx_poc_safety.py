@@ -54,7 +54,7 @@ assert 'pocAuthorize(true)' in net.split('static void handlePocMode()',1)[1].spl
 assert 'radio::sendFrame' not in net.split('static void handlePocMode()',1)[1].split('\n}',1)[0]
 main=Path('src/main.cpp').read_text()
 assert '#if !RX_ONLY\n    orcon::tick(millis());\n#endif' in main
-assert main.index('controller().consumeResult()') < main.index('while (radio::poll(f))') < main.index('controller().onFrame(') < main.index('controller().tick(')
+assert main.index('controller().consumeResult(millis())') < main.index('while (radio::poll(f))') < main.index('controller().onFrame(') < main.index('controller().tick(')
 assert Path('src/rx_only.h').read_text().count('"maskids", "showfilter", "roomidx"')==1
 ini=configparser.ConfigParser(interpolation=None); ini.read('platformio.ini')
 assert ini['platformio']['default_envs']=='heltec_v3_cc1101_ota' # existing default unchanged
