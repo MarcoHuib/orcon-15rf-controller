@@ -39,24 +39,33 @@ Owner model:
 
 ```
 Idle -> Prepare -> Simulate -> Cleanup -> Restore -> Publish -> Idle
-                                  |          |
-                                  |          +-> Recover (at most two attempts)
-                                  +-----------------------------^
+  |        |                                            ^
+  +--------+-- expired / RX unhealthy / deadline -------+   (radio untouched)
 ```
 
-All preparation/start/completion failures converge on cleanup. Fast restore is
-tried first, then a bounded full-reinitialization *model*. The phase 1 backend
-only encodes bytes and observes RX health: it never changes radio modes, UART,
-SPI, DIO mapping, decoder buffers, or the existing RX recovery budget.
-Therefore it needs no decoder reset/boundary change. `rx_restored` in this build
-means the dry-run observation succeeded, not that a real TX/RX transition was
-measured. Real cleanup/reinitialization code is deferred to the hardware phase.
+Radio work starts at `prepare()` (`touched`). Only touched transactions run
+cleanup and one fast restore; an expired request or unhealthy RX before that
+publishes directly, with nothing to clean up. The **first** error is kept; a
+later restore failure never overwrites it. The owner has no recovery loop of its
+own: a hardware backend's failed fast restore must mark the radio not-ready
+(`g_rxReady=false`) so the existing bounded `g_rec` recovery restarts it. The
+phase 1 backend only encodes bytes and observes RX health: it never changes
+radio modes, UART, SPI, DIO mapping, decoder buffers, or the existing RX
+recovery budget. `rx_restored` in this build means the dry-run observation
+succeeded, not that a real TX/RX transition was measured.
 
-Queue lifetime is 500 ms, owner work deadline 100 ms, recovery spacing 20 ms,
-controller deadline 1000 ms. These are software/model limits, not validated RF
+RX readiness crosses tasks only as one atomic word published by the radio owner
+on every pass (`packHealth`: heartbeat ms, bit 0 = healthy; release store,
+acquire load before the clock read). The web layer treats a heartbeat older than
+250 ms, or never published, as not ready. Health is `g_rxReady` plus the RX
+opmode from the existing 1 s register snapshot, so it can lag by up to 1 s.
+
+Queue lifetime is 500 ms, owner work deadline 100 ms, controller deadline 1000 ms. These are software/model limits, not validated RF
 timing. Owner timeout retains the reservation until completion/cleanup returns;
-it cannot admit a second overlapping request. Cleanup failure, exhausted restore
-or owner timeout locks further admission until a future boot. No automatic retry
+it cannot admit a second overlapping request. Cleanup failure, failed restore
+after radio work, or owner timeout locks further admission until a future boot.
+An untouched failure (expired, RX unhealthy) does not lock; admission stays
+refused anyway while RX is not ready. No automatic retry
 or background command is generated.
 
 There is one open transaction, including any future confirmation window. One
@@ -64,6 +73,20 @@ accepted action builds exactly one `22F1` with `00 NN 04`, NN = 1, 2 or 3. IDs
 must be valid, nonzero, nonbroadcast and different. The copied request pins both
 IDs. The phase 1 image never writes or generates identity keys. Only fully valid,
 existing NVS identities are accepted; absent/incomplete identities fail closed.
+
+Admission also requires, in this order after the request checks: fresh healthy
+RX, a source ID that no heard sender uses, a physical remote for the selected
+unit heard this boot, the 10 s rate limit, a unit mode reported by the selected
+unit within the last 10 minutes and different from the request, and no remote
+action for the unit in the last 3 s. The prior mode is pinned in the request.
+
+Identity (software-checkable part): the source ID is refused if it equals any
+sender in `rlog` (all devices heard, the last remote and the last unit) or the
+sender of a remote command to the selected unit. Without such a remote heard
+this boot the identity is unverified and refused, so a clone of an unheard
+remote cannot pass silently. Not checkable in software: devices that never
+transmitted while we listened, and whether the unit accepts this source ID at
+all. Both need real RF. IDs are never generated, changed, cloned or paired.
 
 Sequences are monotonic per boot. Only the current expected request number is
 accepted. Repeating the latest identical request returns its status without
@@ -96,6 +119,20 @@ input are rejected. Responses are not cached; the dedicated page cannot be frame
 and loads no external assets. There is no automatic POST retry. An explicit retry
 retains the exact idempotency body after a network error.
 
+Header validation is a pure, host-tested function: `Host` must be exactly the
+station IP (optionally `:80`; no DNS names, no prefix matches), `Origin` exactly
+`http://` + that host, `Content-Type` exactly `application/json`. Missing
+headers count as empty and fail.
+
+Large bodies (pre-existing, all builds): the Arduino-ESP32 2.0.16 `WebServer`
+reads a non-form POST body up to `Content-Length` into heap before any handler
+or authentication runs, on every route including unknown ones, and waits up to
+5 s for each stalled chunk. A LAN client can therefore cause transient heap
+pressure or stall the main loop (web, OLED, controller ticks). It cannot cause
+TX: the owner runs in the RX task, never waits for the loop, and the controller
+fails closed on timeouts. Fixing this means replacing the web server, so it is
+not changed here; the isolated-network requirement below covers it.
+
 HTTP is not encrypted. This dry-run portal is suitable only for an isolated,
 trusted local test network. A session token and CSRF do not protect an untrusted
 LAN against sniffing or active traffic manipulation. RF enablement remains a
@@ -106,11 +143,25 @@ one-shot RF authorization gate are reviewed and implemented.
 `rf_sent`, `rf_capable`, `rf_armed` and `unit_confirmed` remain false. Physical
 remote activity cannot turn a dry-run into unit confirmation.
 
-Future correlation is model-tested independently: only a matching `I`/`RP` `31D9`
-from the pinned unit after send/restore and before the ten-second deadline may
-produce `unit-reported-mode`. An old queued frame, neighbour, unrelated response
-or different mode is not confirmation. Observed overlapping remote control makes
-the result ambiguous. The model never uses legacy `txAckMs`.
+Future correlation is model-tested independently (only reachable once a backend
+sets `rf_sent`). The window is 3 s after the send: the unit answered 16/17
+remote presses within 300 ms and repeats about 1 s later (HELTEC_V2_RX.md,
+measurement 2). Only an `I`/`RP` `31D9` with domain byte `00` from the pinned
+unit, received after send and restore and before the deadline, counts:
+
+| Observation in the window | Outcome |
+| --- | --- |
+| Reports the requested mode | `unit-reported-mode` |
+| Reports the pinned prior mode | `unchanged` |
+| Reports a third mode | `ambiguous` |
+| `22F1`/`22F3` to the unit (address slot 1 or 2, `orcon::toUnit` rules) from 3 s before the send onward | `ambiguous` |
+| Nothing by deadline + 250 ms loop grace | `not-confirmed` |
+
+Frames without a receive time, or with one later than the loop clock, are never
+evidence. An untimed remote command is counted as happening now (interference).
+Old queued frames and neighbours are ignored. `unit_confirmed` stays false: a
+matching report is an observation, not proof that this transmission caused it.
+The model never uses legacy `txAckMs`.
 
 `lastReceivedMs()` carries the existing decoder sync-observation timestamp from
 the owner through the RX queue. This avoids using main-loop dequeue time. It is
@@ -136,10 +187,12 @@ existing sanitizer note in `HELTEC_V2_OLED.md`. No security/quarantine bypass is
 part of these commands. PlatformIO package/tool versions are recorded rather than
 assuming the old historical Actions toolchain is still installed.
 
-The runner covers the original nine C++ suites, new golden vectors/transaction/
+The runner covers the original nine C++ suites (also `test/run_host_tests.sh`,
+which now runs `tx_poc` too), new golden vectors/transaction/
 security/concurrency/fault tests, original source guards executed locally,
 negative capability compiles, privacy including new files, actual emitted page
-scripts and OLED regressions. `-Firmware` builds V2 RX, V2 dry-run, V3/CC1101,
+scripts, OLED regressions and, with `-Firmware`, the flash tooling on simulated
+boards (`tools/test_precheck.sh`). `-Firmware` builds V2 RX, V2 dry-run, V3/CC1101,
 V3/SX1262 and 4848 locally. It only invokes `pio run -e <allowlisted environment>`;
 there is no upload target or hardware tooling.
 
@@ -151,6 +204,56 @@ hardware evidence. Logs in ignored `build/` survive a normal local review, but a
 not a backup. Existing Actions are still enabled in repository configuration;
 the existing RX-branch push trigger and workflow files were not changed. No push
 is allowed until the owner separately guarantees that it cannot start Actions.
+
+## Local USB flashing (no Actions)
+
+`tools/heltec_v2.sh` keeps its board checks and adds a local artifact source.
+Nothing below is run by the PoC tooling itself; every write needs the owner's
+consent for that specific commit.
+
+1. Build and test locally on a clean, committed tree:
+   `pwsh -NoProfile -File tools/test_local.ps1 -OutputDirectory build/<name> -Firmware`
+2. Package one image: `tools/heltec_v2.sh package build/<name> heltec_v2_sx1276_tx_poc_dryrun`
+   (or `heltec_v2_sx1276`). Only these two environments are accepted. The package
+   lands in `.flashtools/local/<commit>-<env>/` with `SHA256SUMS.txt` and
+   `BUILD_INFO.txt` and is verified at once.
+3. `LOCAL_ENV=<env> tools/heltec_v2.sh precheck <commit>`, then `... flash <commit>`.
+
+Verification replaces the Actions check with local evidence: `RESULTS.json` of
+the same commit, `dirty` empty, every row PASS (a `NOT TESTED` row also blocks),
+the required suites present, the firmware/image/partition rows for the env, and
+image hashes equal to those recorded by the runner. `RESULTS.json` is hashed at
+packaging; any later edit blocks. Image checks: commit stamp, SX1276 RX-only
+backend string, no OTA/HTTP-update code, the env's marker (`RX-ONLY TEST
+FIRMWARE` without PoC, or the dry-run markers), ESP32 chip ID, valid image hash,
+8 MB headers, and the exact partition layout (`tools/check_parts.py`).
+`boot_app0.bin` is pinned by SHA-256 (identical to the historical CI image).
+
+Board precheck (read-only, unchanged): ESP32-D0WDQ6, the expected MAC
+(`HELTEC_MAC` or `.flashtools/board.mac`), exactly 8 MB flash, and the board's
+partition table at 0x8000 (0xC00 bytes) byte-identical to the new one.
+
+| Image | Offset |
+| --- | --- |
+| `bootloader.bin` | 0x1000 |
+| `partitions.bin` | 0x8000 |
+| `boot_app0.bin` (otadata init) | 0xE000 |
+| `firmware.bin` | 0x10000 |
+
+Partition table (default 8 MB, espressif32@6.7.0): nvs 0x9000/0x5000,
+otadata 0xE000/0x2000, app0 0x10000/0x330000, app1 0x340000/0x330000,
+spiffs 0x670000/0x180000, coredump 0x7F0000/0x10000. No image covers
+0x9000–0xDFFF, so NVS (Wi-Fi, IDs, settings) is kept; the merged image is never
+used because it would erase NVS. esptool verifies each written region's hash.
+
+Rollback to RX-only, either:
+- the image the board ran before (historical Actions artifact, already local):
+  `tools/heltec_v2.sh flash d5c39e1` — this only reads the historical check-run
+  status, it starts nothing; or
+- a local RX-only build of the PoC commit:
+  `LOCAL_ENV=heltec_v2_sx1276 tools/heltec_v2.sh flash <commit>`.
+Both keep NVS and the partition table. After any flash: `tools/heltec_v2.sh
+monitor 40 boot.log reset` must show the expected `fw=` and `op=x5`.
 
 ## Gates before any hardware/RF work
 
@@ -164,8 +267,11 @@ two-address command yields 14 logical bytes, 34 wire bytes and a 50-byte/400-bit
 buffer with six UART-framed software preamble bytes. Test the entire on-air result:
 disable hardware sync, CRC, whitening/encoding and variable-length/address fields;
 account explicitly for hardware versus software preamble. Fast direct-RX restore
-must restore DIO mapping and altered modem settings. Use full `beginFSK()` only
-as a bounded fallback. Neither path is implemented or timed on hardware here.
+must restore DIO mapping and altered modem settings. Full re-initialisation
+belongs to the existing `g_rec` recovery, not to the owner. Neither path is
+implemented or timed on hardware here. A real TX spans several RX-task passes:
+the existing 1 s "not in RX" opmode check must be suspended while the owner is
+not idle, or it would count `rxLost` and restart the radio mid-transmission.
 
 Confirm acceptance of the unchanged NVS source identity without automatic pairing
 or cloning. Verify the target against the owner's own physical remote. Require
@@ -173,13 +279,13 @@ one separately approved command, independent RF observation (SDR/second receiver
 measured TX duration and RX return, and a local RX-only rollback image preserving
 NVS and partition layout. No RF approval is implied by this implementation.
 
-## Independent Claude review proposal
+## Review status
 
-Review the local diff against the baseline, without editing, pushing, building
-through Actions or communicating with hardware. Prioritize: absence of a hardware
-TX path; RX_ONLY/default/build isolation; SPSC memory ordering and reservation
-lifetime; cleanup/fault latches; auth, expiry, CSRF/Host/Origin and disabled legacy
-routes; NVS identity immutability; exact `04` golden vectors; receive-time versus
-queue-time correlation; privacy and truthful UI states. Re-run local tests with
-separate evidence directories. Report findings by severity and separate software
-proof from deferred RF/FreeRTOS timing and identity-acceptance assumptions.
+The independent review of `b8418f7` (no BLOCKER) found two MAJOR and several
+MINOR items. Addressed on `fix/heltec-v2-tx-poc-review`: false `31D9`
+confirmations (A–D) and the correlation outcomes above; owner first-error,
+untouched-path and single-recovery rules; atomic RX health with heartbeat;
+source-ID conflict and unverified-identity refusal; header validation and
+tests; the separate host runner; the local flash path. Accepted and documented:
+global authentication rate limit (LAN lockout is denial of service only),
+plain HTTP, and the web server's pre-authentication body buffering.

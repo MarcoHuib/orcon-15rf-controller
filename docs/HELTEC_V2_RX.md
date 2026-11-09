@@ -113,6 +113,8 @@ Gecontroleerd en in orde:
 
 ## Flashen (macOS, zonder PlatformIO)
 
+Zonder GitHub Actions: bouw en test lokaal en flash een lokaal pakket (`package`, `LOCAL_ENV`). Zie [HELTEC_V2_TX_POC.md](HELTEC_V2_TX_POC.md#local-usb-flashing-no-actions). Hieronder staat de oorspronkelijke route met Actions-artifacts; die blijft voor de rollback naar `d5c39e1`.
+
 ```
 tools/heltec_v2.sh precheck <commit>   # alleen lezen
 tools/heltec_v2.sh flash    <commit>   # precheck, dan "yes", dan schrijven
