@@ -87,5 +87,65 @@ for t in good layout flags extra md5 trail short; do
     if [ $got = $want ]; then mark=ok; else mark=FAIL; fails=$((fails + 1)); fi
     printf '  [%4s] %-44s -> %s\n' "$mark" "$t" "$got"
 done
+
+# Local (non-Actions) packages: real local_ok/markers functions on simulated evidence.
+L="$W/local"; mkdir -p "$L"
+cat > "$W/local.sh" <<EOF
+set -euo pipefail
+$(sed -n '/^die()/p; /^LOCAL_REQUIRED=/p; /^local_ok()/,/^}/p; /^markers()/,/^}/p' "$REPO/tools/heltec_v2.sh")
+\${WHAT:-local_ok} "\$@"
+EOF
+mkpkg() {   # mkpkg <name> <mutation>: evidence dir + package dir, then one mutation
+    local e="$L/$1/ev" d="$L/$1/pkg" sha=0123456789abcdef0123456789abcdef01234567 env=heltec_v2_sx1276_tx_poc_dryrun
+    mkdir -p "$e/artifacts/$env" "$d"
+    for n in bootloader partitions firmware; do echo "$n" > "$d/$n.bin"; done
+    python3 - "$e" "$d" "$sha" "$env" "$2" <<'PY'
+import hashlib, json, sys
+e, d, sha, env, mut = sys.argv[1:]
+names = "codec frames rx log orcon_rx orcon_v3 rxpipe netcfg oled tx_poc safety-and-negative-compiles privacy poc-web".split()
+names += [f"firmware-{env}", f"image-{env}", f"partitions-{env}"]
+checks = [{"name": n, "result": "PASS"} for n in names]
+if mut == "fail-row": checks.append({"name": "rx", "result": "FAIL"})
+if mut == "not-tested": checks.append({"name": "asan", "result": "NOT TESTED"})
+if mut == "missing-firmware": checks = [c for c in checks if c["name"] != f"firmware-{env}"]
+r = {"commit": "f" * 40 if mut == "commit" else sha, "dirty": " M src/x.cpp" if mut == "dirty" else "", "checks": checks}
+open(f"{e}/RESULTS.json", "w").write(json.dumps(r))
+files = [{"name": n, "sha256": hashlib.sha256(open(f"{d}/{n}", "rb").read()).hexdigest()} for n in ("bootloader.bin", "partitions.bin", "firmware.bin")]
+if mut == "artifact-hash": files[2]["sha256"] = "0" * 64
+open(f"{e}/artifacts/{env}/BUILD_INFO.json", "w").write(json.dumps({"files": files}))
+PY
+    { echo "commit=$sha"; echo "env=$env"; echo "evidence=$e"
+      echo "evidence_sha256=$(shasum -a 256 "$e/RESULTS.json" | cut -d' ' -f1)"; } > "$d/BUILD_INFO.txt"
+    [ "$2" = evidence-edited ] && echo " " >> "$e/RESULTS.json"
+    echo "$d $sha"
+}
+lexpect() {   # lexpect <pass|fail> <name> <args...>
+    local want=$1 name=$2; shift 2
+    out="$(env "${LENV[@]}" bash "$W/local.sh" "$@" 2>&1)"; rc=$?
+    got=$([ $rc -eq 0 ] && echo pass || echo fail)
+    if [ "$got" = "$want" ]; then mark=ok; else mark=FAIL; fails=$((fails + 1)); fi
+    printf '  [%4s] %-44s -> %s: %s\n' "$mark" "$name" "$got" "$(grep -E 'local evidence OK|FAIL:' <<<"$out" | head -1)"
+}
+echo "local_ok (local build evidence instead of Actions):"
+LENV=(WHAT=local_ok)
+lexpect pass "clean evidence, all PASS"        $(mkpkg good none)
+for m in dirty commit fail-row not-tested missing-firmware artifact-hash evidence-edited; do
+    lexpect fail "evidence: $m"                $(mkpkg "$m" "$m")
+done
+echo "markers (image contents per environment):"
+printf 'SX1276 direct RX (TX disabled) RX-ONLY TEST FIRMWARE' > "$W/rx.bin"
+printf 'SX1276 direct RX (TX disabled) tx-poc-dryrun DRY-RUN ONLY / NO RF' > "$W/dry.bin"
+printf 'SX1276 direct RX (TX disabled) RX-ONLY TEST FIRMWARE tx-poc-dryrun' > "$W/rxpoc.bin"
+printf 'SX1276 direct RX (TX disabled) tx-poc-dryrun DRY-RUN ONLY / NO RF ArduinoOTA' > "$W/ota.bin"
+LENV=(WHAT=markers)
+lexpect pass "RX-only image"                   "$W/rx.bin" heltec_v2_sx1276
+lexpect pass "dry-run image"                   "$W/dry.bin" heltec_v2_sx1276_tx_poc_dryrun
+lexpect fail "RX-only env, dry-run image"      "$W/dry.bin" heltec_v2_sx1276
+lexpect fail "RX-only image with PoC inside"   "$W/rxpoc.bin" heltec_v2_sx1276
+lexpect fail "dry-run env, RX-only image"      "$W/rx.bin" heltec_v2_sx1276_tx_poc_dryrun
+lexpect fail "image with OTA"                  "$W/ota.bin" heltec_v2_sx1276_tx_poc_dryrun
+lexpect fail "reserved RF env"                 "$W/dry.bin" heltec_v2_sx1276_tx_poc
+lexpect fail "V3 env"                          "$W/dry.bin" heltec_v3_cc1101_ota
+
 echo; [ $fails -eq 0 ] && echo "ALL PASSED (0 failures)" || echo "FAILED ($fails failures)"
 exit $((fails > 0))

@@ -142,6 +142,10 @@ if ($Firmware) {
         $info = [ordered]@{commit=$commit; dirty=$dirty; environment=$envName; rf_release=$false; files=@(Get-ChildItem $dest -File | ForEach-Object {[ordered]@{name=$_.Name; sha256=(Get-FileHash -LiteralPath $_.FullName).Hash.ToLowerInvariant()}})}
         [IO.File]::WriteAllText((Join-Path $dest 'BUILD_INFO.json'),($info | ConvertTo-Json -Depth 5))
     }
+    # Flash tooling (precheck, local_ok, markers) on simulated boards; reference = the local V2 table.
+    $parts = Join-Path $OutputDirectory 'artifacts/heltec_v2_sx1276/partitions.bin'
+    if (Test-Path -LiteralPath $parts) { $null = Invoke-Check 'flash-tooling' 'bash' @('tools/test_precheck.sh',$parts) 120 }
+    else { $rows.Add([ordered]@{name='flash-tooling'; result='FAIL'; exit=1; reason='no local V2 partitions.bin'}); Save-Results }
 }
 Save-Results
 Write-Host "Local evidence: $manifest"

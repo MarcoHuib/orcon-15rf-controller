@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# heltec_v2.sh — fetch, verify, flash and monitor the Heltec V2 RX-only build
-# from GitHub Actions, without PlatformIO.
+# heltec_v2.sh — fetch, verify, flash and monitor the Heltec V2 builds without
+# PlatformIO uploads: historical GitHub Actions artifacts, or local builds.
 #
-#   tools/heltec_v2.sh fetch   <commit>        download the CI artifact of <commit>
+#   tools/heltec_v2.sh fetch   <commit>        download the CI artifact of <commit> (historical)
+#   tools/heltec_v2.sh package <evidence-dir> <env>   local build -> flash package (no board access)
+#   LOCAL_ENV=<env> tools/heltec_v2.sh verify|precheck|flash <commit>   use that local package
 #   tools/heltec_v2.sh verify  <commit>        checksums, commit stamp, RX-only, ESP32 target
 #   tools/heltec_v2.sh precheck <commit>       verify + read-only board checks (chip, 8MB, partitions)
 #   tools/heltec_v2.sh flash   <commit>        precheck, then write via USB (asks for "yes")
@@ -19,6 +21,11 @@ TOOLS="$REPO/.flashtools"
 PORT="${PORT:-/dev/cu.usbserial-0001}"
 BRANCH="feature/heltec-v2-rx-only"
 ESPTOOL_SHA256="dc4ef26b659e1a8dcb019147c0ea6d94980b34de99fbe09121c7941c8b254531"
+LOCAL_ENV="${LOCAL_ENV:-}"     # set: a local package from tools/test_local.ps1 -Firmware, not Actions
+LOCAL_ENVS="heltec_v2_sx1276 heltec_v2_sx1276_tx_poc_dryrun"   # the only images that may be written
+BOOT_APP0_SHA256="f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0"  # == CI d5c39e1
+# A local package needs these local checks PASS on the same clean commit (RESULTS.json).
+LOCAL_REQUIRED="codec frames rx log orcon_rx orcon_v3 rxpipe netcfg oled tx_poc safety-and-negative-compiles privacy poc-web"
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -58,11 +65,55 @@ expected_mac() {   # the one board we may write to: HELTEC_MAC or .flashtools/bo
     [[ "$mac" =~ ^([0-9a-f]{2}:){5}[0-9a-f]{2}$ ]] || die "set the board MAC in HELTEC_MAC or $TOOLS/board.mac"
     echo "$mac"
 }
-dist()   { echo "$TOOLS/fw/$(fulsha "$1")"; }
+local_ok() {   # local evidence: clean commit, every required check PASS, image hashes as recorded
+    local d=$1 sha=$2 env ev
+    env="$(sed -n 's/^env=//p' "$d/BUILD_INFO.txt")"; ev="$(sed -n 's/^evidence=//p' "$d/BUILD_INFO.txt")"
+    [ -f "$ev/RESULTS.json" ] || die "local evidence $ev/RESULTS.json missing"
+    grep -qx "evidence_sha256=$(shasum -a 256 "$ev/RESULTS.json" | cut -d' ' -f1)" "$d/BUILD_INFO.txt" \
+        || die "local evidence changed since packaging"
+    python3 -I - "$ev" "$d" "$sha" "$env" $LOCAL_REQUIRED <<'PY' || die "local evidence does not cover this image"
+import hashlib, json, sys
+ev, d, sha, env, *required = sys.argv[1:]
+r = json.load(open(f"{ev}/RESULTS.json"))
+rows = {c["name"]: c["result"] for c in r["checks"]}
+problems = []
+if r.get("commit") != sha: problems.append(f"evidence commit {r.get('commit')} != {sha}")
+if r.get("dirty") != "": problems.append("evidence from a dirty tree")
+problems += [f"{n}: {v}" for n, v in rows.items() if v != "PASS"]
+for n in required + [f"firmware-{env}", f"image-{env}", f"partitions-{env}"]:
+    if rows.get(n) != "PASS": problems.append(f"{n} not PASS")
+recorded = {f["name"]: f["sha256"] for f in json.load(open(f"{ev}/artifacts/{env}/BUILD_INFO.json"))["files"]}
+for n in ("bootloader.bin", "partitions.bin", "firmware.bin"):
+    if hashlib.sha256(open(f"{d}/{n}", "rb").read()).hexdigest() != recorded.get(n): problems.append(f"{n} hash differs from evidence")
+for p in problems: print("  " + p, file=sys.stderr)
+sys.exit(1 if problems else 0)
+PY
+    echo "local evidence OK: $ev"
+}
+
+markers() {   # image contents per environment; network firmware update must be compiled out
+    local f=$1 env=$2 s
+    grep -q -a "SX1276 direct RX (TX disabled)" "$f" || die "not the SX1276 RX-only backend"
+    for s in "Firmware update (OTA)" "ArduinoOTA" "auth_upload" "Updater.cpp"; do
+        if grep -q -a "$s" "$f"; then die "image still contains '$s' (OTA/HTTP update)"; fi
+    done
+    case "$env" in
+        heltec_v2_sx1276)
+            grep -q -a "RX-ONLY TEST FIRMWARE" "$f" || die "RX-only build marker missing"
+            if grep -q -a "tx-poc-dryrun" "$f"; then die "RX-only image contains the TX-PoC"; fi ;;
+        heltec_v2_sx1276_tx_poc_dryrun)
+            grep -q -a "tx-poc-dryrun" "$f" && grep -q -a "DRY-RUN ONLY / NO RF" "$f" \
+                || die "dry-run markers missing" ;;
+        *) die "env $env may not be flashed" ;;
+    esac
+}
+
+dist()   { if [ -n "$LOCAL_ENV" ]; then echo "$TOOLS/local/$(fulsha "$1")-$LOCAL_ENV"; else echo "$TOOLS/fw/$(fulsha "$1")"; fi; }
 
 fetch() {
     local sha; sha="$(fulsha "$1")"; local d; d="$(dist "$sha")"
     [ -f "$d/BUILD_INFO.txt" ] && { echo "$d"; return; }
+    [ -z "$LOCAL_ENV" ] || die "no local package $d (run: tools/heltec_v2.sh package <evidence-dir> $LOCAL_ENV)"
     local run
     run="$(gh run list --branch "$BRANCH" --commit "$sha" --status success --limit 1 \
            --json databaseId --jq '.[0].databaseId')"
@@ -76,15 +127,11 @@ verify() {
     bootstrap
     local sha; sha="$(fulsha "$1")"; local d; d="$(fetch "$sha")"
     ( cd "$d" && shasum -a 256 -c SHA256SUMS.txt ) || die "SHA256SUMS mismatch"
+    local env="${LOCAL_ENV:-heltec_v2_sx1276}"
     grep -qx "commit=$sha" "$d/BUILD_INFO.txt"        || die "artifact is not built from $sha"
-    grep -qx "env=heltec_v2_sx1276" "$d/BUILD_INFO.txt" || die "wrong PlatformIO env"
+    grep -qx "env=$env" "$d/BUILD_INFO.txt"           || die "wrong PlatformIO env"
     grep -q -a "$sha" "$d/firmware.bin"                || die "firmware.bin lacks commit stamp"
-    grep -q -a "SX1276 direct RX (TX disabled)" "$d/firmware.bin" || die "not the SX1276 RX-only backend"
-    grep -q -a "RX-ONLY TEST FIRMWARE" "$d/firmware.bin"   || die "RX-only build marker missing"
-    local s
-    for s in "Firmware update (OTA)" "ArduinoOTA" "auth_upload" "Updater.cpp"; do       # network update must be compiled out
-        if grep -q -a "$s" "$d/firmware.bin"; then die "image still contains '$s' (OTA/HTTP update)"; fi
-    done
+    markers "$d/firmware.bin" "$env"
     local info; info="$(esptool --chip esp32 image_info --version 2 "$d/firmware.bin")"
     grep -q "Chip ID: 0 (ESP32)" <<<"$info"            || die "firmware.bin is not for ESP32 (classic)"
     grep -q "Validation hash: .* (valid)" <<<"$info"   || die "firmware.bin hash invalid"
@@ -94,8 +141,8 @@ verify() {
         || die "sendFrame not blocked in source"
     git -C "$REPO" show "$sha:src/main.cpp" | python3 -I "$REPO/tools/check_tick.py" \
         || die "periodic TX: orcon::tick() not excluded from RX-only"
-    ci_ok "$sha"
-    echo "VERIFIED $sha  ($d)"
+    if [ -n "$LOCAL_ENV" ]; then local_ok "$d" "$sha"; else ci_ok "$sha"; fi
+    echo "VERIFIED $sha $env ($d)"
 }
 
 # Read-only device checks. Any deviation, missing value or esptool error stops here.
@@ -129,11 +176,33 @@ precheck() {
 flash() {
     local sha; sha="$(fulsha "$1")"
     precheck "$sha"; local d; d="$(dist "$sha")"
-    read -r -p "Write commit ${sha:0:7} to the Heltec on $PORT? Type yes: " ok
+    read -r -p "Write commit ${sha:0:7} (${LOCAL_ENV:-heltec_v2_sx1276}) to the Heltec on $PORT? Type yes: " ok
     [ "$ok" = "yes" ] || die "aborted by user"
     esptool --chip esp32 --port "$PORT" --baud 460800 write_flash \
         0x1000 "$d/bootloader.bin" 0x8000 "$d/partitions.bin" \
         0xe000 "$d/boot_app0.bin" 0x10000 "$d/firmware.bin"
+}
+
+# Package a local build (tools/test_local.ps1 -Firmware evidence dir) for verify/precheck/flash.
+# Reads files only; no board access. The package is verified completely before it is accepted.
+package() {
+    local ev="${1:?usage: package <evidence-dir> <env>}" env="${2:?usage: package <evidence-dir> <env>}"
+    [[ " $LOCAL_ENVS " == *" $env "* ]] || die "env $env may not be flashed"
+    ev="$(cd "$ev" && pwd)"; local src="$ev/artifacts/$env"
+    [ -f "$ev/RESULTS.json" ] && [ -f "$src/firmware.bin" ] || die "no evidence/artifacts for $env in $ev"
+    local sha; sha="$(fulsha "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$ev/RESULTS.json")")"
+    LOCAL_ENV="$env"; local d; d="$(dist "$sha")"
+    rm -rf "$d"; mkdir -p "$d"
+    cp "$src/bootloader.bin" "$src/partitions.bin" "$src/firmware.bin" "$d/"
+    local b
+    for b in "$HOME"/.platformio/packages/framework-arduinoespressif32*/tools/partitions/boot_app0.bin; do
+        [ "$(shasum -a 256 "$b" | cut -d' ' -f1)" = "$BOOT_APP0_SHA256" ] && { cp "$b" "$d/boot_app0.bin"; break; }
+    done
+    [ -f "$d/boot_app0.bin" ] || die "no boot_app0.bin with the pinned SHA-256"
+    ( cd "$d" && shasum -a 256 bootloader.bin partitions.bin boot_app0.bin firmware.bin > SHA256SUMS.txt )
+    { echo "commit=$sha"; echo "env=$env"; echo "chip=esp32"; echo "source=local"; echo "evidence=$ev"
+      echo "evidence_sha256=$(shasum -a 256 "$ev/RESULTS.json" | cut -d' ' -f1)"; } > "$d/BUILD_INFO.txt"
+    verify "$sha"
 }
 
 monitor() {
@@ -144,9 +213,10 @@ monitor() {
 cmd="${1:-}"; shift || true
 case "$cmd" in
     fetch)   fetch "$@" ;;
+    package) package "$@" ;;
     verify)  verify "$@" ;;
     precheck) precheck "$@" ;;
     flash)   flash "$@" ;;
     monitor) monitor "$@" ;;
-    *) sed -n '2,14p' "$0"; exit 2 ;;
+    *) sed -n '2,16p' "$0"; exit 2 ;;
 esac
