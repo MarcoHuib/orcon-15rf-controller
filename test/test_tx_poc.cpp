@@ -426,22 +426,59 @@ static void concurrency() {
     producer.join();consumer.join();CHECK(!bad&&!box.full());
     // Real controller (main thread) and real owner + dry-run backend (radio thread) on a shared
     // clock that only advances slowly: every transaction must COMPLETE. Expired is a failure.
+    // Synthetic time moves only after owner passes: yield() guarantees no progress, so free-running
+    // time would turn host scheduling into owner timeouts (interleavings() covers those outcomes).
     Exchange ex;Controller c(ex);DryRunBackend dry;Owner owner(ex,dry);
-    std::atomic<uint32_t> clock{T0};std::atomic<bool> stop{false};
-    std::thread radio([&](){while(!stop.load()){dry.setRxHealthy(true);owner.tick(clock.load(),true);std::this_thread::yield();}});
+    std::atomic<uint32_t> clock{T0};std::atomic<bool> stop{false};std::atomic<uint64_t> passes{0};
+    std::thread radio([&](){while(!stop.load()){dry.setRxHealthy(true);owner.tick(clock.load(),true);passes.fetch_add(1);std::this_thread::yield();}});
     see(c,remoteFrame(1),T0);
     const unsigned transactions=200;unsigned completed=0,other=0;
     for(unsigned k=0;k<transactions;++k){
         const uint32_t t=clock.load()+RATE_MS+REMOTE_GUARD_MS;clock=t;
+        // Real millis never jumps 13 s: let the pass that may hold a pre-jump sample finish first.
+        for(const uint64_t p=passes.load();passes.load()<p+2;)std::this_thread::yield();
         see(c,statusFrame(ids().fan,1),t-10,t);
         if(sub(c,input(k+1,(uint8_t)(2+k%2)),t)!=Admission::Accepted){++other;continue;}
+        uint64_t seen=passes.load();
         for(unsigned spin=0;c.status().busy&&spin<50000000;++spin){
-            if(spin%100==99)clock.fetch_add(1);
+            if(spin%100==99&&passes.load()!=seen){seen=passes.load();clock.fetch_add(1);}
             c.tick(clock.load());std::this_thread::yield();}
         if(c.status().phase==Phase::DryRunComplete)++completed;else{++other;printf("  transaction %u: %s/%s\n",k,phaseName(c.status().phase),errorName(c.status().result.error));}
     }
     stop=true;radio.join();
     CHECK(completed==transactions&&other==0);
+}
+// Deterministic replays of the interleavings behind the old threaded send-timeout. The radio
+// task samples millis() first and ticks later (ramses_radio.cpp), so a pass may hold a sample
+// from before admission, or be starved. Both must fail closed, never extend the budget.
+static void interleavings() {
+    {   // Pass sampled before admission, ticks after it: budget already spent, radio untouched.
+        Exchange ex;Controller c(ex);Fake f;Owner o(ex,f);prime(c,T0);
+        const uint32_t stale=ADMIT-RATE_MS;
+        CHECK(sub(c,input(1,2),ADMIT)==Admission::Accepted);
+        o.tick(stale,true);CHECK(o.step()==Step::Prepare);
+        for(uint32_t t=ADMIT;t<ADMIT+50;t+=5){o.tick(t,true);c.tick(t);}
+        const Status& s=c.status();
+        CHECK(s.phase==Phase::Failed&&s.result.error==Error::SendTimeout&&!s.result.touched);
+        CHECK(f.prepares==0&&f.starts==0&&!s.locked&&!s.busy);
+    }
+    {   // Same order, sample a few ms old (real loop time): completes normally.
+        Exchange ex;Controller c(ex);Fake f;Owner o(ex,f);prime(c,T0);
+        CHECK(sub(c,input(1,2),ADMIT)==Admission::Accepted);
+        o.tick(ADMIT-5,true);
+        for(uint32_t t=ADMIT;t<ADMIT+50;t+=5){o.tick(t,true);c.tick(t);}
+        CHECK(c.status().phase==Phase::DryRunComplete&&f.prepares==1);
+    }
+    {   // Owner starved after start: timeout, cleanup and restore exactly once, not success.
+        Exchange ex;Controller c(ex);Fake f;f.pending=true;Owner o(ex,f);prime(c,T0);
+        CHECK(sub(c,input(1,2),ADMIT)==Admission::Accepted);
+        o.tick(ADMIT,true);o.tick(ADMIT+1,true);CHECK(o.step()==Step::Simulate);
+        f.pending=false; // would complete now, but the pass comes too late
+        for(uint32_t t=ADMIT+1+OWNER_MS;t<ADMIT+OWNER_MS+50;t+=5){o.tick(t,true);c.tick(t);}
+        const Status& s=c.status();
+        CHECK(s.phase==Phase::Failed&&s.result.error==Error::SendTimeout&&s.result.touched&&s.result.rxRestored);
+        CHECK(f.cleanups==1&&f.restores==1);
+    }
 }
 static void independentRegressions() {
     { Exchange ex; Controller c(ex); armSent(ex,c);
@@ -496,5 +533,5 @@ static void independentRegressions() {
       c.tick(r.sentMs+CONFIRM_MS+EXPIRY_GRACE_MS);CHECK(c.status().phase==Phase::UnitReported);
     }
 }
-int main(){independentRegressions();golden();schema();faults();ownerTrace();dryRunFaults();transactions();correlation();identity();health();security();concurrency();
+int main(){independentRegressions();golden();schema();faults();ownerTrace();dryRunFaults();transactions();correlation();identity();health();security();interleavings();concurrency();
     printf("TX-PoC: %d checks, %d failures\n",checks,fails);return fails?1:0;}
