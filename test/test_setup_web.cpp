@@ -267,8 +267,16 @@ int main() {
     CHECK(call("POST", "/api/setup/read/cancel", "{\"sid\":1}") == 409, "cancel of a finished session refused");
     { const auto own=orcon::ids().us;const auto sent=g_sent;
       char body[160];snprintf(body,sizeof(body),"{\"sid\":%u,\"name\":\"Ventilatie woonkamer\"}",unsigned(sid));
-      CHECK(call("POST","/api/profiles/save",body)==201 && J["items"].size()==1 && J["active"]==0,"finished read saved as persistent profile without selecting it");
+      profileMemory.failWrite=true;
+      CHECK(call("POST","/api/profiles/save",body)==503 && err("profile-write-failed") && profiles::store().data().count==0 &&
+            profiles::store().data().active==0,"NVS failure on save: nothing stored, nothing activated, no false success");
+      profileMemory.failWrite=false;
+      CHECK(call("POST","/api/profiles/save",body)==201 && J["items"].size()==1 && J["active"]==J["items"][0]["id"] &&
+            J["items"][0]["remote"]=="29:000101","finished read saved and activated in one step");
       const uint32_t id=J["items"][0]["id"];
+      CHECK(orcon::ids().us==own && orcon::ids().fan==UNIT && g_sent==sent,"activation on save routes to the profile unit, no clone, no RF");
+      CHECK(profiles::store().begin(profileMemory) && profiles::store().active() && profiles::store().active()->id==id,
+            "active selection restored after a simulated restart");
       CHECK(J["items"][0]["paired"]==false && J["items"][0]["control_mapping"]==true,"profile has five validated modes, not a pairing credential");
       CHECK(call("POST","/api/profiles/save",body)==201 && J["items"].size()==1,"duplicate profile save does not create duplicates");
       CHECK(profiles::store().begin(profileMemory) && profiles::store().find(id),"profile reload survives a simulated reboot");

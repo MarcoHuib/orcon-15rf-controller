@@ -30,7 +30,9 @@ public:
     const Snapshot& data() const { return data_; }
     const Profile* find(uint32_t) const;
     const Profile* active() const { return find(data_.active); }
-    Error save(const setupflow::Read&,const char* name,uint32_t& id);
+    // activate: the saved profile also becomes the active one, in the SAME NVS write
+    // (never "saved but not active"). Selecting never pairs or transmits.
+    Error save(const setupflow::Read&,const char* name,uint32_t& id,bool activate=false);
     Error select(uint32_t);
     Error rename(uint32_t,const char*);
     Error remove(uint32_t);

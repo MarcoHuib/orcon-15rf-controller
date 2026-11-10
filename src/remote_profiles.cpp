@@ -110,7 +110,7 @@ Error Store::commit(const Snapshot& next) {
     if(!storage_->write(blob,len))return Error::Write;
     data_=next;return Error::None;
 }
-Error Store::save(const setupflow::Read& r,const char* name,uint32_t& id) {
+Error Store::save(const setupflow::Read& r,const char* name,uint32_t& id,bool activate) {
     if(!ready_)return Error::Unavailable;
     if(!validName(name))return Error::InvalidName;
     if(r.st!=setupflow::St::Done||r.step!=setupflow::K_N)return Error::Incomplete;
@@ -124,6 +124,7 @@ Error Store::save(const setupflow::Read& r,const char* name,uint32_t& id) {
     else p.id=next.items[slot].id; // one profile per observed remote; reread updates it
     if(nameTaken(data_,name,slot<data_.count?p.id:0))return Error::NameTaken;
     next.items[slot]=p;
+    if(activate)next.active=p.id;
     uint8_t oldBlob[BLOB_BYTES],newBlob[BLOB_BYTES];const size_t a=encode(data_,oldBlob),b=encode(next,newBlob);
     const Error e=a==b&&!memcmp(oldBlob,newBlob,a)?Error::None:commit(next);
     if(e==Error::None)id=p.id;

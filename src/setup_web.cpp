@@ -181,8 +181,9 @@ static void handleProfileSave() {
     if(!sidOk(d,g_read.sid)||!g_read.sid||g_read.st!=St::Done){fail(409,"profile-incomplete");return;}
     if(!d["name"].is<const char*>()||d["name"].as<JsonString>().size()!=strlen(d["name"].as<const char*>())){fail(400,"bad-profile-name");return;}
     uint32_t id=0;
-    if(profileResult(profiles::store().save(g_read,d["name"].as<const char*>(),id))) {
-        if(profiles::store().data().active==id)restoreProfileSelection();
+    // Save and activate atomically: the page only moves on when the reply shows it active.
+    if(profileResult(profiles::store().save(g_read,d["name"].as<const char*>(),id,true))) {
+        restoreProfileSelection();
         profileBody(201);
     }
 }

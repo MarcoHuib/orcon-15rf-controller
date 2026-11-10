@@ -115,6 +115,11 @@ blijft een ontvangen `22F3`-mapping en wordt niet als zesde TX-commando gereplay
   maar is bediening ermee geblokkeerd.
 - Het doeladres wordt alleen afgeleid uit de zes remoteframes, onafhankelijk van
   unit-antwoorden. TX vereist daarnaast verse status en de bestaande veiligheidschecks.
+- Opslaan maakt het profiel direct actief (één atomaire NVS-schrijfactie). De pagina
+  gaat pas naar *Ventilatie bedienen* als het antwoord dit profiel als actief toont;
+  anders blijft ze op de uitleespagina met een foutmelding. Verwijderen van het actieve
+  profiel laat bewust **geen** profiel actief: automatisch een ander profiel kiezen
+  zou ongevraagd een andere unit als doel nemen.
 - Profielen bewaren **geen pairingcredential** en vervangen nooit de eigen zender-ID.
   Opslaan, selecteren, hernoemen en verwijderen starten geen RF-transactie.
 - De actieve selectie blijft na herstart behouden. Selectie verandert in V2 alleen
@@ -133,7 +138,7 @@ API, met dezelfde POST-beveiliging als de wizard:
 | Methode | Route | Inhoud |
 | --- | --- | --- |
 | GET | `/api/profiles` | opslagstatus, limiet, actieve selectie, namen en eigenschappen |
-| POST | `/api/profiles/save` | `sid`, `name` van de afgeronde uitleessessie |
+| POST | `/api/profiles/save` | `sid`, `name` van de afgeronde uitleessessie; slaat op **en activeert** in één NVS-schrijfactie |
 | POST | `/api/profiles/select` | `id`; nul kiest de oorspronkelijke geconfigureerde unit (alleen RX-monitoring) |
 | POST | `/api/profiles/rename` | `id`, `name` |
 | POST | `/api/profiles/delete` | `id`; verwijderen van het actieve profiel wist ook de selectie |

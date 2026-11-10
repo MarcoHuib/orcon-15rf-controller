@@ -64,5 +64,18 @@ int main(){
     {Memory broken=mem;broken.blob[4]=99;Store a;CHECK(!a.begin(broken));}
     {Memory broken;broken.readOk=false;Store a;CHECK(!a.begin(broken)&&!a.ready());}
     {Memory broken;broken.writeOk=false;Store a;CHECK(a.begin(broken));CHECK(a.save(r,"Naam",id)==Error::Write&&a.data().count==0);}
+    {Memory m;Store a;CHECK(a.begin(m));uint32_t first=0,second=0;     // save + activate: one atomic write
+     m.writeOk=false;CHECK(a.save(capture(301),"Washok",first,true)==Error::Write&&a.data().count==0&&a.data().active==0);
+     m.writeOk=true;const int w=m.writes;
+     CHECK(a.save(capture(301),"Washok",first,true)==Error::None&&a.data().active==first&&m.writes==w+1);
+     CHECK(a.save(capture(301),"Washok",first,true)==Error::None&&m.writes==w+1);     // repeat: idempotent, no write
+     {Store reboot;CHECK(reboot.begin(m)&&reboot.active()&&reboot.active()->id==first);}  // restored after restart
+     CHECK(a.save(capture(302),"Zolder",second,true)==Error::None&&second!=first&&a.data().active==second&&a.data().count==2);
+     m.writeOk=false;uint32_t third=0;
+     CHECK(a.save(capture(303),"Keuken",third,true)==Error::Write&&a.data().active==second&&a.data().count==2); // nothing half-done
+     m.writeOk=true;CHECK(a.select(first)==Error::None&&a.active()->id==first);       // manual switch between profiles
+     {Store reboot;CHECK(reboot.begin(m)&&reboot.active()->id==first&&reboot.data().count==2);}
+     CHECK(a.remove(first)==Error::None&&a.data().active==0&&a.find(second));          // deleting the active one: none active
+     uint32_t plain=0;CHECK(a.save(capture(304),"Hal",plain)==Error::None&&a.data().active==0);}  // default save never selects
     printf("Remote profiles: %d checks, %d failures\n",checks,fails);return fails?1:0;
 }

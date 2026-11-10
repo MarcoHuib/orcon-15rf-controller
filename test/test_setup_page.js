@@ -62,7 +62,7 @@ async function page(routes, hash = '') {
     vm.runInNewContext(script, ctx);
     await flush();
     const $ = id => dom.byId[id];
-    return { $, calls, dom, keys: dom.all.filter(e => 'data-key' in e.attrs),
+    return { $, calls, dom, location, keys: dom.all.filter(e => 'data-key' in e.attrs),
              refresh: async () => { document.handlers.visibilitychange(); await flush(); },
              posts: () => calls.filter(c => c.key.startsWith('POST')) };
 }
@@ -282,21 +282,50 @@ const read = (sid, status, step, extra = {}) => ({ sid, status, step, remote: '2
         assert.ok(p.keys.every(k=>k.disabled));ok('pending transaction disables further commands');
     }
 
-    {
-        let rs=read(0,'idle',0),f={storage_ok:true,active:0,limit:4,items:[]},fail=true;
+    {   // save = store + activate on the server; the page moves to control only when the reply shows it active
+        let rs=read(0,'idle',0),f={storage_ok:true,active:0,limit:4,items:[]},mode='fail';
+        const item={id:1,name:'Ventilatie woonkamer',remote:'29:000101',control_mapping:true,paired:false};
         const p=await page({
             'GET /api/setup/state':()=>[200,state(CAPS_RX,{profiles:f})],
             'GET /api/setup/read/state':()=>[200,rs],
             'POST /api/setup/read/start':()=>{rs=read(41,'done',6);return [201,rs];},
-            'POST /api/profiles/save':c=>{assert.deepEqual(c.body,{sid:41,name:'Ventilatie woonkamer'});if(fail)return [503,{error:'profile-write-failed'}];f={...f,items:[{id:1,name:'Ventilatie woonkamer',control_mapping:true,paired:false}]};return [201,f];},
+            'POST /api/profiles/save':c=>{assert.deepEqual(c.body,{sid:41,name:'Ventilatie woonkamer'});
+                if(mode==='fail')return [503,{error:'profile-write-failed'}];
+                f={...f,items:[item],active:mode==='inactive'?0:1};return [201,f];},
         },'read');
         p.$('remotes').click({target:{closest:()=>({dataset:{id:'29:000101'}})}});await flush();
         assert.equal(p.$('doneP').hidden,false);assert.equal(p.$('saveProfile').textContent,'Profiel opslaan');ok('completed read offers a primary save-profile action');
         p.$('saveName').value='Ventilatie woonkamer';p.$('saveProfile').click();await flush();
-        assert.match(p.$('err').textContent,/Opslaan is mislukt/);assert.equal(p.$('saveProfile').disabled,false);ok('storage failure remains retryable without showing success');
-        fail=false;p.$('saveProfile').click();await flush();
-        assert.match(p.$('profileSaveM').textContent,/Profiel opgeslagen/);assert.equal(p.$('saveProfile').disabled,true);ok('successful profile save is shown after server persistence');
+        assert.match(p.$('err').textContent,/Opslaan is mislukt/);assert.equal(p.$('saveProfile').disabled,false);
+        assert.equal(p.location.hash,'#read');assert.equal(p.$('doneP').hidden,false);ok('storage failure: stays on the read page, retryable, no success shown');
+        mode='inactive';p.$('saveProfile').click();await flush();
+        assert.equal(p.location.hash,'#read');assert.equal(p.$('ctlP').hidden,true);assert.match(p.$('err').textContent,/niet actief gemaakt/);
+        ok('saved but not reported active: stays on the read page with an honest error');
+        assert.equal(p.posts().filter(c=>c.key.endsWith('/profiles/save')).length,2);
+        p.$('saveProfile').click();await flush();assert.equal(p.posts().filter(c=>c.key.endsWith('/profiles/save')).length,2);
+        ok('no duplicate save after the profile was stored');
         assert.ok(!p.calls.some(x=>x.key.includes('/api/remote/send')));ok('profile save never sends a ventilation command');
+    }
+    {   // happy path: one click -> stored, active, control screen with the profile selected
+        let rs=read(0,'idle',0),f={storage_ok:true,active:0,limit:4,items:[{id:2,name:'Zolder',remote:'29:000505',control_mapping:true,paired:false}]};
+        const p=await page({
+            'GET /api/setup/state':()=>[200,state(CAPS_RX,{profiles:f})],
+            'GET /api/setup/read/state':()=>[200,rs],
+            'POST /api/setup/read/start':()=>{rs=read(41,'done',6);return [201,rs];},
+            'POST /api/profiles/save':()=>{f={...f,active:3,items:[...f.items,{id:3,name:'Washok',remote:'29:000101',control_mapping:true,paired:false}]};return [201,f];},
+            'POST /api/profiles/select':c=>{f={...f,active:c.body.id};return [200,f];},
+        },'read');
+        p.$('remotes').click({target:{closest:()=>({dataset:{id:'29:000101'}})}});await flush();assert.equal(p.$('doneP').hidden,false);
+        p.$('saveName').value='Washok';p.$('saveProfile').click();await flush();
+        assert.equal(p.location.hash,'#control');assert.equal(p.$('ctlP').hidden,false);assert.equal(p.$('doneP').hidden,true);
+        ok('successful save + activation navigates straight to Ventilatie bedienen');
+        assert.equal(p.$('profileSel').value,'3');assert.match(p.$('profileNote').textContent,/^Actief profiel: Washok\./);
+        ok('control screen shows the new profile selected and names it as active');
+        assert.ok(p.keys.every(k=>k.disabled));assert.match(p.$('notice').textContent,/niet mogelijk/);
+        ok('RX-only firmware: keys stay disabled and the screen says control is not possible');
+        p.$('profileSel').value='2';p.$('profileSel').handlers.change[0]();await flush();
+        assert.equal(p.$('profileSel').value,'2');assert.match(p.$('profileNote').textContent,/Actief profiel: Zolder/);ok('multiple profiles: manual switch');
+        assert.ok(!p.calls.some(x=>x.key.includes('/api/remote/send')));ok('save, activate and switch send nothing');
     }
     {
         let f={storage_ok:true,active:0,limit:4,items:[{id:1,name:'Woonkamer',control_mapping:true,paired:false},{id:2,name:'Slaapkamer',control_mapping:false,paired:false}]};
