@@ -131,7 +131,7 @@ mkpkg() {   # mkpkg <name> <mutation>: evidence dir + package dir, then one muta
 import hashlib, json, os, sys
 e, d, sha, env, mut = sys.argv[1:]
 names = os.environ["LOCAL_REQUIRED"].split()
-names += [f"image-{env}", f"partitions-{env}"]
+names += [f"image-{env}", f"partitions-{env}", f"elf-{env}"]
 checks = [{"name": n, "result": "PASS", "exit": 0} for n in names]
 if mut == "fail-row": checks.append({"name": "rx", "result": "FAIL"})
 if mut == "not-tested": checks.append({"name": "asan", "result": "NOT TESTED"})

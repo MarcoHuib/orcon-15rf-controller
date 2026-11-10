@@ -50,7 +50,7 @@ info = [f"commit={sha}", f"env={'heltec_v2_sx1276' if mut == 'wrong-env' else en
 if kind == "local":
     ev = d + ".evidence"; shutil.rmtree(ev, ignore_errors=True); os.makedirs(f"{ev}/artifacts/{env}")
     names = os.environ["LOCAL_REQUIRED"].split()
-    names += [f"image-{env}", f"partitions-{env}"]
+    names += [f"image-{env}", f"partitions-{env}", f"elf-{env}"]
     json.dump({"commit": sha, "dirty": "", "checks": [{"name": n, "result": "PASS", "exit": 0} for n in names]}, open(f"{ev}/RESULTS.json", "w"))
     json.dump({"files": [{"name": n, "sha256": hashlib.sha256(files[n]).hexdigest()}
                          for n in ("bootloader.bin", "partitions.bin", "boot_app0.bin", "firmware.bin")]}, open(f"{ev}/artifacts/{env}/BUILD_INFO.json", "w"))

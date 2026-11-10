@@ -144,6 +144,12 @@ if ($Firmware) {
             })
             if (-not $boot.Count) { throw 'pinned local boot_app0.bin missing' }
             Copy-Item $boot[0].FullName (Join-Path $dest 'boot_app0.bin')
+            # ELF kept as evidence; TX reachability over the resolved direct-call graph.
+            $elf = Join-Path $dest 'firmware.elf'
+            Copy-Item -LiteralPath (Join-Path $root ('.pio/build/' + $envName + '/firmware.elf')) -Destination $elf
+            $bin = Join-Path $core 'packages/toolchain-xtensa-esp32/bin'
+            $null = Invoke-Check ('elf-' + $envName) 'python3' @('-B','tools/check_elf_tx.py',$elf,$envName,$bin)
+            if ($envName -eq 'heltec_v2_sx1276_tx_poc_dryrun') { $null = Invoke-Check 'elf-selftest' 'python3' @('-B','tools/test_elf_tx.py',$elf,$bin) }
         }
         $firmwareText = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes((Join-Path $dest 'firmware.bin')))
         $imageOk = $firmwareText.Contains($commit)
