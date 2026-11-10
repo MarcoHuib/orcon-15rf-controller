@@ -14,4 +14,5 @@ const char* ssidName();
 bool        apMode();
 const char* mqttHost();
 bool        mqttConnected();
+bool        maskIds();        // privacy setting: mask device IDs in the UI
 }

@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#f7f6fb">
+<title>Orcon 15RF | Installatie</title>
+<style>
+:root{font:16px system-ui,-apple-system,Segoe UI,Arial,sans-serif;color:#25223a;background:#f5f4f9}
+*{box-sizing:border-box}
+body{margin:0;padding:28px 16px;background:radial-gradient(ellipse at 50% 5%,#fff,#f4f2fa 75%)}
+button{font:inherit;color:inherit;cursor:pointer}button:focus-visible,a:focus-visible{outline:3px solid #8942be;outline-offset:3px}
+[hidden]{display:none!important}
+.app{max-width:1080px;margin:auto;background:#fff;border:1px solid #e9e5f0;border-radius:24px;box-shadow:0 15px 55px #39304818;overflow:hidden}
+.top{padding:14px 36px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;border-bottom:1px solid #eae6f0}
+.brand{color:#5e5872;font-size:14px}.brand b{font-size:27px;letter-spacing:-1.5px;color:#771ca0;margin-right:12px;padding-right:14px;border-right:1px solid #d7d1e0}
+.tag{font-size:12px;padding:7px 11px;border-radius:30px;background:#f4f0fa;color:#705b82;text-decoration:none;margin-left:6px}.tag.ok{background:#e4f6e8;color:#1b6e35}.tag.bad{background:#fdeaea;color:#a32424}
+main{padding:38px 44px 44px}.head{text-align:center;max-width:820px;margin:0 auto 34px}.head:before{content:"";display:block;width:66px;height:5px;background:#8126a5;border-radius:9px;margin:0 auto 20px}
+h1{font-size:clamp(28px,3.8vw,43px);letter-spacing:-1.6px;line-height:1.16;margin:0 0 16px}h2{font-size:19px;margin:0 0 8px}p{margin:0;color:#67627a;line-height:1.6}
+.lay{display:grid;grid-template-columns:minmax(290px,410px) minmax(0,1fr);gap:42px;align-items:start}
+.rc{display:grid;justify-items:center;gap:16px}
+.remote{width:min(100%,356px);aspect-ratio:1.07;display:flex;flex-direction:column;border-radius:21px 21px 30px 30px;box-shadow:0 9px 17px #28213424,0 2px 3px #5552;overflow:hidden}
+.remote>div{flex:1;display:flex;align-items:center;justify-content:center;position:relative;background:linear-gradient(155deg,#fdfcfb,#f0edef)}
+.remote>.strip{flex:0 0 9px;background:linear-gradient(#5d245c,#c38cb8 40%,#4d244a)}
+.remote>.rb{background:radial-gradient(circle,#e5e1e4 .9px,transparent 1.2px) 0 4px/11px 11px,#f7f5f6}
+.keys{display:flex;justify-content:space-around;width:76%}.rb .keys{position:absolute;top:21%}
+.key{width:56px;height:56px;border:1px solid #e7e2e8;border-radius:50%;display:grid;place-items:center;background:linear-gradient(145deg,#fff,#efecf0);color:#817b86;font-weight:650;font-size:26px;line-height:1}
+.key:not(:disabled){border-color:#c9b3d6}.key:not(:disabled):active{transform:scale(.95)}
+.sel,.key.sel{color:#75229d;border:2px solid #b06bc9;background:#f2e2fa}.key.sel{box-shadow:0 0 0 4px #f1dcfa}.key.done{color:#177a36;border-color:#9bddac;background:#dcf4e1}.key.cur{color:#a84f0b;border:3px solid #f18a29;background:#fff5e7;box-shadow:0 0 0 4px #ffead4}
+.logo{position:absolute;bottom:17%;font-weight:800;color:#9d969f}
+.rnote{padding:10px 15px;border-radius:12px;background:#f2eef9;color:#625875;font-size:13px;text-align:center}
+.mins{display:flex;gap:8px}.mins button,.sec{border:1px solid #d9cfe4;background:#fff;color:#692588;font-weight:650;border-radius:10px;padding:10px 16px}.sec{margin-top:10px}
+.choices{display:grid;gap:16px}.choice{border:1px solid #e6e0ed;border-radius:19px;padding:22px;display:grid;grid-template-columns:58px 1fr;gap:18px;align-items:center;text-align:left;background:#fff;box-shadow:0 3px 9px #2c254411}
+.choice:hover{border-color:#af78c4}.choice i{display:grid;place-items:center;background:#f2eaf8;border-radius:15px;color:#7921a1;font:normal 28px/58px system-ui;height:58px}.choice b{display:block;font-size:20px;margin-bottom:4px}.choice small{font-size:14px;color:#6d6880}
+.panel{border:1px solid #e5dfef;border-radius:19px;padding:24px;box-shadow:0 3px 10px #382b4910}
+.step{display:flex;gap:16px;padding:14px 12px;border-radius:12px}.step p{font-size:13px}.num{flex:none;width:32px;height:32px;display:grid;place-items:center;border:1px solid #d8d0e5;border-radius:50%;color:#867b94;font-weight:700;font-size:13px}.step.on{background:#f5edf9}.step.on .num{background:#8527a6;color:#fff}.step.fin .num{background:#e0f5e5;color:#19823d;border-color:#b0e2bd}
+.act{display:block;width:100%;min-height:48px;background:#7e209f;color:#fff;border:0;border-radius:12px;font-weight:700;margin-top:18px}.act:hover:not(:disabled){background:#681383}.act:disabled{background:#e5deeb;color:#9f96a9}
+.msg{font-size:13px;min-height:21px;margin-top:14px}.okt{color:#207a3b}.warn{color:#a95e10}
+.note{border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:14px;background:#fff6e9;color:#8a4b06;border:1px solid #f6d7a8}.note.err{background:#fdeeee;color:#a32424;border-color:#f3c4c4}
+.ph{display:flex;justify-content:space-between;font-weight:750;font-size:15px}.ph span{color:#6f687a;font-size:13px;font-weight:500}.track{height:8px;border-radius:9px;background:#eee7f5;margin:12px 0 18px;overflow:hidden}.track>div{height:100%;background:#8024a0;width:0}
+.list{list-style:none;margin:14px 0 0;padding:0;display:grid;gap:7px}.item{display:grid;grid-template-columns:28px 1fr auto;gap:9px;align-items:center;padding:12px;border:1px solid #eeebf1;background:#f8f7fa;border-radius:10px;font-size:13px;text-align:left;width:100%}.sym{width:25px;height:25px;border-radius:50%;border:1.5px solid #beb4cb;display:grid;place-items:center;color:#9b90a8}.st{color:#8a8295;font-size:12px}
+.item.ok{border-color:#d6eddb;background:#e9f8ed}.item.ok .sym{background:#218c42;border-color:#218c42;color:#fff}.item.ok .st{color:#167334}.item.cur{background:#fff5ec;border-color:#f28a2b}.item.cur .sym{border-color:#ed8a29;color:#c56b12}.item.cur .st{color:#b85f09;font-weight:700}
+.chips{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px}.chip{border:1px solid #eeebf1;background:#f8f7fa;border-radius:10px;padding:10px;font-size:12px;color:#8a8295;text-align:center}.chip b{display:block;font-size:14px;color:#3b3550}.chip.y{background:#e9f8ed;color:#167334}.chip.n{background:#fdeeee;color:#a32424}
+.okbox{border:1px solid #d4eed8;background:#eaf8ed;border-radius:14px;padding:22px;text-align:center}
+#back{margin-top:28px}.info{color:#80778b;font-size:12px;text-align:center;margin-top:24px}
+@media(max-width:790px){body{padding:0}.app{border:0;border-radius:0;box-shadow:none}.top{padding:10px 16px}.brand b{font-size:23px}main{padding:24px 16px}.head{margin-bottom:22px}.lay{grid-template-columns:1fr;gap:22px}.remote{width:min(300px,100%)}.choice{padding:16px}.choice b{font-size:17px}.panel{padding:16px}}
+@media(max-width:370px){.key{width:46px;height:46px}.chips{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+<header class="top"><div class="brand"><b>ORCON</b>15RF · Installatiewizard</div><div><span class="tag" id="conn" role="status">Verbinden…</span><a class="tag" href="/dashboard">Dashboard</a></div></header>
+<main>
+<div class="head"><h1 id="title">Orcon installatiewizard</h1><p id="sub"></p></div>
+<div class="lay">
+<div class="rc">
+<div class="remote" role="group" aria-label="Orcon 15RF afstandsbediening">
+<div><div class="keys"><button class="key" data-key="away" aria-label="Woning / afwezig">⌂</button><button class="key" data-key="auto" aria-label="Auto" style="font-size:16px;font-weight:750">auto</button><button class="key" data-key="timer" aria-label="Timer" style="font-size:34px">◷</button></div></div>
+<div class="strip"></div>
+<div class="rb"><div class="keys"><button class="key" data-key="1" aria-label="Stand 1">1</button><button class="key" data-key="2" aria-label="Stand 2">2</button><button class="key" data-key="3" aria-label="Stand 3">3</button></div><span class="logo" aria-hidden="true">ORCON</span></div>
+</div>
+<div class="rnote" id="rnote"></div>
+<div class="mins" id="mins" hidden role="group" aria-label="Timerduur"><button data-min="15">15 min</button><button data-min="30">30 min</button><button data-min="60">60 min</button></div>
+</div>
+<div>
+<div class="note" id="notice" hidden></div>
+<div class="note err" id="err" role="alert" hidden></div>
+<div class="choices" id="choices">
+<button class="choice" data-open="pair"><i aria-hidden="true">⛓</i><span><b>Afstandsbediening koppelen</b><small>Koppel deze controller met de combinatie Auto + 1.</small></span></button>
+<button class="choice" data-open="read"><i aria-hidden="true">◎</i><span><b>Afstandsbediening uitlezen</b><small>Druk stap voor stap de knoppen in op je echte afstandsbediening.</small></span></button>
+<button class="choice" data-open="control"><i aria-hidden="true">≋</i><span><b>Ventilatie bedienen</b><small>De virtuele afstandsbediening voor dagelijks gebruik.</small></span></button>
+</div>
+<section class="panel" id="pairP" hidden aria-label="Koppelen">
+<div class="step" id="ps0"><span class="num">1</span><div><b>Zet de unit in koppelmodus</b><p>Stroom eraf en weer aan: het koppelvenster is ongeveer 3 minuten open.</p></div></div>
+<div class="step" id="ps1"><span class="num">2</span><div><b>Voer de codecombinatie uit</b><p>Selecteer Auto en 1; ze worden als één combinatie verzonden.</p></div></div>
+<div class="step" id="ps2"><span class="num">3</span><div><b>Wacht op de bevestiging</b><p>Alleen een RF-bevestiging van de unit, vastgelegd door de firmware, telt als gekoppeld.</p></div></div>
+<button id="pairA" class="act"></button><button id="pairX" class="sec" hidden>Annuleren</button>
+<p class="msg" id="pairM" role="status"></p>
+</section>
+<section class="panel" id="readP" hidden aria-label="Uitlezen">
+<div id="pick"><h2>Kies je afstandsbediening</h2><p>Druk op een knop van je eigen afstandsbediening en kies hem hieronder.</p>
+<div class="list" id="remotes" role="radiogroup" aria-label="Gehoorde afstandsbedieningen"></div>
+<button class="act" id="readS" disabled>Start uitlezen</button></div>
+<div id="run" hidden>
+<div class="ph"><b id="ptext"></b><span id="pct"></span></div>
+<div class="track" role="progressbar" aria-label="Voortgang" aria-valuemin="0" aria-valuemax="6" id="prog"><div id="fill"></div></div>
+<ol class="list" id="steps"></ol>
+<button class="sec" id="readX">Annuleren</button></div>
+<p class="msg" id="readM" role="status"></p>
+</section>
+<section class="okbox" id="doneP" hidden><h2>Alle zes knoppen ontvangen</h2><p id="doneT"></p><ol class="list" id="results"></ol><button class="act" id="again">Opnieuw uitlezen</button></section>
+<section class="panel" id="ctlP" hidden aria-label="Ventilatie bedienen">
+<h2>Status</h2><p id="unit"></p>
+<div class="chips"><div class="chip" id="c0"><b>Geaccepteerd</b><span>–</span></div><div class="chip" id="c1"><b>Verzonden</b><span>–</span></div><div class="chip" id="c2"><b>Bevestigd door unit</b><span>–</span></div></div>
+<p class="msg" id="ctlM" role="status"></p>
+</section>
+<button class="sec" id="back" hidden>← Terug</button>
+</div>
+</div>
+<p class="info">HTML, CSS en JavaScript uit flash · alleen verzoeken naar deze controller.</p>
+</main>
+</div>
+<script>
+(()=>{
+'use strict';
+const $=id=>document.getElementById(id),keys=[...document.querySelectorAll('[data-key]')];
+const K=['away','auto','timer','1','2','3'],NM=['Woning','Auto','Timer','Stand 1','Stand 2','Stand 3'],PA=['ready','bind_sent','rf_confirmed','tx_failed'];
+const MODE={away:'Afwezig',auto:'Auto',low:'Stand 1',medium:'Stand 2',high:'Stand 3',boost:'Boost'},MK={away:'away',auto:'auto',low:'1',medium:'2',high:'3'};
+const MB=['Woning','Stand 1','Stand 2','Stand 3','Auto','auto2','boost','uit'];
+const NOTX='de zender is uitgeschakeld (alleen ontvangen). Er wordt niets verzonden.';
+const ERR={offline:'Geen verbinding met de controller.','tx-unavailable':'Deze firmware kan niet zenden. Er is niets verzonden.','session-busy':'Er loopt al een andere sessie; annuleer die eerst.','no-such-session':'Deze sessie bestaat niet meer.','remote-not-heard':'Deze afstandsbediening is niet recent gehoord.','rf-unavailable':'De radio-ontvanger is niet actief.','bad-token':'Sessie verlopen: herlaad de pagina.','too-fast':'Wacht even tussen twee commando’s.','unit-not-selected':'Nog geen ventilatie-unit gekozen (Dashboard → RF log).','tx-failed':'Verzenden mislukt: er is geen pakket verzonden.','unsupported-combination':'Koppelen vereist precies Auto + 1.','already-sent':'Het koppelverzoek is al verzonden.'};
+let S=null,R=null,P=null,C=null,page='home',pick='',T=0,busy=false,rsid=0,psid=0,on=0,eo=0;const sel=new Set();
+// Follow only a session this page started or found running: an old result is never shown as current.
+const own=(x,id)=>x&&id&&x.sid===id?x:null;
+const esc=s=>String(s).replace(/[&<>"]/g,c=>'&#'+c.charCodeAt(0)+';');
+const say=e=>ERR[e]||'Fout: '+e;
+const mid=id=>!id||!S||!S.mask_ids?id||'':id.slice(0,5)+'••'+id.slice(-2);
+const cmdName=(c,m)=>c==='22F1'?MB[m]||c:c==='22F3'?'Timer':'commando '+c;
+const li=(cls,sym,name,st)=>'<li class="item '+cls+'"><span class="sym">'+sym+'</span><b>'+name+'</b><span class="st">'+st+'</span></li>';
+async function api(u,b){
+let r,j={};
+try{r=await fetch(u,b===undefined?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'application/json','X-Orcon-Token':S?S.token:''},body:JSON.stringify(b)})}catch(e){on=0;conn();throw'offline'}
+try{j=await r.json()}catch(e){}
+on=1;conn();if(!r.ok)throw j.error||'http-'+r.status;return j;
+}
+function conn(){const c=$('conn'),ok=on;c.textContent=ok?(S&&S.rx_only?'Verbonden · alleen ontvangen':'Verbonden'):'Geen verbinding';c.className='tag '+(ok?'ok':'bad')}
+// Poll errors clear themselves on the next good poll; an action's error stays until the next action.
+function err(t,o){eo=o;$('err').textContent=t||'';$('err').hidden=!t}
+async function poll(){
+clearTimeout(T);let d=10000;
+if(!document.hidden)try{
+if(!S||!(page==='read'&&R&&R.status==='active'))S=await api('/api/setup/state');
+if(page==='read'){R=await api('/api/setup/read/state');if(R.status==='active')rsid=R.sid;R=own(R,rsid);d=R&&R.status==='active'?1000:2500}
+else if(page==='pair'&&S.caps.pair_supported){P=await api('/api/setup/pair/state');if(PA.includes(P.status))psid=P.sid;P=own(P,psid);d=P&&P.status!=='ready'&&PA.includes(P.status)?2000:5000}
+else if(page==='control'&&S.caps.control_supported){C=await api('/api/remote/state');d=C.confirm==='pending'?1000:10000}
+if(eo)err('');
+}catch(e){err(say(e),1)}
+draw();T=setTimeout(poll,d);
+}
+async function act(fn){if(busy)return;busy=true;draw();try{await fn();err('')}catch(e){err(say(e))}busy=false;poll()}
+function go(p){page=p;sel.clear();pick='';R=P=C=null;rsid=psid=0;$('mins').hidden=true;err('');const h=p==='home'?'':p;if(location.hash.slice(1)!==h)location.hash=h;draw();poll()}
+function draw(){
+const c=S?S.caps:{},home=page==='home',pr=page==='pair',rd=page==='read',ct=page==='control';
+const ra=!!(rd&&R&&R.status==='active'),rdone=!!(rd&&R&&R.status==='done'),pready=!!(pr&&P&&P.status==='ready');
+$('choices').hidden=!home;$('pairP').hidden=!pr;$('readP').hidden=!rd||rdone;$('doneP').hidden=!rdone;$('ctlP').hidden=!ct;$('back').hidden=home;
+$('title').textContent=home?'Orcon installatiewizard':pr?'Afstandsbediening koppelen':rd?(rdone?'Uitlezen voltooid':'Afstandsbediening uitlezen'):'Ventilatie bedienen';
+$('sub').textContent=home?'Kies wat je wilt doen.':pr?'Koppel deze controller met je ventilatie-unit.':rd?(ra?'Druk de oranje gemarkeerde knop op je fysieke afstandsbediening in.':rdone?'Alle knoppen zijn herkend.':'Kies eerst je eigen afstandsbediening.'):'Bedien je ventilatie-unit met de virtuele afstandsbediening.';
+const no=!S?'':pr&&!c.pair_supported?'Koppelen is met deze firmware niet mogelijk: '+NOTX:ct&&!c.control_supported?'Bedienen is met deze firmware niet mogelijk: '+NOTX:rd&&!c.read_supported?'Uitlezen is met deze radio niet mogelijk.':'';
+$('notice').textContent=no;$('notice').hidden=!no;if(S)conn();
+const live=ct&&c.control_supported&&!busy,um=S&&S.unit&&S.unit.known?MK[S.unit.mode]:'';
+keys.forEach((b,i)=>{const k=K[i];
+b.disabled=!(pready&&!busy||live);
+b.classList.toggle('sel',pr&&sel.has(k));
+b.classList.toggle('done',!!(rd&&R&&i<R.step)||ct&&k===um);
+b.classList.toggle('cur',!!(ra&&i===R.step));
+b.setAttribute('aria-pressed',String(pr&&sel.has(k)));
+});
+$('rnote').textContent=home?'Voorbeeld van de Orcon-afstandsbediening':pr?(pready?'Kies Auto en 1: ze worden samen verzonden':'Virtuele afstandsbediening'):rd?'Alleen ter weergave · knoppen niet klikbaar':live||busy?'Klik op een knop om te verzenden':'Bedienen niet beschikbaar';
+if(pr)drawPair(c);if(rd)drawRead(c,ra,rdone);if(ct)drawCtl();
+}
+function drawPair(c){
+const s=P?P.status:'idle',stage=!c.pair_supported?-1:{ready:1,bind_sent:2,rf_confirmed:2,tx_failed:2,paired:3}[s]||0,wait=s==='bind_sent'||s==='rf_confirmed';
+for(let i=0;i<3;i++){const e=$('ps'+i);e.classList.toggle('on',i===stage);e.classList.toggle('fin',i<stage);e.querySelector('.num').textContent=i<stage?'✓':i+1}
+const a=$('pairA');
+a.textContent=!c.pair_supported?'Koppelen niet beschikbaar':s==='ready'?'Combinatie Auto + 1 verzenden':wait?'Wachten op bevestiging…':s==='paired'?'Terug naar het begin':s==='tx_failed'?'Verzenden mislukt':'De unit staat in koppelmodus';
+a.disabled=busy||!c.pair_supported||wait||s==='tx_failed'||s==='ready'&&!(sel.size===2&&sel.has('auto')&&sel.has('1'));
+$('pairX').hidden=!PA.includes(s);
+const m=$('pairM'),left=P&&P.left_s?' Nog '+P.left_s+' s.':'';
+m.className='msg '+(s==='paired'?'okt':s==='tx_failed'||s==='timeout'?'warn':'');
+m.textContent=!c.pair_supported?'':{ready:'Er is nog niets verzonden.',bind_sent:'Koppelverzoek verzonden; nog geen bevestiging van de unit.'+left,rf_confirmed:'RF-bevestiging ontvangen; wachten tot de firmware de unit vastlegt.'+left,tx_failed:'Het koppelverzoek is niet verzonden. Annuleer en probeer opnieuw.',paired:'Gekoppeld: bevestigd door de unit en vastgelegd in de firmware.',timeout:'Geen bevestiging binnen het koppelvenster: niet gekoppeld.',cancelled:'Geannuleerd. Een verzonden verzoek kan niet worden ingetrokken.'}[s]||'Er wordt pas iets verzonden na stap 2.';
+}
+function drawRead(c,ra,rdone){
+$('pick').hidden=ra;$('run').hidden=!ra;
+const m=$('readM');m.className='msg';
+if(rdone){
+$('doneT').textContent='Alle stappen kwamen van afstandsbediening '+mid(R.remote)+'.';
+$('results').innerHTML=R.steps.map((s,i)=>li('ok','✓',NM[i],esc(s.cmd+' '+s.pl+' · '+s.rssi+' dBm'))).join('');
+return;
+}
+if(!ra){
+const rs=S&&S.remotes||[];
+if(!rs.some(r=>r.id===pick))pick='';
+$('remotes').innerHTML=rs.map(r=>'<button class="item'+(r.id===pick?' sel':'')+'" role="radio" aria-checked="'+(r.id===pick)+'" data-id="'+esc(r.id)+'"><span class="sym">'+(r.id===pick?'✓':'·')+'</span><b>'+esc(mid(r.id))+'</b><span class="st">'+r.age_s+' s geleden · '+r.rssi+' dBm</span></button>').join('')||'<p>Nog geen afstandsbediening gehoord.</p>';
+$('readS').disabled=busy||!pick||!c.read_supported;
+m.className='msg warn';
+m.textContent=R&&R.status==='timeout'?'Tijd verstreken: geen geldige knop binnen 60 s. Start opnieuw.':R&&R.status==='cancelled'?'Uitlezen geannuleerd.':'';
+return;
+}
+const n=R.step,w=R.why,got=cmdName(R.why_cmd,R.why_mode);
+$('steps').innerHTML=R.steps.map((s,i)=>s.ok?li('ok','✓',NM[i],esc('Ontvangen · '+s.cmd+' '+s.pl+' · '+s.rssi+' dBm')):i===n?li('cur','!',NM[i],'Druk deze knop nu'):li('','·',NM[i],'Wachten')).join('');
+$('ptext').textContent='Stap '+(n+1)+' van 6 · '+mid(R.remote);$('pct').textContent=Math.round(n/6*100)+'% · nog '+R.left_s+' s';
+$('fill').style.width=n/6*100+'%';$('prog').setAttribute('aria-valuenow',n);
+let t=w==='wrong-button'?'Andere knop ontvangen ('+got+'). Druk op '+NM[n]+'.':w==='unknown-command'?'Niet-herkend commando ('+got+'): niet gebruikt.':w==='before-step'?'Pakket van vóór deze stap genegeerd.':'Druk nu op '+NM[n]+' op je echte afstandsbediening.';
+if(R.rf!=='receiving')t='Radio-ontvanger niet actief ('+R.rf+'): er wordt nu niets herkend.';
+if(R.rf!=='receiving'||w==='wrong-button'||w==='unknown-command')m.className='msg warn';
+if(R.others)t+=' '+R.others+'× signaal van een ander apparaat genegeerd.';
+m.textContent=t;
+}
+function drawCtl(){
+const u=S&&S.unit,x=C&&C.id?C:null,cf=x?x.confirm:'';
+$('unit').textContent=!u||!u.known?'Geen ventilatie-unit gekozen.':'Unit '+mid(u.id)+' meldt: '+(MODE[u.mode]||'onbekend')+(u.age_s>=0?' ('+u.age_s+' s geleden)':'');
+const f=(i,cls,t)=>{const e=$('c'+i);e.className='chip '+cls;e.lastChild.textContent=t};
+f(0,x?'y':'',x?'✓ '+NM[K.indexOf(x.key)]+(x.minutes?' '+x.minutes+' min':''):'–');
+f(1,x?x.sent?'y':'n':'',x?x.sent?'✓ ja':'✗ nee':'–');
+f(2,cf==='confirmed'?'y':cf==='not_confirmed'?'n':'',{pending:'wacht…',confirmed:'✓ ja',not_confirmed:'✗ geen melding binnen 10 s',not_available:'n.v.t. voor timer'}[cf]||'–');
+$('ctlM').textContent=busy?'Bezig met verzenden…':x?'Laatste commando '+x.age_s+' s geleden.':'';
+}
+const send=b=>act(async()=>{C=await api('/api/remote/send',b);$('mins').hidden=true});
+document.querySelectorAll('[data-open]').forEach(b=>b.addEventListener('click',()=>go(b.dataset.open)));
+keys.forEach(b=>b.addEventListener('click',()=>{
+const k=b.dataset.key;
+if(page==='control'){if(busy||!S||!S.caps.control_supported)return;if(k==='timer')$('mins').hidden=!$('mins').hidden;else{$('mins').hidden=true;send({key:k})}return}
+if(page!=='pair'||!P||P.status!=='ready')return;
+if(k!=='auto'&&k!=='1'){$('pairM').textContent=ERR['unsupported-combination'];return}
+sel.has(k)?sel.delete(k):sel.add(k);draw();
+}));
+document.querySelectorAll('[data-min]').forEach(b=>b.addEventListener('click',()=>send({key:'timer',minutes:+b.dataset.min})));
+$('pairA').addEventListener('click',()=>{
+const s=P?P.status:'idle';
+if(!S||!S.caps.pair_supported)return;
+if(s==='paired')go('home');
+else if(s==='ready')act(async()=>{P=await api('/api/setup/pair/press',{sid:P.sid,keys:[...sel]})});
+else act(async()=>{P=await api('/api/setup/pair/start',{});psid=P.sid;sel.clear()});
+});
+$('pairX').addEventListener('click',()=>act(async()=>{P=await api('/api/setup/pair/cancel',{sid:P.sid});sel.clear()}));
+$('remotes').addEventListener('click',e=>{const b=e.target.closest('[data-id]');if(b){pick=b.dataset.id;draw()}});
+$('readS').addEventListener('click',()=>act(async()=>{R=await api('/api/setup/read/start',{remote:pick});rsid=R.sid}));
+$('readX').addEventListener('click',()=>act(async()=>{R=await api('/api/setup/read/cancel',{sid:R.sid})}));
+$('again').addEventListener('click',()=>{R=null;rsid=0;pick='';draw();poll()});
+$('back').addEventListener('click',()=>{
+if(page==='read'&&R&&R.status==='active')api('/api/setup/read/cancel',{sid:R.sid}).catch(()=>{});
+if(page==='pair'&&P&&PA.includes(P.status))api('/api/setup/pair/cancel',{sid:P.sid}).catch(()=>{});
+go('home');
+});
+const route=()=>{const h=location.hash.slice(1);return['pair','read','control'].includes(h)?h:'home'};
+addEventListener('hashchange',()=>{if(route()!==page)go(route())});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});
+go(route());
+})();
+</script>
+</body>
+</html>

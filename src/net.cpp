@@ -12,6 +12,7 @@
 #include "cc1101_tx.h"
 #endif
 #include "web_page.h"
+#include "setup_web.h"
 #include "house_img.h"
 
 #include <Arduino.h>
@@ -892,7 +893,8 @@ void begin() {
     // No legacy command, ID, WiFi/config, log, setup or update routes in the PoC.
     server.onNotFound([](){ server.send(403,"application/json","{\"error\":\"route-disabled-in-poc\"}"); });
 #else
-    server.on("/",          handleRoot);
+    setupweb::begin(server);            // "/" = setup wizard + /api/setup/*, /api/remote/*
+    server.on("/dashboard", handleRoot);
     server.on("/wifi",      handleWifi);
     server.on("/log",       handleLogPg);
     server.on("/widget",    handleWidget);
@@ -932,6 +934,7 @@ void notifyStateChanged() { g_dirty = true; }
 const char* ipAddr()       { return g_ip; }
 const char* ssidName()     { return g_apMode ? WIFI_AP_NAME : g_ssid.c_str(); }
 bool        apMode()       { return g_apMode; }
+bool        maskIds()      { return g_maskIds; }
 const char* mqttHost()     { return g_mqttHost.c_str(); }
 bool        mqttConnected() {
 #if MQTT_ENABLED

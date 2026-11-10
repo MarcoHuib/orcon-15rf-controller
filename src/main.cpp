@@ -18,6 +18,9 @@
 #include "net.h"
 #include "display.h"
 #include "orcon_log.h"
+#if !ORCON_TX_POC
+#include "setup_web.h"
+#endif
 
 #if defined(PINTEST)
 // ---- GPIO mapper: drives each CC1101 GPIO HIGH (others LOW) for 2.5s in turn.
@@ -73,6 +76,9 @@ void loop() {
     ramses::Frame f;
     while (radio::poll(f)) {
         if (orcon::onFrame(f)) net::notifyStateChanged();
+#if !ORCON_TX_POC
+        setupweb::onFrame(f, radio::lastSeq(), (int16_t)radio::lastRssi());   // same frame, same order
+#endif
 #if ORCON_TX_POC
         txpoc::controller().onFrame(f, radio::lastReceivedMs(), millis(), orcon::ids());
 #endif
@@ -85,6 +91,8 @@ void loop() {
 
 #if ORCON_TX_POC
     txpoc::controller().tick(millis()); // expire only after timestamped RX queue processing
+#else
+    setupweb::tick(millis());           // wizard timeouts: here, never inside a GET handler
 #endif
 #if defined(RADIO_SX1276)
     // Serial RX counters for USB-only measurements (same fields as /api/state).

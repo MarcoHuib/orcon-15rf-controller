@@ -37,3 +37,16 @@ run rxpipe   -pthread -I src test/test_rxpipe.cpp src/rx_stream.cpp src/ramses_c
 run netcfg   -I src test/test_netcfg.cpp
 run oled     -I src test/test_oled_power.cpp
 run tx_poc   -pthread -Wall -Wextra -Werror -I src test/test_tx_poc.cpp src/tx_poc.cpp src/ramses_codec.cpp src/orcon_frames.cpp
+run setup    -Wall -Wextra -Werror -I src test/test_setup.cpp src/setup_flow.cpp
+# Setup wizard HTTP glue: the real setup_web.cpp behind a fake WebServer, RX-only and TX.
+# Needs the pinned ArduinoJson that `pio run -e heltec_v2_sx1276` fetches into .pio/libdeps.
+AJ=.pio/libdeps/heltec_v2_sx1276/ArduinoJson/src
+WEB="-Wall -Wextra -Werror -DARDUINOJSON_ENABLE_ARDUINO_STRING=1 -I test/shim_web -I src -I $AJ test/test_setup_web.cpp src/setup_web.cpp src/setup_flow.cpp $ORCON"
+if [ -d "$AJ" ]; then
+    run setup_web_rx -DRADIO_SX1276=1 -DRX_ONLY=1 $WEB
+    run setup_web_tx -DRADIO_CC1101_ASYNC=1 -DRX_ONLY=0 $WEB
+else
+    echo "setup_web: NOT TESTED (no $AJ; run 'pio run -e heltec_v2_sx1276' once)"
+fi
+python3 tools/gen_setup_page.py --check
+node test/test_setup_page.js | tail -1

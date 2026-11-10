@@ -197,6 +197,7 @@ input[type=range]{width:100%}label{color:var(--mut);font-size:13px}
 <button style="width:100%;margin-top:6px" data-raw>Send raw</button>
 </div>
 <p class="small">Power-cycle the HRC400, then press Pair within 3 minutes.</p>
+<p class="small"><a href="/" style="color:var(--acc)">Installatiewizard: afstandsbediening uitlezen / koppelen / bedienen &rarr;</a></p>
 <p class="small"><a href="/wifi" style="color:var(--acc)">WiFi, MQTT &amp; display setup &rarr;</a></p>
 <p class="small"><a href="/log" style="color:var(--acc)">RF log &amp; device ID / clone &rarr;</a></p>
 <p class="small"><a href="/debug" style="color:var(--acc)">RF debug &amp; 31DA calibration &rarr;</a></p>
@@ -334,7 +335,7 @@ button{cursor:pointer;margin-top:14px}button.go{background:var(--acc);border-col
 </div>
 <button class="go" id="save">Save &amp; reboot</button>
 <div id="msg" class="small"></div>
-<p class="small"><a href="/" style="color:var(--acc)">&larr; back to controls</a></p>
+<p class="small"><a href="/dashboard" style="color:var(--acc)">&larr; back to controls</a></p>
 </div>
 <script>
 const $=s=>document.querySelector(s);
@@ -423,7 +424,7 @@ Cloning (TX builds): press your remote, copy its ID as our ID, Apply.</p>
 </div>
 <pre id="log">loading…</pre>
 </div>
-<p class="small"><a href="/" style="color:var(--acc)">&larr; back to controls</a></p>
+<p class="small"><a href="/dashboard" style="color:var(--acc)">&larr; back to controls</a></p>
 </div>
 <script>)LOG" RXONLY_JS R"LOG(
 const $=s=>document.querySelector(s);
@@ -513,7 +514,7 @@ a{color:var(--mut);font-size:11px;text-decoration:none}
 <div class="btns">
 <button data-b="open"><svg class="ic" viewBox="0 0 24 24"><path d="M12 2v20M3.3 7l17.4 10M20.7 7L3.3 17"/></svg>Open</button><button data-b="auto"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.3 15l2.7-6 2.7 6"/><path d="M10.1 13.2h3.8"/></svg>Auto</button><button data-b="close"><svg class="ic" viewBox="0 0 24 24"><path d="M12 3c2.5 3.5 4 5.5 4 8a4 4 0 0 1-8 0c0-1.6.8-2.8 1.6-3.6.8 1.4 1.7 1.6 2.4.4z"/></svg>Close</button>
 </div>
-<a href="/" target="_top">full control &rarr;</a>
+<a href="/dashboard" target="_top">full control &rarr;</a>
 <script>)WIDGET" RXONLY_JS R"WIDGET(
 const $=s=>document.querySelector(s);
 function send(b){return fetch('/api/cmd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})}
@@ -555,7 +556,7 @@ a{color:var(--acc);text-decoration:none}.small{color:var(--mut);font-size:12px}
 button{font:inherit;color:var(--fg);background:#26303c;border:1px solid #313d4c;border-radius:8px;padding:7px 12px;cursor:pointer}
 </style></head><body><div class="wrap">
 <h1>Orcon RF debug &amp; calibration</h1>
-<p class="small"><a href="/">&larr; control</a> &nbsp;·&nbsp; <a href="/log">full RF log</a> &nbsp;·&nbsp; auto-refresh 3 s &nbsp; <button onclick="tick()">refresh now</button></p>
+<p class="small"><a href="/dashboard">&larr; control</a> &nbsp;·&nbsp; <a href="/log">full RF log</a> &nbsp;·&nbsp; auto-refresh 3 s &nbsp; <button onclick="tick()">refresh now</button></p>
 
 <div class="card"><h2 style="margin-top:0">Link / radio</h2>
 <div class="kv">
@@ -675,7 +676,7 @@ button{width:100%;font:inherit;color:#04121f;background:var(--acc);border:0;bord
 <div class="card small">
 The build output is at<br><span style="color:var(--fg)">.pio/build/heltec_v3_cc1101_ota/firmware.bin</span><br><br>
 Settings, WiFi and saved fan presets are kept across an update.<br><br>
-<a href="/">&larr; back to control</a>
+<a href="/dashboard">&larr; back to control</a>
 </div>
 <script>
 const $=s=>document.getElementById(s);
@@ -689,7 +690,7 @@ $('go').onclick=()=>{
  x.onload=()=>{let ok=false;try{ok=JSON.parse(x.responseText).ok==1;}catch(e){}
    $('msg').textContent=ok?'Flashed — rebooting, this page reloads in a few seconds…':'Update failed (bad file or out of space).';
    $('bar').style.background=ok?'var(--ok)':'var(--warn)';
-   if(ok)setTimeout(()=>location.href='/',9000);};
+   if(ok)setTimeout(()=>location.href='/dashboard',9000);};
  x.onerror=()=>{$('msg').textContent='Upload error — connection dropped.';};
  $('msg').textContent='Starting upload…';
  x.send(fd);
