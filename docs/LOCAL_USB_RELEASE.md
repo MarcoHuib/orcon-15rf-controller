@@ -7,10 +7,11 @@ Geen GitHub Actions, artifactdownloads, remote CI-status of PlatformIO-upload.
 
 ## Lokale voorbereiding, zonder bordtoegang
 
-Werk vanuit de repositoryroot op de beoordeelde herstelcommit. De exacte SHA en
-resultaten van de uitgevoerde review staan in de lokale `build/codex-final/`
-bewijsmap. Gebruik voor deze release de SHA uit dat RESULTS.json, niet zomaar
-een later gewijzigde HEAD. Controleer dat `git status --porcelain` leeg is.
+Werk vanuit de repositoryroot. De enige firmwarecommit van deze release en de
+bijbehorende imagehashes staan in **Release-identiteit** hieronder. Alleen die
+commit wordt gebouwd, verpakt en geflasht; latere documentatiecommits veranderen
+de firmware niet en zijn geen geldige `SHA`. Bouw bewijs op die commit
+(`git switch --detach <commit>`) en controleer dat `git status --porcelain` leeg is.
 
 De bestaande lokale esptool 4.8.1-installatie, het gepinde sdist-archief,
 pyserial 3.5 en intelhex 2.3.0 moeten aanwezig zijn in `.flashtools/`.
@@ -25,10 +26,10 @@ Voor builds moeten de lokale PlatformIO-platformen, toolchains en bibliotheken
 beschikbaar zijn. De runner bouwt uitsluitend expliciete omgevingen, nooit upload.
 
 ```bash
-SHA="$(git rev-parse HEAD)"
+SHA=f79439f72d8869ff9822e9470d376d10cd429dee   # uit Release-identiteit, nooit HEAD van een docs-commit
 DRY=heltec_v2_sx1276_tx_poc_dryrun
 RX=heltec_v2_sx1276
-EVIDENCE=build/codex-final
+EVIDENCE=build/claude-release-f79439f-r2
 # Gebruik een nieuwe bewijsmap bij herhaling; overschrijf bewaarde releasebewijzen niet.
 pwsh -NoProfile -File tools/test_local.ps1 -OutputDirectory "$EVIDENCE" -Firmware
 # Controleer: runner exit 0, RESULTS.json.commit == SHA, dirty leeg, alle checks PASS.
@@ -54,6 +55,33 @@ als applicatie moeten een geldige klassieke ESP32-imagechecksum en SHA-256 hebbe
 met DIO/8 MB/40 MHz-headers. De partitietabel moet exact overeenkomen, inclusief MD5,
 labels, types, offsets, groottes, flags en padding. Alleen de twee V2-omgevingen
 zijn toegelaten; dry-run en RX-only hebben verschillende imagemarkers.
+Per V2-image bewaart de runner ook `firmware.elf` en voert `tools/check_elf_tx.py`
+uit (`elf-<omgeving>`, plus zelftest `elf-selftest`). RadioLib-transmitmethoden zijn
+via vtables gelinkt; aanwezigheid is dus geen bereikbaarheid. De check lost directe
+calls en `l32r`-literal-calls op en eist: geen niet-RadioLib-functie bereikt een
+transmitmethode, `radio::sendFrame` is niet gelinkt of bereikt geen RadioLib, dry-run
+heeft uitsluitend `DryRunBackend` als TX-PoC-backend zonder radio/SPI-pad, RX-only
+linkt geen TX-PoC-code. Register-indirecte (virtuele) calls blijven onopgelost en
+worden geteld; de vtables met transmitslots en hun constructors worden vermeld.
+Dit is aanvullend bewijs naast de compile-time-weigering, geen volledig bewijs.
+
+## Release-identiteit
+
+Eén firmwarecommit voor beide V2-images:
+`f79439f72d8869ff9822e9470d376d10cd429dee` (branch `fix/codex-local-release-review`).
+Lokaal bewijs op schone boom: `build/claude-release-f79439f-r2/` (73/73 PASS, exit 0,
+vijf firmwarebuilds, bronstabiliteit PASS). UBSan apart: 24/24 PASS. ASan+UBSan en
+TSan: lege runtimeprobe faalt (124 timeout, 139 crash), alle suites NOT TESTED.
+
+| Image | Bytes | SHA-256 |
+| --- | --- | --- |
+| dry-run `firmware.bin` | 897472 | `2cc10e1fa3030ddf7776667e393a216e2adec8dfc7353450dd821265040166c7` |
+| dry-run `firmware.elf` | | `d9ef07d1d09a2bc18ce5b321d8dce2a3d28f9df7b90d6a00ff04dc182bcc25e5` |
+| RX-only `firmware.bin` | 1043424 | `0aa84a730b99c3e86592afd797a06d14a3853a1760cbe12e7354e660ddc0283a` |
+| RX-only `firmware.elf` | | `eee42591df2ebd42bd66a5f3f57e1b89183a940338df58da97412339f5e97bf1` |
+
+Bootloader, tabel en `boot_app0` zijn byte-gelijk aan de pins hieronder. Eerdere
+pakketten (d5c6603, f04ae0f) missen app1-/ELF-bewijs en worden geweigerd.
 
 ## Bestaande rollback en herkomst
 
@@ -107,6 +135,15 @@ Na toestemming voor de specifieke release en deze handelingen:
    dat app0 selecteert. Elke afwijking stopt de procedure. Er is geen automatische
    terugval naar een ruimere flashprocedure, andere bootselectie of erase-all.
 
+   Daarna leest precheck **de hele app1-partitie** (read-only). Begin en grootte
+   komen uit de zojuist gevalideerde echte bordtabel, niet uit het pakket. Een
+   onderbroken app0-write kan de bootloader namelijk naar app1 laten uitwijken.
+   Alleen een volledig gewiste app1 of het onafhankelijk gepinde RX-only-image van
+   d5c39e1 (`6939546a…a7db`, pin in `tools/check_flash_package.py`) met gewiste rest
+   is toegestaan. Onbekende, beschadigde of gedeeltelijk gewiste inhoud is NO-GO;
+   er volgt geen erase, reparatie of bypass. Bij iedere mislukte precheck worden de
+   readbacks met SHA-256 bewaard in `.flashtools/evidence/` (git-genegeerd).
+
 3. Wanneer ook de flash/reset expliciet is toegestaan:
 
    ```bash
@@ -114,11 +151,15 @@ Na toestemming voor de specifieke release en deze handelingen:
    ```
 
    Dit herhaalt precheck en bevriest de gecontroleerde images in een tijdelijke
-   map. Typ alleen `yes` na controle van SHA, omgeving en poort. Uitsluitend
+   map. Typ alleen `yes` na controle van SHA, omgeving en poort. Na `yes` wordt de
+   snapshot opnieuw vergeleken met de **oorspronkelijke evidence**
+   (`BUILD_INFO.json` uit de bewijsmap), niet alleen met het eigen pakketmanifest. Uitsluitend
    `firmware.bin` op `0x10000` wordt geschreven, met `--after no_reset`.
    Vervolgens worden precies de appbytes teruggelezen en byte voor byte vergeleken;
    de SHA-256 wordt getoond. Alleen bij identieke readback volgt een normale reset.
    Bij schrijf-/leesfout of afwijking wordt gestopt zonder normale bootopdracht.
+   Een mislukte of afwijkende readback blijft met SHA-256 bewaard in
+   `.flashtools/evidence/<tijd>-readback-*`.
 
 4. Observeer WiFi op het bestaande netwerk; verander geen identiteit of pairing.
    Het OLED moet de bootsleutel maximaal 60 s tonen terwijl het wakker is.
@@ -161,17 +202,37 @@ De exact gecontroleerde 8 MB-indeling:
 | spiffs | `0x670000` | `0x180000` |
 | coredump | `0x7F0000` | `0x10000` |
 
-De maximale appwrite blijft inclusief afronding op 4 KiB-wissectoren binnen app0.
-Er is geen schrijf-/wisoverlap met NVS `0x9000–0xDFFF`, bootloader, tabel, otadata
-of app1. De firmware genereert geen PoC-identiteiten en pairt/clonet niet.
-WiFi en expliciete OLED-instellingen kunnen bij normaal gebruik wel legitiem
-NVS bijwerken; byte-identieke NVS na opstart is dus geen passende garantie.
+Twee verschillende vragen, met verschillende antwoorden:
+
+**NVS-behoud bij flashen (gegarandeerd door de procedure).** De enige write is
+`firmware.bin` op `0x10000`; inclusief afronding op 4 KiB-wissectoren blijft die
+binnen app0. Er is geen schrijf-/wisoverlap met NVS `0x9000–0xDFFF`, bootloader,
+tabel, otadata of app1. Precheck en readback lezen alleen. De tool schrijft dus
+nooit NVS; dat wordt in de flashsimulaties per write-commando gecontroleerd.
+
+**NVS-writes tijdens normaal firmwaregebruik (gedrag van de firmware zelf).** Na
+het opstarten mag de firmware NVS bijwerken; byte-identieke NVS na opstart is dus
+geen passende garantie. In de dry-run-build (`ORCON_TX_POC=1`, `RX_ONLY=1`):
+
+| Pad | Wanneer | Bron |
+| --- | --- | --- |
+| ESP-IDF WiFi-config (`nvs.net80211`) | `WiFi.mode`/`WiFi.begin` met standaard `persistent=true`, alleen als de opgeslagen config afwijkt | `src/net.cpp` `wifiConnect()` |
+| `oled_mode` | alleen een geauthenticeerde `POST /api/oled` | `src/net.cpp` `handleOledSave()` |
+
+Niet in de dry-run: identiteitsgeneratie (alleen `!ORCON_TX_POC`; de PoC leest
+identiteiten read-only en weigert ontbrekende), pairing/`saveIds` (RX_ONLY weigert
+pairing, `idsDirty` wordt dan nooit gezet), en de legacy-instellingsroutes
+(`/api/wifi`, `/api/ids`, `/api/cmd`; in de PoC-build niet geregistreerd). De
+gewone RX-only-build heeft die legacy-routes wel en schrijft bij een eerste boot
+zonder opgeslagen identiteit een gegenereerde identiteit.
 Bestaande NVS-backups blijven lokaal en worden niet automatisch teruggeschreven.
 
 Een stroomonderbreking kan app0 gedeeltelijk wissen/schrijven. De bootloader en
 ROM-downloadroute worden door deze procedure niet beschreven, maar automatische
 terugkeer naar RX-only, continuïteit en gegarandeerde herstelbaarheid zijn niet
-bewezen. App1 wordt niet als geteste fallback geclaimd. Stop bij fouten; voer geen
+bewezen. Precheck garandeert alleen dat een eventuele bootloader-uitwijk naar app1
+niets onbekends kan starten (app1 leeg of het gepinde RX-only-image); dat is geen
+geteste fallback. Stop bij fouten; voer geen
 resetlus, erase-all, `--force`, eFuse-wijziging of partitieaanpassing uit.
 
 Met afzonderlijke toestemming voor USB-herstel:
