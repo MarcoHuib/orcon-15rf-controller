@@ -16,6 +16,7 @@ from pathlib import Path
 import struct
 import sys
 
+sys.dont_write_bytecode = True   # -I ignores PYTHONDONTWRITEBYTECODE; keep the repo tree clean
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # run with python -I
 import check_parts                                            # noqa: E402
 from check_flash_package import ROLLBACK, ROLLBACK_APP        # noqa: E402
