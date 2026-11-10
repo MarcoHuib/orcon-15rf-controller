@@ -12,7 +12,7 @@ class WebServer {
 public:
     std::map<std::string, std::function<void()>> routes;          // "GET /path" -> handler
     std::vector<std::string> collected;
-    std::map<std::string, std::string> req, sent;                  // request / response headers
+    std::map<std::string, std::string> req, sent, args;            // request / response headers, query
     std::string host, body, type, out;
     int code = 0;
     void on(const char* uri, HTTPMethod m, std::function<void()> f) { routes[(m == HTTP_GET ? "GET " : "POST ") + std::string(uri)] = f; }
@@ -23,7 +23,10 @@ public:
         return String("");
     }
     String hostHeader() { return String(host); }
-    String arg(const char* n) { return std::string(n) == "plain" ? String(body) : String(""); }
+    String arg(const char* n) {
+        if (std::string(n) == "plain") return String(body);
+        auto it = args.find(n); return it == args.end() ? String("") : String(it->second);
+    }
     void sendHeader(const char* k, const char* v) { sent[k] = v; }
     void send(int c, const char* t, const char* b) { code = c; type = t; out = b; }
     void send_P(int c, PGM_P t, PGM_P b, size_t n) { code = c; type = t; out.assign(b, n); }

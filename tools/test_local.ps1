@@ -81,6 +81,7 @@ $suites = [ordered]@{
     netcfg=@('test/test_netcfg.cpp')
     oled=@('test/test_oled_power.cpp')
     tx_poc=@('-pthread','-Wall','-Wextra','-Werror','test/test_tx_poc.cpp','src/tx_poc.cpp','src/ramses_codec.cpp','src/orcon_frames.cpp')
+    rf_console=@('-Wall','-Wextra','-Werror','test/test_rf_console.cpp','src/rf_console.cpp','src/ramses_codec.cpp')
 }
 $sanitizerUnavailable = $false
 if ($Sanitizer -ne 'None') {

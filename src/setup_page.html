@@ -42,6 +42,13 @@ h1{font-size:clamp(28px,3.8vw,43px);letter-spacing:-1.6px;line-height:1.16;margi
 .item.ok{border-color:#d6eddb;background:#e9f8ed}.item.ok .sym{background:#218c42;border-color:#218c42;color:#fff}.item.ok .st{color:#167334}.item.cur{background:#fff5ec;border-color:#f28a2b}.item.cur .sym{border-color:#ed8a29;color:#c56b12}.item.cur .st{color:#b85f09;font-weight:700}
 .chips{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px}.chip{border:1px solid #eeebf1;background:#f8f7fa;border-radius:10px;padding:10px;font-size:12px;color:#8a8295;text-align:center}.chip b{display:block;font-size:14px;color:#3b3550}.chip.y{background:#e9f8ed;color:#167334}.chip.n{background:#fdeeee;color:#a32424}
 .okbox{border:1px solid #d4eed8;background:#eaf8ed;border-radius:14px;padding:22px;text-align:center}
+.con{margin-top:18px;border:1px solid #2b2c35;border-radius:12px;background:#16171d;color:#c8ccd4;overflow:hidden}
+.con>summary{cursor:pointer;padding:12px 14px;font-weight:650;font-size:14px;color:#e8e9f0;list-style:none;display:flex;justify-content:space-between;min-height:44px;align-items:center}
+.con>summary::-webkit-details-marker{display:none}.con>summary:after{content:"\25B8";color:#8b90a0}.con[open]>summary:after{content:"\25BE"}
+.cbar{display:flex;gap:6px;align-items:center;padding:0 12px 6px;flex-wrap:wrap}.cbar button{background:#262833;border:1px solid #3a3d4b;color:#e1e4ec;border-radius:8px;padding:6px 12px;font-size:13px;min-height:36px}
+.cbar span{color:#8b90a0;font-size:12px;margin-left:auto}.cleg{padding:0 12px 6px;font-size:11px;color:#80869a;line-height:1.5}
+.term{height:260px;overflow:auto;padding:6px 12px 12px;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word;-webkit-overflow-scrolling:touch;border-top:1px solid #24252d}
+.term b{font-weight:600;display:inline-block;min-width:4.6em}.kRAW{color:#8d93a3}.kRX{color:#82b9ff}.kOK{color:#72d98e}.kFILTER{color:#e4c272}.kINFO{color:#c9cdd6}.kWARN{color:#f3a35b}.kERR{color:#ff7676}
 #back{margin-top:28px}.info{color:#80778b;font-size:12px;text-align:center;margin-top:24px}
 @media(max-width:790px){body{padding:0}.app{border:0;border-radius:0;box-shadow:none}.top{padding:10px 16px}.brand b{font-size:23px}main{padding:24px 16px}.head{margin-bottom:22px}.lay{grid-template-columns:1fr;gap:22px}.remote{width:min(300px,100%)}.choice{padding:16px}.choice b{font-size:17px}.panel{padding:16px}}
 @media(max-width:370px){.key{width:46px;height:46px}.chips{grid-template-columns:1fr}}
@@ -87,6 +94,11 @@ h1{font-size:clamp(28px,3.8vw,43px);letter-spacing:-1.6px;line-height:1.16;margi
 <ol class="list" id="steps"></ol>
 <button class="sec" id="readX">Annuleren</button></div>
 <p class="msg" id="readM" role="status"></p>
+<details class="con" id="con"><summary>Live RF Console</summary>
+<div class="cbar"><button id="cP" type="button">Pauzeren</button><button id="cW" type="button">Wissen</button><button id="cC" type="button">Kopiëren</button><span id="cS">gesloten</span></div>
+<p class="cleg">RAW radio-activiteit · RX gedecodeerd frame · OK door de wizard geaccepteerd · FILTER telt niet (met reden)</p>
+<div class="term" id="cT" role="log" aria-live="off" aria-label="Live RF-gebeurtenissen"></div>
+</details>
 </section>
 <section class="okbox" id="doneP" hidden><h2>Alle zes knoppen ontvangen</h2><p id="doneT"></p><ol class="list" id="results"></ol><button class="act" id="again">Opnieuw uitlezen</button></section>
 <section class="panel" id="ctlP" hidden aria-label="Ventilatie bedienen">
@@ -126,6 +138,33 @@ on=1;conn();if(!r.ok)throw j.error||'http-'+r.status;return j;
 function conn(){const c=$('conn'),ok=on;c.textContent=ok?(S&&S.rx_only?'Verbonden · alleen ontvangen':'Verbonden'):'Geen verbinding';c.className='tag '+(ok?'ok':'bad')}
 // Poll errors clear themselves on the next good poll; an action's error stays until the next action.
 function err(t,o){eo=o;$('err').textContent=t||'';$('err').hidden=!t}
+// ---- Live RF Console: polls only while open, on this page and visible; facts from the controller only.
+let cCur=0,cT=0,cPause=false,cL=[];
+const two=n=>String(n).padStart(2,'0');
+function cAdd(k,m,ms){const d=new Date(ms),l=cL[cL.length-1];if(k==='ERR'&&l&&l.k==='ERR'&&l.m===m)return;cL.push({k,m,t:two(d.getHours())+':'+two(d.getMinutes())+':'+two(d.getSeconds())});if(cL.length>300)cL.splice(0,cL.length-300)}
+function cDraw(){
+const t=$('cT'),end=!(t.scrollHeight-t.scrollTop-t.clientHeight>30);
+t.innerHTML=cL.map(l=>'<div class="k'+esc(l.k)+'"><b>'+esc(l.k)+'</b>'+l.t+' '+esc(l.m)+'</div>').join('');
+if(end)t.scrollTop=t.scrollHeight;
+$('cP').textContent=cPause?'Hervatten':'Pauzeren';$('cS').textContent=!$('con').open?'gesloten':cPause?'gepauzeerd':'live';
+}
+function cStop(){clearTimeout(cT);cT=0}
+async function cPoll(){
+cStop();if(!$('con').open||cPause||page!=='read'||document.hidden)return;
+let d=1000;
+try{
+const ac=typeof AbortController==='function'?new AbortController():null,to=ac?setTimeout(()=>ac.abort(),4000):0;
+let r;try{r=await fetch('/api/setup/console?after='+cCur,ac?{cache:'no-store',signal:ac.signal}:{cache:'no-store'})}finally{clearTimeout(to)}
+let j={};try{j=await r.json()}catch(e){}
+if(!r.ok)throw j.error||'http-'+r.status;
+const off=Date.now()-j.now;
+if(cCur&&j.next-1<cCur)cAdd('INFO','controller-console opnieuw begonnen (herstart?)',Date.now());
+if(j.lost)cAdd('WARN',j.lost+' gebeurtenis(sen) gemist: buffer van de controller was vol',Date.now());
+for(const e of j.ev||[])cAdd(e.k,e.m,e.t+off);
+cCur=j.next-1;if(j.more)d=150;
+}catch(e){cAdd('ERR',e&&e.name==='AbortError'?'API-time-out: geen antwoord binnen 4 s':typeof e==='string'?'API-fout: '+e:'API-fout: geen verbinding',Date.now());d=3000}
+cDraw();if($('con').open&&!cPause&&page==='read')cT=setTimeout(cPoll,d);
+}
 async function poll(){
 clearTimeout(T);let d=10000;
 if(!document.hidden)try{
@@ -138,7 +177,7 @@ if(eo)err('');
 draw();T=setTimeout(poll,d);
 }
 async function act(fn){if(busy)return;busy=true;draw();try{await fn();err('')}catch(e){err(say(e))}busy=false;poll()}
-function go(p){page=p;sel.clear();pick='';R=P=C=null;rsid=psid=0;$('mins').hidden=true;err('');const h=p==='home'?'':p;if(location.hash.slice(1)!==h)location.hash=h;draw();poll()}
+function go(p){if(p!=='read')cStop();page=p;sel.clear();pick='';R=P=C=null;rsid=psid=0;$('mins').hidden=true;err('');const h=p==='home'?'':p;if(location.hash.slice(1)!==h)location.hash=h;draw();poll();if(p==='read')cPoll()}
 function draw(){
 const c=S?S.caps:{},home=page==='home',pr=page==='pair',rd=page==='read',ct=page==='control';
 const ra=!!(rd&&R&&R.status==='active'),rdone=!!(rd&&R&&R.status==='done'),pready=!!(pr&&P&&P.status==='ready');
@@ -223,6 +262,15 @@ else if(s==='ready')act(async()=>{P=await api('/api/setup/pair/press',{sid:P.sid
 else act(async()=>{P=await api('/api/setup/pair/start',{});psid=P.sid;sel.clear()});
 });
 $('pairX').addEventListener('click',()=>act(async()=>{P=await api('/api/setup/pair/cancel',{sid:P.sid});sel.clear()}));
+$('con').addEventListener('toggle',()=>{if($('con').open){cAdd('INFO','console geopend: live gegevens van de controller',Date.now());cPoll()}else cStop();cDraw()});
+$('cP').addEventListener('click',()=>{cPause=!cPause;cDraw();cPoll()});
+$('cW').addEventListener('click',()=>{cL=[];cDraw()});
+$('cC').addEventListener('click',async()=>{
+const txt=cL.map(l=>l.t+' '+l.k+' '+l.m).join('\n');let ok=false;
+try{if(window.isSecureContext&&navigator.clipboard){await navigator.clipboard.writeText(txt);ok=true}}catch(e){}
+if(!ok)try{const a=document.createElement('textarea');a.value=txt;a.setAttribute('readonly','');a.style.position='fixed';a.style.opacity='0';document.body.appendChild(a);a.select();a.setSelectionRange(0,txt.length);ok=document.execCommand('copy');a.remove()}catch(e){}
+$('cS').textContent=ok?'gekopieerd ('+cL.length+' regels)':'kopiëren niet mogelijk: selecteer de tekst handmatig';
+});
 $('remotes').addEventListener('click',e=>{const b=e.target.closest('[data-id]');if(b){pick=b.dataset.id;draw()}});
 $('readS').addEventListener('click',()=>act(async()=>{R=await api('/api/setup/read/start',{remote:pick});rsid=R.sid}));
 $('readX').addEventListener('click',()=>act(async()=>{R=await api('/api/setup/read/cancel',{sid:R.sid})}));
@@ -234,7 +282,7 @@ go('home');
 });
 const route=()=>{const h=location.hash.slice(1);return['pair','read','control'].includes(h)?h:'home'};
 addEventListener('hashchange',()=>{if(route()!==page)go(route())});
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden){poll();cPoll()}});
 go(route());
 })();
 </script>

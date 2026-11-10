@@ -13,6 +13,8 @@
 #include "ramses_radio.h"
 #include "net.h"
 #include <map>
+#include <string>
+#include <vector>
 using namespace ramses;
 
 static unsigned long g_ms = 100000;
@@ -22,10 +24,17 @@ static std::map<uint16_t, int> g_sent;       // frames the fake radio transmitte
 static bool g_radioOk = true;
 static uint32_t g_syncs = 0;
 static uint8_t g_rxState = 0;
+static std::vector<radio::SyncInfo> g_notes;  // what the RX task would have queued
+static uint32_t g_noteDrops = 0, g_ovf = 0, g_frames = 0;
 namespace radio {
+bool pollSync(SyncInfo& o) { if (g_notes.empty()) return false; o = g_notes.front(); g_notes.erase(g_notes.begin()); return true; }
+uint32_t syncInfoDrops() { return g_noteDrops; }
 bool sendFrame(const Frame& f) { if (RX_ONLY || !g_radioOk) return false; ++g_sent[f.cmd]; return true; }
 float lastRssi() { return -61; }
-RxDiagnostics rxDiagnostics() { RxDiagnostics d; d.coreSyncHits = g_syncs; d.rxState = g_rxState; return d; }
+RxDiagnostics rxDiagnostics() {
+    RxDiagnostics d; d.coreSyncHits = g_syncs; d.rxState = g_rxState; d.uartOverflows = g_ovf; d.frames = g_frames; d.rssiNow = -101;
+    return d;
+}
 }
 namespace net { bool maskIds() { return true; } const char* ipAddr() { return "192.0.2.5"; } }
 
@@ -40,12 +49,22 @@ static const DeviceId REM(29, 101), REM2(29, 303), UNIT(29, 202), US(37, 404), U
 // One request through the registered route. Returns the status code; J holds the JSON body.
 static int call(const char* method, const char* path, const char* body = "{}", const char* token = TOKEN,
                 const char* type = "application/json", const char* origin = "http://192.0.2.5") {
-    srv.req.clear(); srv.sent.clear(); srv.out.clear(); srv.code = 0;
+    srv.req.clear(); srv.sent.clear(); srv.out.clear(); srv.args.clear(); srv.code = 0;
     srv.host = "192.0.2.5"; srv.body = body;
+    std::string p = path;                                   // "?a=b&c=d" -> args
+    if (size_t q = p.find('?'); q != std::string::npos) {
+        std::string qs = p.substr(q + 1); p.resize(q);
+        for (size_t i = 0; i <= qs.size();) {
+            size_t e = qs.find('&', i); if (e == std::string::npos) e = qs.size();
+            std::string kv = qs.substr(i, e - i); size_t eq = kv.find('=');
+            if (!kv.empty()) srv.args[kv.substr(0, eq)] = eq == std::string::npos ? "" : kv.substr(eq + 1);
+            i = e + 1;
+        }
+    }
     if (token) srv.req["X-Orcon-Token"] = token;
     if (type) srv.req["Content-Type"] = type;
     if (origin) srv.req["Origin"] = origin;
-    auto it = srv.routes.find(std::string(method) + " " + path);
+    auto it = srv.routes.find(std::string(method) + " " + p);
     if (it == srv.routes.end()) return 404;
     it->second();
     J.clear();
@@ -60,7 +79,29 @@ static Frame fr(MsgType t, DeviceId src, DeviceId dst, uint16_t cmd, std::initia
     return f;
 }
 // What main.cpp does for every decoded frame: orcon first, then the wizard, same order.
-static void rx(const Frame& f) { g_ms += 400; ++g_syncs; orcon::onFrame(f); setupweb::onFrame(f, g_syncs, -61); }
+// The RX task queues a sync note, then the decoded frame; main.cpp drains frames in order.
+static void rx(const Frame& f) {
+    g_ms += 400; ++g_syncs; ++g_frames;
+    radio::SyncInfo si; si.seq = g_syncs; si.ms = g_ms; si.rssi = -61; si.pre = 0x55; g_notes.push_back(si);
+    orcon::onFrame(f); setupweb::onFrame(f, g_syncs, -61);
+}
+static void garbled(int16_t rssi) {                       // a sync whose frame never decodes
+    g_ms += 400; ++g_syncs;
+    radio::SyncInfo si; si.seq = g_syncs; si.ms = g_ms; si.rssi = rssi; si.pre = 0xFF; g_notes.push_back(si);
+}
+// Reads every console event after *cur (following "more"), as "KIND|message" lines.
+static std::string console(uint32_t* cur) {
+    std::string all;
+    for (int i = 0; i < 100; i++) {
+        char q[64]; snprintf(q, sizeof(q), "/api/setup/console?after=%u", unsigned(*cur));
+        if (call("GET", q) != 200) return all + "HTTP-ERROR";
+        for (JsonVariant e : J["ev"].as<JsonArray>()) all += std::string(e["k"].as<const char*>()) + "|" + e["m"].as<const char*>() + "\n";
+        *cur = J["next"].as<uint32_t>() - 1;
+        if (!J["more"].as<bool>()) break;
+    }
+    return all;
+}
+static bool has(const std::string& s, const char* x) { return s.find(x) != std::string::npos; }
 static void loopTick() { setupweb::tick(g_ms); }
 static Frame press(uint8_t mode) { return fr(MsgType::I, REM, UNIT, 0x22F1, {0x00, mode, 0x04}); }
 
@@ -245,6 +286,57 @@ int main() {
     call("GET", "/api/remote/state");
     CHECK(J["accepted"] == true && J["sent"] == false && J["confirm"] == "none", "state: accepted, not sent");
 #endif
+
+    // ---- live RF console ------------------------------------------------------------------------
+    {
+        uint32_t cur = 0; console(&cur);                                  // skip everything so far
+        std::string all;
+        garbled(-83); loopTick(); std::string c = console(&cur); all += c;
+        CHECK(has(c, "RAW|sync #") && has(c, "-83 dBm pre=FF") && !has(c, "geen geldig frame"), "console: raw sync shown at once");
+        g_ms += 1600; loopTick(); c = console(&cur); all += c;
+        CHECK(has(c, "RAW|sync #") && has(c, "-83 dBm: geen geldig frame"), "console: sync without a clean frame marked undecoded");
+        rx(press(0x04)); g_ms += 1600; loopTick(); c = console(&cur); all += c;
+        CHECK(has(c, "RX|#") && has(c, " I 22F1 29:****01>29:****02 pl=000404"), "console: decoded remote frame, masked IDs");
+        CHECK(has(c, "INFO|29:****01 knop Auto: in de lijst gehoorde afstandsbedieningen") && !has(c, "geen geldig frame"),
+              "console: registered in the heard list; decoded sync not marked undecoded");
+        CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\"}") == 201, "console: read session started");
+        loopTick(); g_ms += 400;
+        rx(fr(MsgType::I, REM2, UNIT, 0x22F1, {0x00, 0x00, 0x04}));
+        rx(press(0x03));
+        rx(press(0x00)); rx(press(0x00));
+        rx(fr(MsgType::I, UNIT, UNIT, 0x31D9, {0x00, 0x00, 0x01}));
+        c = console(&cur); all += c;
+        CHECK(has(c, "INFO|uitlezen gestart (sessie") && has(c, "druk Afwezig"), "console: session start");
+        CHECK(has(c, "FILTER|29:****03 telt niet: niet de gekozen afstandsbediening"), "console: other remote filtered with reason");
+        CHECK(has(c, "FILTER|29:****01 telt niet: knop 3, verwacht Afwezig"), "console: wrong key filtered with reason");
+        CHECK(has(c, "OK|29:****01 knop Afwezig geaccepteerd: stap 1/6"), "console: accepted press");
+        CHECK(has(c, "FILTER|29:****01 telt niet: herhaling van de vorige druk"), "console: repeat filtered");
+        CHECK(has(c, "RX|#") && has(c, " 31D9 29:****02>"), "console: unit status shown as decoded frame only");
+        call("GET", "/api/setup/read/state"); char b[48]; snprintf(b, sizeof(b), "{\"sid\":%u}", J["sid"].as<unsigned>());
+        call("POST", "/api/setup/read/cancel", b); loopTick(); all += console(&cur);
+        CHECK(has(all, "INFO|uitlezen geannuleerd"), "console: cancel");
+        g_ovf += 2; g_noteDrops += 3; g_rxState = 1; g_ms += 1100; loopTick(); c = console(&cur); all += c;
+        CHECK(has(c, "WARN|UART-overflow +2") && has(c, "WARN|console miste 3 syncs") && has(c, "ERR|radio herstelt"), "console: health deltas");
+        g_rxState = 0; g_ms += 1100; loopTick(); c = console(&cur); all += c;
+        CHECK(has(c, "INFO|radio weer ontvangend"), "console: recovery shown");
+        g_ms += 31000; loopTick(); c = console(&cur); all += c;
+        CHECK(has(c, "INFO|laatste ") && has(c, "zonder geldig frame; ruis -101 dBm"), "console: 30 s summary");
+        for (int i = 0; i < 9; i++) garbled(-90);
+        loopTick(); c = console(&cur); all += c;
+        CHECK(has(c, "niet meer gevolgd (te veel tegelijk)"), "console: bounded open-sync table");
+        CHECK(!has(all, "000101") && !has(all, "000202") && !has(all, "000303") && !has(all, TOKEN) && !has(all, "192.0.2"),
+              "console: no full device IDs, token or IP");
+        CHECK(call("GET", "/api/setup/console?after=abc") == 200 && J["ev"].size() > 0, "console: bad cursor -> from the oldest");
+        call("GET", "/api/setup/console?after=999999999");
+        CHECK(J["ev"].size() > 0 && J["lost"].as<uint32_t>() > 0, "console: cursor from an earlier boot restarts, reports the gap");
+        CHECK(J["ev"].size() <= 16 && srv.out.size() < 3072, "console: bounded reply");
+        srv.req.clear(); srv.args.clear(); srv.host = "attacker.example"; srv.routes["GET /api/setup/console"]();
+        CHECK(srv.code == 403, "console: DNS rebinding refused");
+        CHECK(srv.routes.count("POST /api/setup/console") == 0, "console: read-only route");
+#if RX_ONLY
+        CHECK(g_sent.empty() && orcon::state().txCount == 0, "console: still no TX in RX-only");
+#endif
+    }
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");
     return failures ? 1 : 0;
