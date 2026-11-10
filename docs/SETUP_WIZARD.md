@@ -1,7 +1,8 @@
 # Installatiewizard en setup-API
 
-`/` is de installatiewizard: koppelen, een fysieke afstandsbediening uitlezen en dagelijks
-bedienen. De bestaande bedieningspagina staat op `/dashboard`. Alle andere pagina's en API's
+`/` is de dagelijkse interface: dashboard met virtuele afstandsbediening en vier kaarten
+(actief profiel, WiFi, Siri, Systeem), profielbeheer en de installatiewizard (koppelen =
+uitlezen, simulatie = de bestaande koppelprocedure). De klassieke pagina staat op `/dashboard`. Alle andere pagina's en API's
 zijn ongewijzigd; hun "terug"-links wijzen nu naar `/dashboard`.
 
 | Bestand | Rol |
@@ -65,8 +66,12 @@ Zonder `gzip` in `Accept-Encoding` volgt `406`: de pagina staat alleen gecomprim
  "pair_supported":false,"control_supported":false},"rf":"receiving|recovering|failed|unsupported",
  "token":"<32 hex | leeg>","mask_ids":true,"active":"none|read|pair",
  "unit":{"known":true,"id":"29:000202","mode":"low","age_s":12},
- "remotes":[{"id":"29:000101","age_s":3,"rssi":-61,"cmd":"22F1","n":4}]}
+ "remotes":[{"id":"29:000101","age_s":3,"rssi":-61,"cmd":"22F1","n":4}],
+ "wifi":{"connected":true,"ssid":"<netwerk, JSON-geëscaped; leeg als niet verbonden>"},
+ "profiles":{"storage_ok":true,"active":2,"limit":4,"items":[…]}}
 ```
+`caps.settings_pages` geeft aan of `/wifi` en `/dashboard` in deze build bestaan (niet in
+TX-PoC/web-control-builds); de WiFi- en Systeemkaart zijn anders uitgeschakeld.
 `remotes` is alleen discovery: apparaten die in de laatste 30 min een `22F1`/`22F3` stuurden
 (uit `rlog`). Er wordt nooit iets automatisch gekozen. De pagina maskeert ID's als
 `mask_ids` aan staat.
@@ -191,20 +196,31 @@ Een verzonden aanbod kan niet worden ingetrokken. Na `cancel` loopt het venster 
 
 ## Pagina
 
-- Drie schermen plus start:
-  - koppelen;
-  - uitlezen (kies eerst je afstandsbediening uit de gehoorde lijst, daarna zes stappen
-    grijs → oranje → groen);
-  - bedienen (permanent bereikbaar).
-- Navigatie via `#pair`, `#read` en `#control`, dus de terugknop van de browser werkt.
+| Hash | Scherm | Terug naar |
+|---|---|---|
+| (leeg) | start: geen profielen → `#welcome`; geldig actief profiel → `#control`; anders `#profiles` | – |
+| `#control` | dashboard: afstandsbediening + kaarten + status | – |
+| `#profiles` | lijst, badge *Actief*, ⋯-menu (hernoemen, verwijderen met bevestiging), *+ Nieuw profiel* | dashboard |
+| `#new` | profielnaam (niet leeg, uniek, ≤ 48 UTF-8-bytes, geen stuurtekens) | profielen |
+| `#welcome` | *Afstandsbediening koppelen* (= `#read`) of *Simulatie instellen* (= `#pair`) | naam (behouden) of dashboard; geen terugknop zonder profielen |
+| `#read`, `#pair` | de bestaande procedures, ongewijzigd | welkom (lopende sessie wordt geannuleerd) |
+| `#done` | *Koppeling voltooid* + profielnaam + *Actief*, knop *Naar bediening* | – |
+
+- Een op `#new` gekozen naam wordt na de zes knoppen automatisch één keer opgeslagen
+  (`/api/profiles/save` slaat op én activeert atomair). Pas als het antwoord dit profiel
+  als actief toont, verschijnt `#done`. Annuleren of een fout slaat niets op; het oude
+  actieve profiel blijft.
+- Profielen zijn per fysieke afstandsbediening. Hoort de uitgelezen afstandsbediening al bij
+  een ander profiel, dan weigert de pagina het opslaan in plaats van dat profiel te hernoemen.
+- Een profiel kiezen (`/api/profiles/select`) brengt je terug naar het dashboard; nieuwe
+  bedieningsacties gebruiken direct dat profiel (unit en familiebyte, `setup_web.cpp`).
+- Het laatste profiel verwijderen opent `#welcome`; het actieve verwijderen laat de gebruiker
+  opnieuw kiezen. WiFi- en controllerinstellingen staan in een andere NVS-namespace.
+- *Simulatie instellen* maakt (nog) geen profiel: de koppelprocedure is op RX-only en RF-builds
+  geblokkeerd en levert geen knopmapping op. Siri is een uitgeschakelde placeholder.
 - Polling: 1 s tijdens uitlezen en bij een openstaande bevestiging, 2 s tijdens koppelen,
-  anders 2,5–10 s. De polling pauzeert als het tabblad verborgen is.
-- Groen en "Gekoppeld" verschijnen alleen op basis van een serverantwoord. Een oude,
-  afgeronde sessie wordt niet als het huidige resultaat getoond.
-- Knoppen zonder capability zijn uitgeschakeld en de handlers controleren de capability zelf
-  ook.
-- Een fout van een actie blijft staan tot de volgende actie; een verbindingsfout verdwijnt
-  bij de volgende geslaagde poll.
+  anders 2,5–10 s; gepauzeerd als het tabblad verborgen is.
+- Groen, *Actief* en "Gekoppeld" verschijnen alleen op basis van een serverantwoord.
 
 ## Gemeten groottes (lokaal, 2026-11-10)
 

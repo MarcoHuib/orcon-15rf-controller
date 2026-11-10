@@ -975,6 +975,7 @@ void notifyStateChanged() { g_dirty = true; }
 const char* ipAddr()       { return g_ip; }
 const char* ssidName()     { return g_apMode ? WIFI_AP_NAME : g_ssid.c_str(); }
 bool        apMode()       { return g_apMode; }
+bool        wifiConnected(){ return !g_apMode && WiFi.status() == WL_CONNECTED; }
 bool        maskIds()      { return g_maskIds; }
 const char* mqttHost()     { return g_mqttHost.c_str(); }
 bool        mqttConnected() {

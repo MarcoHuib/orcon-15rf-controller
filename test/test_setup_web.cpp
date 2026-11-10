@@ -44,7 +44,9 @@ RxDiagnostics rxDiagnostics() {
     return d;
 }
 }
-namespace net { bool apMode() { return g_apModeFake; } bool maskIds() { return true; } const char* ipAddr() { return "192.0.2.5"; } }
+static bool g_wifiFake = true;
+namespace net { bool apMode() { return g_apModeFake; } bool maskIds() { return true; } const char* ipAddr() { return "192.0.2.5"; }
+                bool wifiConnected() { return g_wifiFake && !g_apModeFake; } const char* ssidName() { return "Thuis \"5G\"\x01"; } }
 
 #if ORCON_TX_POC
 // Test-side stand-in for tx_poc_runtime.cpp: the real Controller/Owner with a fake RF
@@ -202,6 +204,11 @@ int main() {
     rx(fr(MsgType::I, UNIT, UNIT, 0x31D9, {0x00, 0x00, 0x01}));
     call("GET", "/api/setup/state");
     CHECK(J["remotes"].size() == 1 && J["remotes"][0]["id"] == "29:000101", "remote discovered from its 22F1, unit not listed as remote");
+    CHECK(J["wifi"]["connected"] == true && J["wifi"]["ssid"] == "Thuis \"5G\"\x01" && J["caps"]["settings_pages"] == !ORCON_TX_POC,
+          "state: WiFi network (JSON-escaped) and whether the classic settings pages exist in this build");
+    g_apModeFake = true; call("GET", "/api/setup/state");
+    CHECK(J["wifi"]["connected"] == false && J["wifi"]["ssid"] == "", "setup AP: reported as not connected, no network name");
+    g_apModeFake = false;
 
     // ---- POST guard and validation ---------------------------------------------------------------
     CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\"}", nullptr) == 403 && err("bad-token"), "missing token: 403");

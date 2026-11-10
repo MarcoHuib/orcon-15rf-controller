@@ -39,6 +39,8 @@ function load() {
     return { byId, all };
 }
 
+// Browser dialogs: answers set per test, every question recorded.
+const dlg = { asked: [], confirm: true, prompt: null };
 // routes: { 'GET /api/x': () => [status, body] | throws }
 async function page(routes, hash = '') {
     const dom = load(), calls = [], win = {};
@@ -58,7 +60,8 @@ async function page(routes, hash = '') {
         return { ok: status < 300, status, json: async () => body };
     };
     const ctx = { document, location, fetch, setTimeout: () => 0, clearTimeout() {}, addEventListener: (t, f) => { win[t] = f; },
-                  console, Promise, Set, String, JSON, Math, Object, Array };
+                  console, Promise, Set, String, JSON, Math, Object, Array,
+                  confirm: m => { dlg.asked.push(m); return dlg.confirm; }, prompt: m => { dlg.asked.push(m); return dlg.prompt; } };
     vm.runInNewContext(script, ctx);
     await flush();
     const $ = id => dom.byId[id];
@@ -77,27 +80,55 @@ const steps = (n, extra = {}) => ['away', 'auto', 'timer', '1', '2', '3'].map((k
 const read = (sid, status, step, extra = {}) => ({ sid, status, step, remote: '29:000101', left_s: 50, ev: 9, rf: 'receiving', others: 0,
     why: '', why_ev: 0, why_cmd: '0000', why_mode: -1, steps: steps(step), ...extra });
 
+const PF=(items,active)=>({storage_ok:true,active,limit:4,items});
+const PI=(id,name,remote,cm=true)=>({id,name,remote,unit:'29:000202',control_mapping:cm,paired:false});
+const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ dataset: d }) } });
 (async () => {
     let n = 0; const ok = m => { n++; console.log('  [ ok ] ' + m); };
 
-    // ---- start screen + RX-only gating ----------------------------------------------------------
+    // ---- start: no profiles -> welcome; existing procedures stay reachable; RX-only gating --------------
     {
-        const p = await page({ 'GET /api/setup/state': () => [200, state(CAPS_RX)] });
-        assert.equal(p.$('choices').hidden, false); assert.equal(p.$('pairP').hidden, true); assert.equal(p.$('back').hidden, true);
-        ok('start screen shows the three choices');
+        const p = await page({ 'GET /api/setup/state': () => [200, state(CAPS_RX, { profiles: PF([], 0) })] });
+        assert.equal(p.location.hash, '#welcome'); assert.equal(p.$('wel').hidden, false); assert.equal(p.$('dash').hidden, true);
+        assert.equal(p.$('back').hidden, true); assert.equal(p.$('title').textContent, 'Welkom bij Orcon 15RF'); assert.ok(p.$('lay').classList.contains('solo'));
+        ok('no profiles: welcome with two choices, no back button, remote hidden');
         assert.equal(p.$('conn').textContent, 'Verbonden · alleen ontvangen'); assert.ok(p.$('conn').classList.contains('ok'));
         ok('header shows the controller connection (RX-only)');
-        assert.ok(p.keys.every(k => k.disabled)); ok('remote keys are not clickable on the start screen');
-        p.dom.all.find(e => e.dataset.open === 'control').click(); await p.refresh();
-        assert.equal(p.$('ctlP').hidden, false); assert.match(p.$('notice').textContent, /niet mogelijk/);
-        assert.ok(p.keys.every(k => k.disabled)); p.keys[3].click(); await flush();
-        assert.equal(p.posts().length, 0); assert.ok(!p.calls.some(c => c.key.includes('/api/remote/')));
-        ok('control screen on RX-only: notice, keys disabled, no remote API call');
-        p.$('back').click(); await flush();
+        assert.match(p.$('simSub').textContent, /Niet beschikbaar met deze firmware/); ok('simulation marked unavailable on RX-only');
         p.dom.all.find(e => e.dataset.open === 'pair').click(); await p.refresh();
         assert.equal(p.$('pairA').disabled, true); assert.match(p.$('notice').textContent, /Koppelen is met deze firmware niet beschikbaar/);
         p.$('pairA').click(); await flush(); assert.equal(p.posts().length, 0);
-        ok('pair screen on RX-only: visibly unavailable, nothing sent');
+        ok('"Simulatie instellen" opens the existing pair procedure: visibly unavailable, nothing sent');
+        assert.equal(p.$('back').hidden, false); p.$('back').click(); await flush(); assert.equal(p.location.hash, '#welcome');
+        p.dom.all.find(e => e.dataset.open === 'read').click(); await p.refresh();
+        assert.equal(p.location.hash, '#read'); assert.equal(p.$('readP').hidden, false); assert.equal(p.$('title').textContent, 'Afstandsbediening koppelen');
+        ok('"Afstandsbediening koppelen" opens the existing read procedure; back returns to welcome');
+    }
+    {
+        const p = await page({ 'GET /api/setup/state': () => [200, state(CAPS_RX, { profiles: PF([PI(2, 'Washok', '29:000101')], 2) })] });
+        assert.equal(p.location.hash, '#control'); assert.equal(p.$('dash').hidden, false); assert.equal(p.$('wel').hidden, true);
+        assert.equal(p.$('profName').textContent, 'Washok'); assert.equal(p.$('profSub').textContent, 'Actief profiel'); assert.ok(p.$('cProf').classList.contains('on'));
+        ok('profiles present: straight to the dashboard with the active profile name');
+        assert.equal(p.$('ctlP').hidden, false); assert.match(p.$('notice').textContent, /niet mogelijk/);
+        assert.ok(p.keys.every(k => k.disabled)); p.keys[3].click(); await flush();
+        assert.equal(p.posts().length, 0); assert.ok(!p.calls.some(c => c.key.includes('/api/remote/')));
+        ok('dashboard on RX-only: notice, keys disabled, no remote API call');
+        const p2 = await page({ 'GET /api/setup/state': () => [200, state(CAPS_RX, { profiles: PF([PI(2, 'Washok', '29:000101')], 7) })] });
+        assert.equal(p2.location.hash, '#profiles'); assert.match(p2.$('profM').textContent, /Geen actief profiel/);
+        ok('stored active reference invalid: the user chooses on the profile screen (no wizard)');
+    }
+    {   // dashboard cards: WiFi status, Siri placeholder, system page; classic pages absent on web-control builds
+        let wifi = { connected: true, ssid: 'Thuis <5G>' }, caps = { ...CAPS_RX, settings_pages: true };
+        const p = await page({ 'GET /api/setup/state': () => [200, state(caps, { wifi, profiles: PF([], 0) })] }, 'control');
+        assert.equal(p.$('wifiSub').textContent, 'Verbonden met Thuis <5G>'); assert.ok(!p.$('cWifi').classList.contains('off'));
+        assert.equal(p.$('profName').textContent, 'Geen profiel geselecteerd'); assert.ok(!p.$('cProf').classList.contains('on'));
+        ok('WiFi card shows the network as text; no profile -> "Geen profiel geselecteerd"');
+        assert.ok(p.dom.all.some(e => e.attrs.class === 'choice card off' && e.attrs['aria-disabled'] === 'true')); ok('Siri is a disabled placeholder');
+        wifi = { connected: false, ssid: '' }; caps = { ...CAPS_RX, settings_pages: false }; await p.refresh();
+        assert.equal(p.$('wifiSub').textContent, 'Niet verbonden'); assert.ok(p.$('cWifi').classList.contains('off') && p.$('cSys').classList.contains('off'));
+        assert.match(p.$('sysSub').textContent, /Niet beschikbaar/); ok('no WiFi -> "Niet verbonden"; no classic pages -> cards disabled');
+        p.$('cProf').click(); await flush(); assert.equal(p.location.hash, '#profiles'); assert.equal(p.$('back').hidden, false);
+        p.$('back').click(); await flush(); assert.equal(p.location.hash, '#control'); ok('profile card opens Profielen; back returns to the dashboard');
     }
 
     // ---- read: pick remote, progress only from server state, wrong button, done ---------------------
@@ -254,7 +285,7 @@ const read = (sid, status, step, extra = {}) => ({ sid, status, step, remote: '2
 
     {   // web-control firmware: no active profile -> nothing to send, keys stay disabled
         const caps={...CAPS_TX,simulated:true,timer_supported:false,profile_control_supported:true};
-        let f={storage_ok:true,active:0,limit:4,items:[{id:3,name:'Woonkamer',control_mapping:true,paired:false},{id:4,name:'Zolder',control_mapping:false,paired:false}]};
+        let f=PF([PI(3,'Woonkamer','29:000101'),PI(4,'Zolder','29:000505',false)],0);
         const cs={supported:true,id:0,key:'',confirm:'none',phase:'idle',next_request:1};
         const p=await page({
             'GET /api/setup/state':()=>[200,state(caps,{profiles:f})],
@@ -262,10 +293,11 @@ const read = (sid, status, step, extra = {}) => ({ sid, status, step, remote: '2
             'POST /api/profiles/select':c=>{f={...f,active:c.body.id};return [200,f];},
         },'control');
         assert.ok(p.keys.every(k=>k.disabled));assert.match(p.$('profileNote').textContent,/Kies een profiel/);ok('web control without an active profile: keys disabled');
-        p.$('profileSel').value='4';p.$('profileSel').handlers.change[0]();await flush();
+        p.$('cProf').click();await flush();pickRow(p,{sel:'4'});await flush();
+        assert.equal(p.location.hash,'#control');assert.equal(p.$('profName').textContent,'Zolder');
         assert.ok(p.keys.every(k=>k.disabled));ok('profile without a complete mapping: keys stay disabled');
-        p.$('profileSel').value='3';p.$('profileSel').handlers.change[0]();await flush();
-        assert.ok(!p.keys[4].disabled);ok('verified active profile enables control');
+        p.$('cProf').click();await flush();pickRow(p,{sel:'3'});await flush();
+        assert.equal(p.$('profName').textContent,'Woonkamer');assert.ok(!p.keys[4].disabled);ok('verified active profile enables control without a restart');
         assert.ok(!p.posts().some(x=>x.key.includes('/api/remote/send')));ok('profile selection itself sends nothing');
     }
     {
@@ -306,40 +338,93 @@ const read = (sid, status, step, extra = {}) => ({ sid, status, step, remote: '2
         ok('no duplicate save after the profile was stored');
         assert.ok(!p.calls.some(x=>x.key.includes('/api/remote/send')));ok('profile save never sends a ventilation command');
     }
-    {   // happy path: one click -> stored, active, control screen with the profile selected
-        let rs=read(0,'idle',0),f={storage_ok:true,active:0,limit:4,items:[{id:2,name:'Zolder',remote:'29:000505',control_mapping:true,paired:false}]};
+    {   // first use: read -> name -> save -> completion screen -> dashboard
+        let rs=read(0,'idle',0),f=PF([PI(2,'Zolder','29:000505')],0);
         const p=await page({
             'GET /api/setup/state':()=>[200,state(CAPS_RX,{profiles:f})],
             'GET /api/setup/read/state':()=>[200,rs],
             'POST /api/setup/read/start':()=>{rs=read(41,'done',6);return [201,rs];},
-            'POST /api/profiles/save':()=>{f={...f,active:3,items:[...f.items,{id:3,name:'Washok',remote:'29:000101',control_mapping:true,paired:false}]};return [201,f];},
+            'POST /api/profiles/save':()=>{f={...f,active:3,items:[...f.items,PI(3,'Washok','29:000101')]};return [201,f];},
             'POST /api/profiles/select':c=>{f={...f,active:c.body.id};return [200,f];},
         },'read');
         p.$('remotes').click({target:{closest:()=>({dataset:{id:'29:000101'}})}});await flush();assert.equal(p.$('doneP').hidden,false);
         p.$('saveName').value='Washok';p.$('saveProfile').click();await flush();
-        assert.equal(p.location.hash,'#control');assert.equal(p.$('ctlP').hidden,false);assert.equal(p.$('doneP').hidden,true);
-        ok('successful save + activation navigates straight to Ventilatie bedienen');
-        assert.equal(p.$('profileSel').value,'3');assert.match(p.$('profileNote').textContent,/^Actief profiel: Washok\./);
-        ok('control screen shows the new profile selected and names it as active');
+        assert.equal(p.location.hash,'#done');assert.equal(p.$('finP').hidden,false);assert.equal(p.$('tick').hidden,false);
+        assert.equal(p.$('title').textContent,'Koppeling voltooid');assert.equal(p.$('finName').textContent,'Washok');
+        ok('successful save + activation shows the completion screen with the profile name');
+        p.$('finGo').click();await flush();
+        assert.equal(p.location.hash,'#control');assert.equal(p.$('profName').textContent,'Washok');assert.equal(p.$('profSub').textContent,'Actief profiel');
+        ok('"Naar bediening" opens the dashboard with the new profile active');
         assert.ok(p.keys.every(k=>k.disabled));assert.match(p.$('notice').textContent,/niet mogelijk/);
         ok('RX-only firmware: keys stay disabled and the screen says control is not possible');
-        p.$('profileSel').value='2';p.$('profileSel').handlers.change[0]();await flush();
-        assert.equal(p.$('profileSel').value,'2');assert.match(p.$('profileNote').textContent,/Actief profiel: Zolder/);ok('multiple profiles: manual switch');
+        p.$('cProf').click();await flush();pickRow(p,{sel:'2'});await flush();
+        assert.equal(p.location.hash,'#control');assert.equal(p.$('profName').textContent,'Zolder');ok('multiple profiles: switch via Profielen, back on the dashboard');
         assert.ok(!p.calls.some(x=>x.key.includes('/api/remote/send')));ok('save, activate and switch send nothing');
     }
-    {
-        let f={storage_ok:true,active:0,limit:4,items:[{id:1,name:'Woonkamer',control_mapping:true,paired:false},{id:2,name:'Slaapkamer',control_mapping:false,paired:false}]};
+    {   // Nieuw profiel: name first, kept through the wizard, saved automatically after the six buttons
+        let rs=read(0,'idle',0),f=PF([PI(2,'Washok','29:000101')],2),saves=[];
+        const p=await page({
+            'GET /api/setup/state':()=>[200,state(CAPS_RX,{profiles:f,remotes:[{id:'29:000101',age_s:3,rssi:-61,cmd:'22F1',n:4},{id:'29:000303',age_s:2,rssi:-50,cmd:'22F1',n:2}]})],
+            'GET /api/setup/read/state':()=>[200,rs],
+            'POST /api/setup/read/start':c=>{rs=read(50,'active',2,{remote:c.body.remote});return [201,rs];},
+            'POST /api/setup/read/cancel':()=>{rs=read(50,'cancelled',2,{remote:rs.remote});return [200,rs];},
+            'POST /api/profiles/save':c=>{saves.push(c.body);f={...f,active:3,items:[...f.items,PI(3,c.body.name,rs.remote)]};return [201,f];},
+        },'profiles');
+        assert.match(p.$('plist').innerHTML,/Washok/);p.$('pNew').click();await flush();
+        assert.equal(p.location.hash,'#new');assert.equal(p.$('title').textContent,'Nieuw profiel');
+        for(const [v,re] of [['','Vul een profielnaam'],['Washok','al een profiel'],['x'.repeat(49),'te lang'],['é'.repeat(25),'te lang']]){
+            p.$('newName').value=v;p.$('newNext').click();await flush();assert.match(p.$('newM').textContent,new RegExp(re));assert.equal(p.location.hash,'#new');}
+        ok('name validation: empty, duplicate, too long (UTF-8 bytes) refused with a message');
+        p.$('newName').value='  Slaapkamer ';p.$('newNext').click();await flush();
+        assert.equal(p.location.hash,'#welcome');assert.equal(p.$('back').hidden,false);
+        p.$('back').click();await flush();assert.equal(p.location.hash,'#new');assert.equal(p.$('newName').value,'Slaapkamer');
+        ok('Volgende opens the same welcome wizard; back returns to the name, kept');
+        p.$('newNext').click();await flush();p.dom.all.find(e=>e.dataset.open==='read').click();await flush();
+        p.$('remotes').click({target:{closest:()=>({dataset:{id:'29:000303'}})}});await flush();
+        p.$('back').click();await flush();
+        assert.equal(p.location.hash,'#welcome');assert.ok(p.posts().some(c=>c.key.endsWith('/read/cancel')));assert.equal(saves.length,0);assert.equal(f.active,2);
+        ok('cancelling the procedure saves nothing; the old active profile stays');
+        p.dom.all.find(e=>e.dataset.open==='read').click();await flush();
+        p.$('remotes').click({target:{closest:()=>({dataset:{id:'29:000303'}})}});await flush();
+        rs=read(50,'done',6,{remote:'29:000303'});await p.refresh();await flush();
+        assert.deepEqual(saves,[{sid:50,name:'Slaapkamer'}]);assert.equal(p.location.hash,'#done');assert.equal(p.$('finName').textContent,'Slaapkamer');
+        ok('six buttons in -> saved once under the chosen name, active, completion screen');
+        await p.refresh();assert.equal(saves.length,1);ok('no second automatic save');
+    }
+    {   // a remote that already belongs to another profile is never silently renamed
+        let rs=read(0,'idle',0),f=PF([PI(2,'Washok','29:000101')],2);
+        const p=await page({
+            'GET /api/setup/state':()=>[200,state(CAPS_RX,{profiles:f})],
+            'GET /api/setup/read/state':()=>[200,rs],
+            'POST /api/setup/read/start':()=>{rs=read(60,'done',6);return [201,rs];},
+            'POST /api/profiles/save':()=>[201,f],
+        },'read');
+        p.$('remotes').click({target:{closest:()=>({dataset:{id:'29:000101'}})}});await flush();
+        p.$('saveName').value='Keuken';p.$('saveProfile').click();await flush();
+        assert.ok(!p.posts().some(c=>c.key.endsWith('/profiles/save')));assert.match(p.$('err').textContent,/al opgeslagen als profiel “Washok”/);
+        ok('remote already stored as another profile: refused with an explanation, nothing saved');
+    }
+    {   // Profielen: list, active badge, menu, rename, delete with confirmation, last one -> welcome
+        let f=PF([PI(1,'Woonkamer','29:000101'),PI(2,'Slaap<kamer>','29:000505',false)],1);
         const p=await page({
             'GET /api/setup/state':()=>[200,state(CAPS_RX,{profiles:f})],
             'POST /api/profiles/select':c=>{f={...f,active:c.body.id};return [200,f];},
             'POST /api/profiles/rename':c=>{assert.deepEqual(c.body,{id:1,name:'Keuken'});f={...f,items:f.items.map(x=>x.id===1?{...x,name:c.body.name}:x)};return [200,f];},
-            'POST /api/profiles/delete':c=>{assert.deepEqual(c.body,{id:1});f={...f,active:0,items:f.items.filter(x=>x.id!==1)};return [200,f];},
-        },'control');
-        assert.match(p.$('profileSel').innerHTML,/Woonkamer/);assert.match(p.$('profileSel').innerHTML,/Slaapkamer/);ok('compact selector lists multiple saved profile names');
-        p.$('profileSel').value='1';p.$('profileSel').handlers.change[0]();await flush();
-        assert.equal(p.$('profileSel').value,'1');assert.match(p.$('profileNote').textContent,/afzonderlijk nodig/);ok('profile selection follows persisted active ID without claiming pairing');
-        p.$('renameProfile').click();p.$('editProfileName').value='Keuken';p.$('renameProfileSave').click();await flush();assert.match(p.$('profileSel').innerHTML,/Keuken/);ok('profile can be renamed in place');
-        p.$('deleteProfile').click();await flush();assert.doesNotMatch(p.$('profileSel').innerHTML,/Keuken/);assert.match(p.$('profileSel').innerHTML,/Slaapkamer/);ok('deleting active profile preserves the others');
+            'POST /api/profiles/delete':c=>{f={...f,active:f.active===c.body.id?0:f.active,items:f.items.filter(x=>x.id!==c.body.id)};return [200,f];},
+        },'profiles');
+        const h=p.$('plist').innerHTML;
+        assert.match(h,/Woonkamer<\/b><span class="badge">Actief/);assert.match(h,/Slaap&#60;kamer&#62;/);assert.doesNotMatch(h,/Slaap<kamer>/);
+        ok('list shows every stored profile, escaped, with the Actief badge on the active one');
+        pickRow(p,{menu:'1'});assert.match(p.$('plist').innerHTML,/data-ren="1"/);assert.match(p.$('plist').innerHTML,/data-del="1"/);ok('three-dot menu offers rename and delete');
+        dlg.prompt='Keuken';pickRow(p,{ren:'1'});await flush();assert.match(p.$('plist').innerHTML,/Keuken/);ok('rename via the menu');
+        dlg.confirm=false;dlg.asked=[];pickRow(p,{del:'2'});await flush();
+        assert.match(dlg.asked[0],/Weet je zeker dat je het profiel Slaap<kamer> wilt verwijderen\?/);assert.ok(!p.posts().some(c=>c.key.endsWith('/delete')));
+        ok('delete asks for confirmation first; "no" keeps the profile');
+        dlg.confirm=true;pickRow(p,{del:'1'});await flush();
+        assert.equal(p.location.hash,'#profiles');assert.doesNotMatch(p.$('plist').innerHTML,/Keuken/);assert.match(p.$('plist').innerHTML,/Slaap/);
+        assert.match(p.$('profM').textContent,/Geen actief profiel/);ok('deleting the active profile: others kept, the user chooses again');
+        pickRow(p,{del:'2'});await flush();assert.equal(p.location.hash,'#welcome');assert.equal(p.$('back').hidden,true);
+        ok('deleting the last profile opens the welcome wizard');
         assert.ok(!p.calls.some(x=>x.key.includes('/api/remote/send')));ok('profile management works in RX-only firmware without any TX action');
     }
 

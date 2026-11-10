@@ -12,6 +12,7 @@ void notifyStateChanged();     // mark state dirty (publish on next loop)
 const char* ipAddr();
 const char* ssidName();
 bool        apMode();
+bool        wifiConnected();  // station mode and associated with the configured network
 const char* mqttHost();
 bool        mqttConnected();
 bool        maskIds();        // privacy setting: mask device IDs in the UI

@@ -144,7 +144,7 @@ void restoreProfileSelection() {
 }
 static void quoted(Out& o,const char* s) {
     o.add("\"");
-    for(;*s;++s){if(*s=='"'||*s=='\\')o.add("\\%c",*s);else o.add("%c",*s);}
+    for(;*s;++s){const unsigned char c=*s;if(c=='"'||c=='\\')o.add("\\%c",c);else if(c<0x20)o.add("\\u%04x",c);else o.add("%c",c);}
     o.add("\"");
 }
 static void profileFields(Out& o) {
@@ -209,11 +209,12 @@ static void handleState() {
     Out o;
     o.add("{\"fw\":\"%s\",\"rx_only\":%s,\"caps\":{\"rx_supported\":%s,\"tx_supported\":%s,"
           "\"read_supported\":%s,\"pair_supported\":%s,\"control_supported\":%s,\"simulated\":%s,"
-          "\"timer_supported\":%s,\"profile_control_supported\":%s},"
+          "\"timer_supported\":%s,\"profile_control_supported\":%s,\"settings_pages\":%s},"
           "\"rf\":\"%s\",\"token\":\"%s\",\"mask_ids\":%s,\"active\":\"%s\"",
           FW_VERSION, RX_ONLY ? "true" : "false", CAN_RX ? "true" : "false", CAN_TX ? "true" : "false",
           CAN_RX ? "true" : "false", CAN_PAIR ? "true" : "false", CAN_TX ? "true" : "false",
           SIMULATED ? "true" : "false", ORCON_TX_POC ? "false" : "true", ORCON_WEB_CONTROL ? "true" : "false",
+          ORCON_TX_POC ? "false" : "true",                         // /wifi and /dashboard exist (net.cpp)
           rfState(), hostOk() ? g_token : "", net::maskIds() ? "true" : "false",
           g_read.st == St::Active ? "read" : pairActive() ? "pair" : "none");
     char id[16] = "";
@@ -234,7 +235,8 @@ static void handleState() {
               (unsigned long)((now - dev[i].lastMs) / 1000), dev[i].rssi, dev[i].lastCmd, (unsigned long)dev[i].count);
         first = false;
     }
-    o.add("],\"profiles\":");profileFields(o);o.add("}");
+    o.add("],\"wifi\":{\"connected\":%s,\"ssid\":",net::wifiConnected()?"true":"false");quoted(o,net::wifiConnected()?net::ssidName():"");
+    o.add("},\"profiles\":");profileFields(o);o.add("}");
     reply(200, o);
 }
 
