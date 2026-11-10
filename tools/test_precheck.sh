@@ -15,7 +15,7 @@ cp "$PART_GOOD" "$W/d/partitions.bin"
 cp "$BOOT_GOOD" "$W/d/bootloader.bin"
 cp "$BOOT_APP_GOOD" "$W/d/boot_app0.bin"
 
-python3 - "$W" <<'PY'                      # build bad tables (each with a VALID md5 entry)
+python3 - "$W" "$(dirname "$BOOT_APP_GOOD")/firmware.bin" <<'PY'   # bad tables (VALID md5), app1 slots
 import hashlib, struct, sys
 w = sys.argv[1]; good = open(f"{w}/d/partitions.bin", "rb").read()
 def table(entries, extra=b""):
@@ -35,6 +35,13 @@ bad = {
     "short": good[:2048],
 }
 for k, v in bad.items(): open(f"{w}/{k}.bin", "wb").write(v)
+# app1 slot contents: only fully erased or the pinned RX-only image + erased tail may pass.
+size = 0x330000
+safe = open(sys.argv[2], "rb").read(); slot = safe + b"\xff" * (size - len(safe))
+unknown = bytearray(slot); unknown[2] ^= 1
+app1 = {"empty": b"\xff" * size, "safe": slot, "unknown": bytes(unknown), "zero": b"\x00" * size,
+        "partial": b"\xff" * 4096 + slot[4096:], "tail": slot[:-1] + b"\x00", "short": slot[:-4096]}
+for k, v in app1.items(): open(f"{w}/app1-{k}.bin", "wb").write(v)
 PY
 
 cat > "$W/run.sh" <<EOF
@@ -50,6 +57,8 @@ esptool() {
     *flash_id*)   printf '%b\n' "\$FLASH_ID"; return \${RC:-0} ;;
     *read_flash*0x1000*) if [ -n "\${DEVHDR:-}" ]; then printf "\$DEVHDR" > "\${@: -1}"; else cp "$BOOT_GOOD" "\${@: -1}"; fi ;;
     *read_flash*0xe000*) cp "\${DEVOTA:-$BOOT_APP_GOOD}" "\${@: -1}" ;;
+    *"read_flash 0x340000 0x330000 "*) cp "$W/app1-\${APP1:-empty}.bin" "\${@: -1}"; return \${APP1RC:-0} ;;
+    *write_flash*|*erase*) echo "FORBIDDEN write/erase in precheck" >&2; exit 99 ;;
     *read_flash*) cp "\${DEVPARTS:-$W/d/partitions.bin}" "\${@: -1}" ;;
   esac
 }
@@ -86,6 +95,15 @@ expect fail "board bootloader header 4MB"    HELTEC_MAC=02:00:00:00:00:08 FLASH_
 expect fail "board bootloader header QIO"    HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" DEVHDR='\xe9\x03\x00\x30'
 expect fail "serial port missing"            HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" PORT=/nonexistent/tty
 expect fail "wrong app0 boot selection" HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" DEVOTA="$W/d/partitions.bin"
+expect pass "app1 pinned RX-only + erased tail"  HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" APP1=safe
+for t in unknown zero partial tail short; do
+    expect fail "app1: $t"                   HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" APP1=$t
+    h="$(shasum -a 256 < "$W/app1-$t.bin" | cut -d' ' -f1)"
+    if grep -qx "$h  app1.bin" "$W"/tools/evidence/*-precheck-failed-*/EVIDENCE_SHA256.txt 2>/dev/null
+    then printf '  [  ok] %s\n' "app1 $t: readback kept as evidence"
+    else printf '  [FAIL] %s\n' "app1 $t: readback not kept"; fails=$((fails + 1)); fi
+done
+expect fail "app1 read error"                HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" APP1RC=2
 for t in layout flags extra md5 trail short; do
     expect fail "board partition table: $t"  HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" DEVPARTS="$W/$t.bin"
 done

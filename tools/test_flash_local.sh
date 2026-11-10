@@ -82,7 +82,11 @@ run() {
                 *flash_id*) printf "%b\n" "${FLASH_ID:-Chip is ESP32-D0WDQ6 (revision v1.0)\nMAC: 02:00:00:00:00:08\nDetected flash size: 8MB}" ;;
                 *read_flash*0x10000*) cp "$(dirname "${@: -1}")/firmware.bin" "${@: -1}"; [ "${BAD_READBACK:-}" != 1 ] || printf X >> "${@: -1}" ;;
                 *read_flash*0x1000*) cp "$BOOT_GOOD" "${@: -1}" ;;
-                *read_flash*0xe000*) cp "$ROLL_DIR/boot_app0.bin" "${@: -1}" ;;
+                *read_flash*0xe000*) cp "$ROLL_DIR/boot_app0.bin" "${@: -1}"
+                    # TOCTOU: package and its own manifest change together after the last precheck read.
+                    if [ -n "${MUTATE_PKG:-}" ]; then printf X >> "$MUTATE_PKG/firmware.bin"
+                        (cd "$MUTATE_PKG" && shasum -a 256 bootloader.bin partitions.bin boot_app0.bin firmware.bin > SHA256SUMS.txt); fi ;;
+                *"read_flash 0x340000 0x330000 "*) head -c 3342336 /dev/zero | LC_ALL=C tr "\000" "\377" > "${@: -1}" ;;
                 *write_flash*) [ "${FAIL_WRITE:-}" != 1 ] ;;
                 *read_flash*) cp "$PART_GOOD" "${@: -1}" ;;
             esac
@@ -200,5 +204,17 @@ assert "failed write never normal-boots" bash -c '! grep -q hard_reset "$W/espto
 LOCAL_ENV=$DRY PORT="$W/tty" HELTEC_MAC=02:00:00:00:00:08 BAD_READBACK=1 run fail "readback mismatch" $'yes\n' flash "$SHA"
 assert "failure reached app readback" grep -q "read_flash 0x10000" "$W/esptool.log"
 assert "bad readback never normal-boots" bash -c '! grep -q hard_reset "$W/esptool.log"'
+assert "mismatching readback kept with its SHA-256" bash -c 'cd "$W"/tools/evidence/*-readback-mismatch-* && grep -q "  readback.bin$" EVIDENCE_SHA256.txt && ! cmp -s readback.bin firmware.bin'
+local_pkg
+LOCAL_ENV=$DRY PORT="$W/tty" HELTEC_MAC=02:00:00:00:00:08 MUTATE_PKG="$P" run fail "package+manifest changed after precheck" $'yes\n' flash "$SHA"
+assert "changed snapshot never written" bash -c '! grep -q write_flash "$W/esptool.log"'
+local_pkg
+LOCAL_ENV=$DRY PORT="$W/tty" HELTEC_MAC=02:00:00:00:00:08 run pass "precheck reads app1 only after the table" "" precheck "$SHA"
+assert "app1 read follows table read, whole slot, no write" python3 -c '
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+reads = [l.split("read_flash ", 1)[1].split()[:2] for l in lines if "read_flash" in l]
+assert reads.index(["0x8000", "0xc00"]) < reads.index(["0x340000", "0x330000"]), reads
+assert not any("write_flash" in l or "erase" in l for l in lines)' "$W/esptool.log"
 echo; [ $fails -eq 0 ] && echo "ALL PASSED (0 failures)" || echo "FAILED ($fails failures)"
 exit $((fails > 0))

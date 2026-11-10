@@ -24,9 +24,15 @@ ROLLBACK_COMMIT="d5c39e1b4d1f0ed37defe69b51e3562c36058208"  # immutable local tr
 # offset:image:slot size. NVS (0x9000-0xDFFF) is never written; the merged image is never used.
 FLASH_MAP="0x1000:bootloader.bin:0x7000 0x8000:partitions.bin:0xc00 0xe000:boot_app0.bin:0x2000 0x10000:firmware.bin:0x330000"
 FLASH_HDR="0230"   # image header bytes 2-3: DIO, 8 MB / 40 MHz (as the CI d5c39e1 image on the board)
-LOCAL_REQUIRED="codec frames rx log orcon_rx orcon_v3 rxpipe netcfg oled tx_poc safety-and-negative-compiles privacy poc-web ubsan-host rxmon rxmon-soak flash-tooling flash-local source-stability firmware-heltec_v2_sx1276 firmware-heltec_v2_sx1276_tx_poc_dryrun firmware-heltec_v3_cc1101_ota firmware-heltec_v3_1262_ota firmware-esp32-480480s040"
+LOCAL_REQUIRED="codec frames rx log orcon_rx orcon_v3 rxpipe netcfg oled tx_poc safety-and-negative-compiles privacy poc-web ubsan-host app1 rxmon rxmon-soak flash-tooling flash-local source-stability firmware-heltec_v2_sx1276 firmware-heltec_v2_sx1276_tx_poc_dryrun firmware-heltec_v3_cc1101_ota firmware-heltec_v3_1262_ota firmware-esp32-480480s040"
 
 die() { echo "FAIL: $*" >&2; exit 1; }
+keep() {   # keep <dir> <label>: readbacks of a FAILED verification stay local (.flashtools/ is git-ignored)
+    [ -n "$(ls -A "$1" 2>/dev/null)" ] || { rm -rf "$1"; return 0; }
+    local to; to="$TOOLS/evidence/$(date -u +%Y%m%dT%H%M%SZ)-$2-$$"
+    mkdir -p "$TOOLS/evidence" && mv "$1" "$to" && ( cd "$to" && shasum -a 256 -- * > EVIDENCE_SHA256.txt ) \
+        && echo "evidence kept: $to" >&2
+}
 
 bootstrap() {
     [ -x "$TOOLS/venv/bin/python" ] && [ -d "$TOOLS/esptool-4.8.1" ] \
@@ -225,12 +231,24 @@ assert bin((word(sys.argv[1], '0x3ff5a000') >> 20) & 0x7f).count('1') % 2 == 0, 
 assert word(sys.argv[2], '0x3ff5a018') & 0x30 == 0, 'secure boot enabled'
 SECURITY
     # A temporary readback directory, never mutable files inside the release package.
-    local curdir; curdir="$(mktemp -d)"; trap 'rm -rf "$curdir"' EXIT
+    # On any failure the readbacks are kept as evidence, never deleted.
+    # shellcheck disable=SC2064 # expand now: curdir is a local of this function
+    local curdir; curdir="$(mktemp -d)"; trap "keep '$curdir' precheck-failed" EXIT
     local cur="$curdir/partitions.bin"
     esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x8000 0xc00 "$cur" >/dev/null \
         || die "reading the board partition table failed"
     "$TOOLS/venv/bin/python" -I "$REPO/tools/check_parts.py" "$cur" || die "board partition layout unexpected"
     cmp -s "$cur" "$d/partitions.bin" || die "board partition table differs (NVS could move)"
+    # app1 bounds come from the REAL, just-validated board table. A failed app0 write,
+    # power loss or reset can make the bootloader try app1, so the whole slot must be
+    # erased or the pinned RX-only image. Never erase/repair here: unknown data is NO-GO.
+    local app1; app1="$("$TOOLS/venv/bin/python" -I "$REPO/tools/check_app1.py" bounds "$cur")" \
+        || die "app1 bounds not derivable from the verified board table"
+    # shellcheck disable=SC2086 # "<offset> <size>", two arguments
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash $app1 "$curdir/app1.bin" >/dev/null \
+        || die "reading the entire app1 fallback slot failed"
+    "$TOOLS/venv/bin/python" -I "$REPO/tools/check_app1.py" check "$cur" "$curdir/app1.bin" \
+        || die "app1 fallback is unknown/unsafe; app-only update refused (nothing erased or repaired)"
     # Application-only is safe only with this EXACT known bootloader and app0 selection.
     esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x1000 \
         "$(wc -c < "$d/bootloader.bin" | tr -d ' ')" "$curdir/bootloader.bin" >/dev/null \
@@ -240,7 +258,7 @@ SECURITY
         || die "reading the board boot selection failed"
     cmp -s "$curdir/otadata.bin" "$d/boot_app0.bin" || die "boot selection differs from pinned app0 selection; refused"
     rm -rf "$curdir"; trap - EXIT
-    echo "PRECHECK OK ${sha:0:7}: ESP32-D0WDQ6 $mac, 8MB, exact bootloader/table/app0 selection; NVS untouched"
+    echo "PRECHECK OK ${sha:0:7}: ESP32-D0WDQ6 $mac, 8MB, exact bootloader/table/app0 selection, app1 empty or pinned RX-only; NVS untouched"
 
 }
 
@@ -258,7 +276,7 @@ flash() {
     precheck "$sha"; local d; d="$(dist "$sha")"
     # Freeze verified bytes before confirmation; verify the snapshot again after it.
     local snapshot; snapshot="$(mktemp -d)"; trap 'rm -rf "$snapshot"' EXIT
-    cp "$d/"{bootloader.bin,partitions.bin,boot_app0.bin,firmware.bin} "$snapshot/"
+    cp "$d/"{bootloader.bin,partitions.bin,boot_app0.bin,firmware.bin,BUILD_INFO.txt} "$snapshot/"
     # The historical manifest also covers an unused merged image. Keep the
     # original checksums of all four verified flash inputs, without staging it.
     sed '/  heltec-v2-rx-only-merged.bin$/d' "$d/SHA256SUMS.txt" > "$snapshot/SHA256SUMS.txt"
@@ -267,11 +285,15 @@ flash() {
     read -r -p "Write ${sha:0:7} (${LOCAL_ENV:-heltec_v2_sx1276}) on $PORT? Type yes: " ok
     [ "$ok" = "yes" ] || die "aborted by user"
     files_ok "$snapshot" "$sha"
+    # The frozen bytes must still be the ones the ORIGINAL evidence recorded, not just
+    # self-consistent with a package manifest that could have changed alongside them.
+    [ -z "$LOCAL_ENV" ] || local_ok "$snapshot" "$sha" || die "snapshot differs from the validated evidence"
     esptool "${FLASH_ARGS[@]}" || die "app write failed; no reset; use approved USB rollback procedure"
     local size; size="$(wc -c < "$snapshot/firmware.bin" | tr -d ' ')"
     esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x10000 "$size" "$snapshot/readback.bin" \
-        || die "app readback failed; no reset; USB recovery may be needed"
-    cmp -s "$snapshot/readback.bin" "$snapshot/firmware.bin" || die "app readback SHA-256/bytes mismatch; no reset"
+        || { keep "$snapshot" readback-failed; die "app readback failed; no reset; USB recovery may be needed"; }
+    cmp -s "$snapshot/readback.bin" "$snapshot/firmware.bin" \
+        || { keep "$snapshot" readback-mismatch; die "app readback SHA-256/bytes mismatch; no reset"; }
     echo "READBACK SHA256 $(shasum -a 256 "$snapshot/readback.bin" | cut -d' ' -f1)"
     # Only a successful, identical readback permits the final normal boot.
     esptool --chip esp32 --port "$PORT" --after hard_reset read_mac
