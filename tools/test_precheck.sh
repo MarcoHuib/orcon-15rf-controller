@@ -15,7 +15,7 @@ cp "$PART_GOOD" "$W/d/partitions.bin"
 cp "$BOOT_GOOD" "$W/d/bootloader.bin"
 cp "$BOOT_APP_GOOD" "$W/d/boot_app0.bin"
 
-python3 - "$W" "$(dirname "$BOOT_APP_GOOD")/firmware.bin" <<'PY'   # bad tables (VALID md5), app1 slots
+python3 - "$W" "$(dirname "$BOOT_APP_GOOD")/firmware.bin" "$REPO/.flashtools/board-app1/app1-937d903c.bin" <<'PY'   # bad tables, app1 slots
 import hashlib, struct, sys
 w = sys.argv[1]; good = open(f"{w}/d/partitions.bin", "rb").read()
 def table(entries, extra=b""):
@@ -41,6 +41,8 @@ safe = open(sys.argv[2], "rb").read(); slot = safe + b"\xff" * (size - len(safe)
 unknown = bytearray(slot); unknown[2] ^= 1
 app1 = {"empty": b"\xff" * size, "safe": slot, "unknown": bytes(unknown), "zero": b"\x00" * size,
         "partial": b"\xff" * 4096 + slot[4096:], "tail": slot[:-1] + b"\x00", "short": slot[:-4096]}
+known = open(sys.argv[3], "rb").read(); flip = bytearray(known); flip[0x32F000] ^= 1
+app1.update({"known": known, "knownflip": bytes(flip)})
 for k, v in app1.items(): open(f"{w}/app1-{k}.bin", "wb").write(v)
 PY
 
@@ -55,6 +57,8 @@ esptool() {
     *read_mem*0x3ff5a000*) echo "0x3ff5a000 = \${SEC_CRYPT:-0x00000000}" ;;
     *read_mem*0x3ff5a018*) echo "0x3ff5a018 = \${SEC_BOOT:-0x00000000}" ;;
     *flash_id*)   printf '%b\n' "\$FLASH_ID"; return \${RC:-0} ;;
+    *"read_flash 0x66f000 0x1000 "*) echo "\$*" >> "$W/sector.log"; tail -c 4096 "$W/app1-\${APP1:-empty}.bin" > "\${@: -1}"
+        [ -z "\${SECTOR_BAD:-}" ] || printf X | dd of="\${@: -1}" bs=1 seek=3 conv=notrunc 2>/dev/null ;;
     *read_flash*0x1000*) if [ -n "\${DEVHDR:-}" ]; then printf "\$DEVHDR" > "\${@: -1}"; else cp "$BOOT_GOOD" "\${@: -1}"; fi ;;
     *read_flash*0xe000*) cp "\${DEVOTA:-$BOOT_APP_GOOD}" "\${@: -1}" ;;
     *"read_flash 0x340000 0x330000 "*) cp "$W/app1-\${APP1:-empty}.bin" "\${@: -1}"; return \${APP1RC:-0} ;;
@@ -103,6 +107,14 @@ for t in unknown zero partial tail short; do
     then printf '  [  ok] %s\n' "app1 $t: readback kept as evidence"
     else printf '  [FAIL] %s\n' "app1 $t: readback not kept"; fails=$((fails + 1)); fi
 done
+: > "$W/sector.log"
+expect pass "app1 exact known state, pinned board"  FLASH_ID="$ID" BOARDMAC=1 APP1=known
+if grep -q "read_flash 0x66f000 0x1000" "$W/sector.log"; then printf '  [  ok] %s\n' "known state: sector 0x66f000 re-read"
+else printf '  [FAIL] %s\n' "known state: sector not re-read"; fails=$((fails + 1)); fi
+expect fail "app1 known state, MAC only via HELTEC_MAC" HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" APP1=known
+expect fail "app1 known state, other board (env MAC)"  HELTEC_MAC=02:00:00:00:00:09 FLASH_ID="${ID/:08/:09}" BOARDMAC=1 APP1=known
+expect fail "app1 known state, one byte changed"    FLASH_ID="$ID" BOARDMAC=1 APP1=knownflip
+expect fail "app1 known state, second read differs" FLASH_ID="$ID" BOARDMAC=1 APP1=known SECTOR_BAD=1
 expect fail "app1 read error"                HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" APP1RC=2
 for t in layout flags extra md5 trail short; do
     expect fail "board partition table: $t"  HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" DEVPARTS="$W/$t.bin"

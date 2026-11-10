@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from check_app1 import REFERENCE, bounds, check as check_slot  # noqa: E402
+from check_app1 import KNOWN_BOARD_APP1, REFERENCE, bounds, check as check_slot  # noqa: E402
 
 TABLE = (REFERENCE.parent / 'partitions.bin').read_bytes()   # pinned in check_flash_package
 APP1_SIZE = 0x330000
@@ -119,6 +119,64 @@ class BoundsTests(unittest.TestCase):
             self.assertNotEqual(bad.returncode, 0)
             self.assertIn('APP1 partition SHA256=', bad.stdout)
             self.assertNotEqual(run('check', str(t)).returncode, 0)
+
+
+class KnownBoardTests(unittest.TestCase):
+    """The single accepted non-bootable state, from the board's own 2026-11-10 readback (local only)."""
+    FIXTURE = REFERENCE.parents[2] / 'board-app1/app1-937d903c.bin'
+
+    @classmethod
+    def setUpClass(cls):
+        cls.raw = cls.FIXTURE.read_bytes()
+        assert hashlib.sha256(cls.raw).hexdigest() == KNOWN_BOARD_APP1['sha256'], 'fixture changed'
+        cls.a, cls.b = KNOWN_BOARD_APP1['window']
+
+    def test_layout_of_the_observed_state(self):
+        raw, a, b = self.raw, self.a, self.b
+        self.assertEqual((a, b), (0x32F000, 0x32F010))
+        self.assertEqual(raw[:a] + raw[b:], b'\xff' * (APP1_SIZE - 16))
+        self.assertNotIn(b'\xff', raw[a:b])
+        self.assertTrue(all(raw[o] != 0xe9 for o in range(0, APP1_SIZE, 4096)))   # no image header anywhere
+
+    def test_accepted_only_on_pinned_board(self):
+        self.assertIn('KNOWN NON-BOOTABLE', check_slot(self.raw, APP1_SIZE, known_board=True))
+        self.assertIn('RECHECK-SECTOR 0x32f000', check_slot(self.raw, APP1_SIZE, known_board=True))
+        with self.assertRaisesRegex(ValueError, 'pinned board'):
+            check_slot(self.raw, APP1_SIZE)
+
+    def test_every_deviating_byte_is_no_go(self):
+        offsets = list(range(self.a - 1, self.b + 1)) + [0, 1, 0x1000, 0x200000, APP1_SIZE - 1]
+        for off in offsets:
+            for value in {self.raw[off] ^ 1, 0x00, 0xff, 0xe9} - {self.raw[off]}:
+                bad = bytearray(self.raw); bad[off] = value
+                with self.subTest(offset=hex(off), value=value), self.assertRaises(ValueError):
+                    check_slot(bytes(bad), APP1_SIZE, known_board=True)
+
+    def test_window_moved_or_wrong_size(self):
+        moved = self.raw[4096:] + b'\xff' * 4096          # same 16 bytes, one sector earlier
+        for data, size in ((moved, APP1_SIZE), (self.raw[4096:], APP1_SIZE - 4096), (self.raw + b'\xff' * 4096, APP1_SIZE + 4096)):
+            with self.subTest(size=size), self.assertRaises(ValueError):
+                check_slot(data, size, known_board=True)
+
+    def test_cli_board_binding(self):
+        tool = Path(__file__).resolve().parent / 'check_app1.py'
+        ent = [TABLE[i:i + 32] for i in range(0, 6 * 32, 32)]
+        moved = bytearray(ent[3]); struct.pack_into('<I', moved, 4, 0x350000)
+        with tempfile.TemporaryDirectory() as tmp:
+            t, a, pin = Path(tmp) / 'parts.bin', Path(tmp) / 'app1.bin', Path(tmp) / 'board.mac'
+            t.write_bytes(TABLE); a.write_bytes(self.raw); pin.write_text('02:00:00:00:00:08\n')
+            run = lambda *x: subprocess.run([sys.executable, '-I', str(tool), 'check', *map(str, x)], capture_output=True, text=True)
+            ok = run(t, a, '02:00:00:00:00:08', pin)
+            self.assertEqual(ok.returncode, 0, ok.stderr); self.assertIn('RECHECK-SECTOR 0x32f000', ok.stdout)
+            self.assertEqual(run(t, a, '02:00:00:00:00:08', pin).returncode, 0)
+            for args in ((t, a), (t, a, '02:00:00:00:00:09', pin), (t, a, 'not-a-mac', pin),
+                         (t, a, '02:00:00:00:00:08', Path(tmp) / 'missing')):
+                with self.subTest(args=args[2:]):
+                    self.assertNotEqual(run(*args).returncode, 0)
+            link = Path(tmp) / 'link.mac'; link.symlink_to(pin)
+            self.assertNotEqual(run(t, a, '02:00:00:00:00:08', link).returncode, 0)
+            t.write_bytes(table(ent[:3] + [bytes(moved)] + ent[4:]))   # different table
+            self.assertNotEqual(run(t, a, '02:00:00:00:00:08', pin).returncode, 0)
 
 
 if __name__ == '__main__':

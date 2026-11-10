@@ -232,8 +232,9 @@ assert word(sys.argv[2], '0x3ff5a018') & 0x30 == 0, 'secure boot enabled'
 SECURITY
     # A temporary readback directory, never mutable files inside the release package.
     # On any failure the readbacks are kept as evidence, never deleted.
+    local curdir; curdir="$(mktemp -d)"
     # shellcheck disable=SC2064 # expand now: curdir is a local of this function
-    local curdir; curdir="$(mktemp -d)"; trap "keep '$curdir' precheck-failed" EXIT
+    trap "keep '$curdir' precheck-failed" EXIT
     local cur="$curdir/partitions.bin"
     esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x8000 0xc00 "$cur" >/dev/null \
         || die "reading the board partition table failed"
@@ -247,8 +248,21 @@ SECURITY
     # shellcheck disable=SC2086 # "<offset> <size>", two arguments
     esptool --chip esp32 --port "$PORT" --after no_reset read_flash $app1 "$curdir/app1.bin" >/dev/null \
         || die "reading the entire app1 fallback slot failed"
-    "$TOOLS/venv/bin/python" -I "$REPO/tools/check_app1.py" check "$cur" "$curdir/app1.bin" \
-        || die "app1 fallback is unknown/unsafe; app-only update refused (nothing erased or repaired)"
+    local verdict
+    verdict="$("$TOOLS/venv/bin/python" -I "$REPO/tools/check_app1.py" check "$cur" "$curdir/app1.bin" \
+        "$(sed -n 's/^MAC: //p' <<<"$id")" "$TOOLS/board.mac")" \
+        || { echo "$verdict"; die "app1 fallback is unknown/unsafe; app-only update refused (nothing erased or repaired)"; }
+    echo "$verdict"
+    # The accepted known board state is re-read independently: same bytes in a second read.
+    local sector; sector="$(sed -n 's/.*RECHECK-SECTOR \(0x[0-9a-f]*\)$/\1/p' <<<"$verdict")"
+    if [ -n "$sector" ]; then
+        local abs; abs="0x$(printf %x $(( ${app1%% *} + sector )))"
+        esptool --chip esp32 --port "$PORT" --after no_reset read_flash "$abs" 0x1000 "$curdir/app1-sector.bin" >/dev/null \
+            || die "re-reading the known app1 sector failed"
+        tail -c +$((sector + 1)) "$curdir/app1.bin" | head -c 4096 | cmp -s - "$curdir/app1-sector.bin" \
+            || die "app1 sector differs between two reads; NO-GO"
+        echo "app1 sector $abs re-read: identical"
+    fi
     # Application-only is safe only with this EXACT known bootloader and app0 selection.
     esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x1000 \
         "$(wc -c < "$d/bootloader.bin" | tr -d ' ')" "$curdir/bootloader.bin" >/dev/null \
@@ -258,7 +272,7 @@ SECURITY
         || die "reading the board boot selection failed"
     cmp -s "$curdir/otadata.bin" "$d/boot_app0.bin" || die "boot selection differs from pinned app0 selection; refused"
     rm -rf "$curdir"; trap - EXIT
-    echo "PRECHECK OK ${sha:0:7}: ESP32-D0WDQ6 $mac, 8MB, exact bootloader/table/app0 selection, app1 empty or pinned RX-only; NVS untouched"
+    echo "PRECHECK OK ${sha:0:7}: ESP32-D0WDQ6 $mac, 8MB, exact bootloader/table/app0 selection, app1 empty, pinned RX-only or the exact known board state; NVS untouched"
 
 }
 
