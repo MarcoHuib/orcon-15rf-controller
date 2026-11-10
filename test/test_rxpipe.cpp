@@ -146,6 +146,14 @@ static void recovery() {
 
 int main() {
     printf("RX pipeline tests\n");
+    { // A TX/RX transition drops partial bytes but retains discovery counters.
+        rxs::Decoder d; rxs::Item it; const auto wire=wireOf(7);
+        for(size_t i=0;i<12;++i) if(d.put(wire[i])) d.noteSync(-70,1000);
+        const uint32_t bytes=d.bytes, syncs=d.syncs;
+        d.reset(); CHECK(d.bytes==bytes && d.syncs==syncs && d.buffered()==0,"TX restore preserves RX counters and discards a partial frame");
+        for(uint8_t b:wire) if(d.put(b)) d.noteSync(-60,2000);
+        CHECK(d.next(it) && numOf(it.f)==7 && it.ms==2000 && it.rssi==-60,"first complete post-TX frame has its own sync timestamp and RSSI");
+    }
     networkStalls();
     overflow();
     queueThreads();

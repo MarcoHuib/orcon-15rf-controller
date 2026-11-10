@@ -41,6 +41,10 @@ static bool      g_passiveLearn = false;   // advanced: off by default
 
 static void applyIds(uint8_t usClass, uint32_t usSerial,
                      uint8_t fanClass, uint32_t fanSerial) {
+    if (!(g_ids.fan == ramses::DeviceId(fanClass, fanSerial))) {
+        g_state.mode = Mode::Unknown; g_state.modeMs = 0;
+        g_state.remoteMode = Mode::Unknown; g_state.remoteMs = 0;
+    }
     g_ids.us = ramses::DeviceId(usClass, usSerial);
     if (fanSerial == 0) {
         g_ids.fan = ramses::DeviceId(DEV_BCAST_CLASS, DEV_BCAST_SERIAL);

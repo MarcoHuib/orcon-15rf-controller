@@ -111,7 +111,7 @@ Een verzonden aanbod kan niet worden ingetrokken. Na `cancel` loopt het venster 
 ### Ventilatie bedienen (alleen TX-builds)
 | Endpoint | Body | Succes | Fouten |
 |---|---|---|---|
-| `POST /api/remote/send` | `{"key":"away|auto|1|2|3"}` of `{"key":"timer","minutes":15|30|60}` | `202` + remote-state | `400 bad-key`/`bad-minutes`/`unknown-field`, `409 unit-not-selected`/`session-busy`, `429 too-fast`, `502 tx-failed`, `501 tx-unavailable` (RX_ONLY) |
+| `POST /api/remote/send` | `{"key":"away|auto|1|2|3"}` of `{"key":"timer","minutes":15|30|60}` | `202` + remote-state | `400 bad-key`/`bad-minutes`/`unknown-field`, `409 unit-not-selected`/`session-busy`, web-control: `409 profile-required`/`profile-protocol-unsupported`/`profile-unit-mismatch`, `429 too-fast`, `502 tx-failed`, `501 tx-unavailable` (RX_ONLY) |
 | `GET /api/remote/state` | – | `{"supported","id","key","minutes","accepted","sent","confirm","age_s","unit_mode","unit_age_s"}` | `501` op RX_ONLY |
 
 - **Vertaling, alleen server-side:** away/auto/1/2/3 gaan naar de bestaande

@@ -25,8 +25,9 @@ bool tokenEqual(const char* a, const char* b);        // constant time for equal
 // that is exactly this host.
 bool requestAllowed(const char* contentType, const char* origin, const char* host);
 // DNS-rebinding guard: the Host header must name this device (its IP, optional port) or an
-// mDNS ".local" name; a foreign domain rebound to our IP never gets the token or a POST.
+// fixed "orcon15rf.local" name; a foreign domain rebound to our IP never gets the token or a POST.
 bool hostAllowed(const char* host, const char* deviceIp);
+bool uniqueObjectKeys(const char* json, const char* const* keys, size_t nkeys);
 
 enum class St : uint8_t { Idle, Active, Done, Timeout, Cancelled };
 const char* stName(St s);
@@ -44,6 +45,8 @@ public:
     St st = St::Idle;
     uint32_t sid = 0;
     ramses::DeviceId remote;
+    ramses::DeviceId target{0,0};
+    bool targetKnown=false, targetConflict=false;
     uint8_t  step = 0;                 // index of the button expected now
     Step     got[K_N];
     Why      why = Why::None;          // last outcome for a frame of the selected remote
@@ -66,21 +69,27 @@ private:
 // ---- pairing (TX builds) ------------------------------------------------------
 // Bind request = our 1FC9 offer actually sent. RF confirmation = a 1FC9 (not RQ) from
 // another device addressed to our ID. Paired = confirmation AND the firmware learned
-// that same device as its unit.
+// that same device as its unit (legacy path) resp. our closing ack was transmitted
+// (web-control path, webctlPaired()).
 class Pair {
 public:
     static const uint32_t WINDOW_MS = 180000;   // orcon::startPairing() window
     St st = St::Idle;
     uint32_t sid = 0;
-    bool sent = false, txFailed = false, confirmed = false;
+    bool sent = false, txFailed = false, confirmed = false, ackSent = false;
     ramses::DeviceId from;
+    // Web-control pairing (txpoc backend): paired once the unit confirmed (W 1FC9 to
+    // us) AND our closing I 1FC9 ack was actually transmitted. Pass webctlPaired() as
+    // the fwPaired argument of tick()/paired()/status() on that path.
+    bool webctlPaired() const { return confirmed && ackSent; }
+    void markAckSent() { ackSent = true; }
     void start(uint32_t sid, uint32_t now) { *this = Pair(); this->sid = sid; st = St::Active; startMs_ = now; }
     void cancel() { if (st == St::Active) st = St::Cancelled; }
     static bool isBindCombo(uint8_t keyMask) { return keyMask == ((1u << K_AUTO) | (1u << K_1)); }
     void bindResult(bool ok, uint32_t now) { sent = ok; txFailed = !ok; sentMs_ = now; }
-    void onFrame(const ramses::Frame& f, const ramses::DeviceId& us);
+    void onFrame(const ramses::Frame& f, const ramses::DeviceId& us, bool strict=false);
     void tick(uint32_t now, bool fwPaired, const ramses::DeviceId& fan);
-    // "ready" | "bind_sent" | "tx_failed" | "rf_confirmed" | "paired" | st name
+    // "ready" | "bind_sent" | "tx_failed" | "rf_confirmed" | "ack_sent" | "paired" | st name
     const char* status(bool fwPaired, const ramses::DeviceId& fan) const;
     bool paired(bool fwPaired, const ramses::DeviceId& fan) const { return confirmed && fwPaired && fan == from; }
     uint32_t leftMs(uint32_t now) const;

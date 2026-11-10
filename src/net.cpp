@@ -13,6 +13,7 @@
 #endif
 #include "web_page.h"
 #include "setup_web.h"
+#include "remote_profiles.h"
 #include "house_img.h"
 
 #include <Arduino.h>
@@ -28,7 +29,7 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 #include <Preferences.h>
-#if ORCON_TX_POC
+#if ORCON_TX_POC && !ORCON_WEB_CONTROL
 #include <esp_system.h>
 #include "tx_poc_runtime.h"
 #include "tx_poc_page.h"
@@ -40,7 +41,7 @@ static WebServer    server(80);
 static WiFiClient   wifiClient;
 static PubSubClient mqtt(wifiClient);
 static Preferences  prefs;
-#if ORCON_TX_POC
+#if ORCON_TX_POC && !ORCON_WEB_CONTROL
 static txpoc::Security g_pocSecurity;
 static char g_pocBootToken[33] = "";
 static uint32_t g_pocBootMs = 0;
@@ -88,9 +89,9 @@ static void loadConfig() {
     g_ssid     = prefs.getString("ssid", WIFI_SSID);
     g_pass     = prefs.getString("pass", WIFI_PASSWORD);
     g_mqttHost = prefs.getString("mqtt", MQTT_HOST);
-    uint8_t  uc = prefs.getUInt("uc", DEV_US_CLASS);
+    uint32_t uc = prefs.getUInt("uc", DEV_US_CLASS);
     uint32_t us = prefs.getUInt("us", 0);        // 0 => never stored -> generate a unique one
-    uint8_t  fc = prefs.getUInt("fc", DEV_FAN_CLASS);
+    uint32_t fc = prefs.getUInt("fc", DEV_FAN_CLASS);
     uint32_t fs = prefs.getUInt("fs", DEV_FAN_SERIAL);
     int16_t fsv[7]; char key[4];
     for (int i = 0; i < 7; i++) { snprintf(key, sizeof(key), "f%d", i); fsv[i] = (int16_t)prefs.getInt(key, -1); }
@@ -104,7 +105,7 @@ static void loadConfig() {
 #endif
     for (int i = 0; i < 7; i++) { char rk[4]; snprintf(rk, sizeof(rk), "r%d", i); g_roomIdx[i] = prefs.getUInt(rk, 0); }
     prefs.end();
-#if ORCON_TX_POC
+#if ORCON_TX_POC && !ORCON_WEB_CONTROL
     // Only existing, fully valid NVS identities are authorized; never generate/write IDs.
     prefs.begin("orcon", true);
     uint32_t storedUc = prefs.getUInt("uc", 0), storedFc = prefs.getUInt("fc", 0);
@@ -113,8 +114,14 @@ static void loadConfig() {
     g_pocIdentityValid = storedUc > 0 && storedUc < 63 && storedFc > 0 && storedFc < 63 &&
         storedUs > 0 && storedUs <= 0x3FFFF && storedFs > 0 && storedFs <= 0x3FFFF;
 #endif
-    bool freshId = (us == 0);
-#if !ORCON_TX_POC
+#if ORCON_WEB_CONTROL
+    // Validate before narrowing NVS classes to uint8_t. RF images only use an
+    // existing identity; never silently introduce a new transmitter on first boot.
+    if (uc == 0 || uc >= 63 || us > 0x3FFFF) { uc = 0; us = 0; }
+    if (fc == 0 || fc >= 63 || fs > 0x3FFFF) { fc = 0; fs = 0; }
+#endif
+    bool freshId = (us == 0 && uc != 0);
+#if !ORCON_TX_POC || (ORCON_WEB_CONTROL && !ORCON_TX_RF_ENABLE)
     if (freshId) {                               // first boot: a unique serial from the chip ID
         us = (uint32_t)(ESP.getEfuseMac() & 0x3FFFFUL);   // 18-bit RAMSES serial space
         if (us == 0) us = 1;
@@ -674,7 +681,7 @@ static void oledDraw() {
     int fage = s.lastFanMs ? (int)((millis() - s.lastFanMs) / 1000) : -1;
     snprintf(l3, sizeof(l3), "fan %ds  CO2 %u", fage, s.co2);
     snprintf(l4, sizeof(l4), g_apMode ? "AP %s" : "%s", g_ip);
-#if ORCON_TX_POC
+#if ORCON_TX_POC && !ORCON_WEB_CONTROL
     if (!g_pocAuthenticated && g_pocBootToken[0] && uint32_t(millis() - g_pocBootMs) < 60000) {
         // Physical bootstrap only: never put this credential in HTTP, serial or NVS.
         char first[17]; memcpy(first,g_pocBootToken,16); first[16]=0;
@@ -777,7 +784,7 @@ static void wifiConnect() {
 }
 
 // ---------------------------------------------------------------------------
-#if ORCON_TX_POC
+#if ORCON_TX_POC && !ORCON_WEB_CONTROL
 static void pocToken(char out[33]) {
     uint8_t bytes[16]; esp_fill_random(bytes,sizeof(bytes));
     static const char TOKEN_HEX[]="0123456789abcdef";
@@ -785,7 +792,7 @@ static void pocToken(char out[33]) {
     out[32]=0;
 }
 static bool pocReady() {   // RX health only via the owner's atomic heartbeat
-    return g_pocIdentityValid && orcon::state().fanKnown && txpoc::validIds(orcon::ids()) && txpoc::rxReady();
+    return !ORCON_TX_RF_ENABLE && g_pocIdentityValid && orcon::state().fanKnown && txpoc::validIds(orcon::ids()) && txpoc::rxReady();
 }
 static bool pocAuthorize(bool mutation) {
     if(uint32_t(millis()-g_pocBootMs)>=600000) {
@@ -808,8 +815,8 @@ static void pocStateBody(int code) {
     txpoc::controller().tick(millis());
     const txpoc::Status& s=txpoc::controller().status();
     JsonDocument d;
-    d["firmware_mode"]="tx-poc-dryrun"; d["fw"]=FW_VERSION;
-    d["dry_run"]=true; d["rf_capable"]=false; d["rf_armed"]=false;
+    d["firmware_mode"]=ORCON_TX_RF_ENABLE?"tx-poc-rf-disabled":"tx-poc-dryrun"; d["fw"]=FW_VERSION;
+    d["dry_run"]=!ORCON_TX_RF_ENABLE; d["rf_capable"]=bool(ORCON_TX_RF_ENABLE); d["rf_armed"]=false;
     d["rf_sent"]=false; d["unit_confirmed"]=false;
     d["request"]=s.result.request.input.request; d["next_request"]=s.nextRequest;
     d["mode"]=s.result.request.input.mode; d["busy"]=s.busy; d["locked"]=s.locked;
@@ -832,6 +839,10 @@ static void pocStateBody(int code) {
 static void handlePocState() { if(pocAuthorize(false)) pocStateBody(200); }
 static void handlePocMode() {
     if(!pocAuthorize(true)) return;
+#if ORCON_TX_RF_ENABLE
+    // The old portal is explicitly dry-run. Never let it drive an RF backend.
+    server.send(501,"application/json","{\"error\":\"rf-web-control-required\"}"); return;
+#endif
     String body=server.arg("plain"); txpoc::Input input;
     if(!txpoc::parseInput(body.c_str(),body.length(),input)) {
         server.send(400,"application/json","{\"error\":\"expected-mode-1-2-3-and-request\"}"); return;
@@ -863,13 +874,36 @@ static void handlePocMode() {
     server.send(code,"application/json",response);
 }
 static void handlePocRoot() {
+#if ORCON_TX_RF_ENABLE
+    server.send(503,"text/plain","RF PoC portal disabled; use the explicit web-control firmware."); return;
+#endif
     server.sendHeader("Cache-Control","no-store"); server.sendHeader("X-Frame-Options","DENY");
     server.sendHeader("Content-Security-Policy","default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
     server.send_P(200,"text/html",TX_POC_HTML);
 }
+#endif // ORCON_TX_POC && !ORCON_WEB_CONTROL
+#if !ORCON_TX_POC || ORCON_WEB_CONTROL
+class ProfileNvs : public profiles::Storage {
+public:
+    bool read(uint8_t* out,size_t cap,size_t& len) override {
+        Preferences p;if(!p.begin("orconprofiles",false))return false;
+        if(!p.isKey("data")){len=0;p.end();return true;}
+        len=p.getBytesLength("data");
+        const bool ok=len>0&&len<=cap&&p.getBytes("data",out,len)==len;p.end();return ok;
+    }
+    bool write(const uint8_t* in,size_t len) override {
+        Preferences p;if(!p.begin("orconprofiles",false))return false;
+        const bool ok=p.putBytes("data",in,len)==len;p.end();return ok;
+    }
+};
+static ProfileNvs profileNvs;
 #endif
 void begin() {
     loadConfig();          // also applies stored device IDs via orcon::setIds
+#if !ORCON_TX_POC || ORCON_WEB_CONTROL
+    profiles::store().begin(profileNvs);
+    setupweb::restoreProfileSelection();
+#endif
     oledInit();
     wifiConnect();
 
@@ -880,7 +914,7 @@ void begin() {
     }
 #endif
 
-#if ORCON_TX_POC
+#if ORCON_TX_POC && !ORCON_WEB_CONTROL
     char csrf[33]; pocToken(g_pocBootToken); pocToken(csrf);
     if(!g_pocSecurity.begin(g_pocBootToken,csrf,millis())) g_pocBootToken[0]=0;
     memset(csrf,0,sizeof(csrf)); g_pocBootMs=millis();
@@ -892,6 +926,13 @@ void begin() {
     server.on("/api/oled",HTTP_POST,[](){ if(pocAuthorize(true)) handleOledSave(); });
     // No legacy command, ID, WiFi/config, log, setup or update routes in the PoC.
     server.onNotFound([](){ server.send(403,"application/json","{\"error\":\"route-disabled-in-poc\"}"); });
+#elif ORCON_WEB_CONTROL
+    // Wizard control + existing read-only RX monitoring. Legacy mutations stay absent.
+    setupweb::begin(server);
+    server.on("/log", HTTP_GET, handleLogPg);
+    server.on("/api/log", HTTP_GET, handleLog);
+    server.on("/api/state", HTTP_GET, handleState);
+    server.onNotFound([](){ server.send(403,"application/json","{\"error\":\"route-disabled-in-web-control\"}"); });
 #else
     setupweb::begin(server);            // "/" = setup wizard + /api/setup/*, /api/remote/*
     server.on("/dashboard", handleRoot);
@@ -955,7 +996,7 @@ void publishState() {
 }
 
 void loop() {
-#if ORCON_TX_POC
+#if ORCON_TX_POC && !ORCON_WEB_CONTROL
     g_pocSecurity.expire(millis());
 #endif
     oledTick();  // runs independently of state publishing and RF activity
@@ -969,6 +1010,17 @@ void loop() {
         orcon::clearIdsDirty();
         g_dirty = true;
     }
+#if ORCON_WEB_CONTROL
+    // Web-control pairing completed: store the learned unit once (never rewrite an
+    // existing, identical pairing), then let orcon track it like a configured unit.
+    ramses::DeviceId learned;
+    if (setupweb::takeLearnedFan(learned)) {
+        const orcon::Ids& id = orcon::ids();
+        saveIds(id.us.cls, id.us.serial, learned.cls, learned.serial);
+        orcon::setIds(id.us.cls, id.us.serial, learned.cls, learned.serial);
+        g_dirty = true;
+    }
+#endif
 #if !RX_ONLY
     if (!g_apMode) ArduinoOTA.handle();
 #endif

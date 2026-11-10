@@ -50,9 +50,40 @@ bool requestAllowed(const char* type, const char* origin, const char* host) {
 
 bool hostAllowed(const char* host, const char* ip) {
     size_t n = strcspn(host, ":");                 // without ":port"
-    if (!n) return false;
+    if (!n || (host[n] && strcmp(host + n, ":80"))) return false;
     if (strlen(ip) == n && !strncmp(host, ip, n)) return true;
-    return n > 6 && !strncmp(host + n - 6, ".local", 6);
+    return n == 15 && !strncmp(host, "orcon15rf.local", n);
+}
+
+// The JSON library accepts duplicate keys and trailing data. This bounded lexical
+// pass runs first, preserving one interpretation of a mutating API request.
+bool uniqueObjectKeys(const char* json, const char* const* keys, size_t nkeys) {
+    unsigned depth=0; uint32_t seen=0; bool began=false, done=false;
+    for (size_t i=0; json[i]; ++i) {
+        const char c=json[i];
+        if (done) { if (c!=' ' && c!='\t' && c!='\r' && c!='\n') return false; continue; }
+        if (!began) { if (c==' '||c=='\t'||c=='\r'||c=='\n') continue; if(c!='{') return false; began=true; }
+        if (c=='"') {
+            const size_t start=++i; bool escaped=false;
+            while (json[i] && json[i]!='"') {
+                if (json[i]=='\\') { escaped=true; if(!json[++i]) return false; }
+                ++i;
+            }
+            if (!json[i]) return false;
+            size_t after=i+1;
+            while(json[after]==' '||json[after]=='\t'||json[after]=='\r'||json[after]=='\n') ++after;
+            if(json[after]==':') {
+                if(depth!=1||escaped) return false; // no nested API objects/escaped aliases
+                size_t k=0;
+                for(;k<nkeys;++k) if(strlen(keys[k])==i-start && !memcmp(json+start,keys[k],i-start)) break;
+                if(k==nkeys) continue; // handler reports unknown-field
+                if(k>=32||(seen&(uint32_t(1)<<k))) return false;
+                seen|=uint32_t(1)<<k;
+            }
+        } else if(c=='{'||c=='[') ++depth;
+        else if(c=='}'||c==']') { if(!depth) return false; if(!--depth) done=true; }
+    }
+    return done;
 }
 
 const char* stName(St s) {
@@ -111,6 +142,14 @@ Why Read::onFrame(const ramses::Frame& f, uint32_t ev, uint32_t seq, uint32_t no
     why = w; whyEv = ev; whyCmd = f.cmd;
     whyMode = (f.cmd == 0x22F1 && f.len >= 2) ? f.payload[1] : 0xFF;
     if (w != Why::Accepted) return w;
+    ramses::DeviceId dest(0,0); bool haveDest=false;
+    for(unsigned i=1;i<3;++i) if(f.has_addr[i]&&!(f.addr[i]==remote)&&f.addr[i].cls>0&&f.addr[i].cls<63&&f.addr[i].serial>0) {
+        if(haveDest&&!(dest==f.addr[i]))targetConflict=true;
+        dest=f.addr[i];haveDest=true;
+    }
+    if(!haveDest)targetConflict=true;
+    else if(targetKnown&&!(target==dest))targetConflict=true;
+    else {target=dest;targetKnown=true;}
     Step& s = got[step];
     s.ev = ev; s.rssi = rssi; s.cmd = f.cmd; s.len = f.len;
     memcpy(s.pl, f.payload, f.len < sizeof(s.pl) ? f.len : sizeof(s.pl));
@@ -120,10 +159,18 @@ Why Read::onFrame(const ramses::Frame& f, uint32_t ev, uint32_t seq, uint32_t no
 }
 
 // ---- Pair ---------------------------------------------------------------------
-void Pair::onFrame(const ramses::Frame& f, const ramses::DeviceId& us) {
+void Pair::onFrame(const ramses::Frame& f, const ramses::DeviceId& us, bool strict) {
     if (st != St::Active || !sent || confirmed || f.cmd != 0x1FC9 || f.type == ramses::MsgType::RQ) return;
     if (!f.has_addr[0] || f.addr[0] == us) return;
     const bool toUs = (f.has_addr[1] && f.addr[1] == us) || (f.has_addr[2] && f.addr[2] == us);
+    if (strict) {
+        const uint32_t raw = f.addr[0].raw();
+        if (f.type != ramses::MsgType::W || f.len != 6 || f.payload[0] != 0 ||
+            f.payload[1] != 0x31 || f.payload[2] != 0xD9 ||
+            f.payload[3] != uint8_t(raw >> 16) || f.payload[4] != uint8_t(raw >> 8) ||
+            f.payload[5] != uint8_t(raw) || f.addr[0].cls == 0 || f.addr[0].cls >= 63 ||
+            f.addr[0].serial == 0) return;
+    }
     if (toUs) { confirmed = true; from = f.addr[0]; }
 }
 
@@ -138,6 +185,7 @@ const char* Pair::status(bool fwPaired, const ramses::DeviceId& fan) const {
     if (st == St::Done || (st == St::Active && paired(fwPaired, fan))) return "paired";
     if (st != St::Active) return stName(st);
     if (txFailed)  return "tx_failed";
+    if (confirmed && ackSent) return "ack_sent";
     if (confirmed) return "rf_confirmed";
     return sent ? "bind_sent" : "ready";
 }

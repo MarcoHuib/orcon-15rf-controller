@@ -7,7 +7,11 @@
 #include "orcon_log.h"
 namespace txpoc {
 constexpr uint32_t QUEUE_MS=500, OWNER_MS=100;
+// Match the proven CC1101 UART training (RF_PREAMBLE_BYTES + 2).
+constexpr unsigned TX_PREAMBLE_BYTES=8;
 constexpr uint32_t TRANSACTION_MS=1000, RATE_MS=10000;
+// Web-control admission floor. Actual RF timing/power still require measurement.
+constexpr uint32_t RATE_CTL_MS=2000;
 // Unit status window. Measured (HELTEC_V2_RX.md, measurement 2): the unit answered 16/17
 // remote presses within 300 ms and repeats ~1 s later; 3 s covers both plus RX-task lag.
 constexpr uint32_t CONFIRM_MS=3000;
@@ -17,7 +21,17 @@ constexpr uint32_t UNIT_STATE_MAX_AGE_MS=600000; // prior unit mode must be this
 constexpr uint32_t HEALTH_MAX_AGE_MS=250;    // RX-task heartbeat (one pass ~5 ms)
 bool due(uint32_t now, uint32_t deadline);
 bool validIds(const orcon::Ids& ids);
-bool makeMode04(const orcon::Ids& ids, uint8_t mode, ramses::Frame& out);
+static inline bool validId(const ramses::DeviceId& id) {
+    return id.cls>0 && id.cls<63 && id.serial>0 && id.serial<=0x3FFFF;
+}
+// One RF action per transaction: a fan-mode command, a 1FC9 bind offer or the final
+// 1FC9 ack. kind travels in the request so one owner/backend serves all three.
+enum class FrameKind : uint8_t { Mode=0, BindOffer=1, BindAck=2 };
+// 22F1 fan mode, payload 00 NN TT (NN = 0 away, 1..3, 4 auto; TT = the unit family's
+// third byte: 04 MVS-15RHBP, 07 HRC400). TT must be nonzero.
+bool makeModeCmd(const orcon::Ids& ids, uint8_t mode, uint8_t tail, ramses::Frame& out);
+// I 1FC9 us -> fan, payload 00 (the closing frame of the observed bind handshake).
+bool makeBindAck(const orcon::Ids& ids, ramses::Frame& out);
 // Source ID equal to any sender heard (rlog devices, last remote/unit) = possible clone.
 bool identityConflict(const orcon::Ids& ids, const rlog::Seen& seen, const rlog::Device* devs, size_t n);
 // RX health as ONE atomic word from the radio-owner task: heartbeat ms, bit 0 = healthy.
@@ -46,7 +60,8 @@ private:
     T item_{};
     std::atomic<bool> full_{false};
 };
-struct Request { Input input; orcon::Ids ids; uint32_t expires=0; uint8_t prior=0xFF; };
+struct Request { Input input; orcon::Ids ids; uint32_t expires=0; uint8_t prior=0xFF;
+                 uint8_t kind=(uint8_t)FrameKind::Mode; uint8_t tail=0; };
 enum class Error : uint8_t { None, Expired, RadioUnavailable, Prepare, Start, Send,
     SendTimeout, Cleanup, RxRestore, OwnerTimeout };
 const char* errorName(Error e);
@@ -74,6 +89,9 @@ public:
     virtual Completion poll(uint32_t now)=0;
     virtual bool cleanup()=0;
     virtual bool restoreRx()=0;
+    // True when a completed start/poll cycle put the frame on air (result.rfSent).
+    // The dry-run backend never does; the SX1276 packet backend does.
+    virtual bool onAir() const { return false; }
 };
 class DryRunBackend : public Backend {
 public:
@@ -108,6 +126,7 @@ enum class Admission : uint8_t { Accepted, Duplicate, Invalid, UnknownUnit, Busy
     Conflict, Unavailable, IdentityConflict, IdentityUnverified, UnitStateUnknown, Unchanged, RemoteActive };
 struct Status {
     Phase phase=Phase::Idle; Result result; uint32_t nextRequest=1; bool busy=false, locked=false;
+    uint32_t acceptedMs=0;        // when the current/open request was admitted (0 = none)
     // Main-loop observations of the selected unit, by owner-observed receive time.
     bool haveUnit=false, haveRemote=false;
     uint8_t unitMode=0xFF; uint32_t unitMs=0, remoteMs=0;
@@ -118,7 +137,16 @@ class Controller {
 public:
     explicit Controller(Exchange& ex):ex_(ex) {}
     // identityClear: identityConflict() was false for these ids.
+    // Phase-1 endpoint protocol: client-sequenced requests, 10 s rate, modes 0..4.
     Admission submit(Input,const orcon::Ids&,bool known,bool ready,bool identityClear,uint32_t now);
+    // Wizard/web control: same admission, but the server assigns the sequence and the
+    // spacing is RATE_CTL_MS. tail must be 04 or 07 (from a verified profile); anything else is Invalid.
+    Admission submitCtl(uint8_t mode,uint8_t tail,const orcon::Ids&,bool known,bool ready,
+                        bool identityClear,uint32_t now,uint32_t request=0);
+    // Pairing sends: BindOffer (ids.fan = broadcast is allowed) and BindAck (ids.fan = the
+    // unit that confirmed). Lighter admission: valid own id, RX ready, identity clear, one
+    // open transaction; the ack is exempt from the rate floor (it answers the unit's W).
+    Admission submitBind(uint8_t kind,const orcon::Ids&,bool ready,bool identityClear,uint32_t now);
     void consumeResult(uint32_t now);
     void tick(uint32_t now);
     // receivedMs: owner-observed sync time; 0 or later than now = invalid (never evidence).
@@ -126,7 +154,11 @@ public:
     const Status& status() const { return status_; }
 private:
     bool interfered() const;
+    void selectUnit(const ramses::DeviceId&);
+    ramses::DeviceId observedUnit_;
+    bool unitSelected_=false;
     void settle(Phase p) { status_.phase=p; status_.busy=false; }
+    Admission begin(Request&,uint32_t now);
     Exchange& ex_; Status status_;
     uint32_t acceptedMs_=0,lastAcceptedMs_=0;
     bool haveAccepted_=false,ownerTimedOut_=false,identityCollided_=false,priorChanged_=false;

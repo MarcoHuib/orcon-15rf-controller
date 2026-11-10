@@ -3,17 +3,23 @@
 #include <limits.h>
 namespace txpoc {
 bool due(uint32_t now,uint32_t deadline) { return (int32_t)(now-deadline)>=0; }
-static bool validId(const ramses::DeviceId& id) {
-    return id.cls>0 && id.cls<63 && id.serial>0 && id.serial<=0x3FFFF;
-}
 bool validIds(const orcon::Ids& ids) { return validId(ids.us)&&validId(ids.fan)&&!(ids.us==ids.fan); }
-bool makeMode04(const orcon::Ids& ids,uint8_t mode,ramses::Frame& out) {
-    if (!validIds(ids)||mode<1||mode>3) return false;
+bool makeModeCmd(const orcon::Ids& ids,uint8_t mode,uint8_t tail,ramses::Frame& out) {
+    if(!validIds(ids)||mode>4||(tail!=4&&tail!=7)) return false;
     ramses::Frame f;
     f.type=ramses::MsgType::I;
     f.has_addr[0]=f.has_addr[1]=true; f.has_addr[2]=false;
     f.addr[0]=ids.us; f.addr[1]=ids.fan; f.cmd=0x22F1; f.len=3;
-    f.payload[0]=0; f.payload[1]=mode; f.payload[2]=4;
+    f.payload[0]=0; f.payload[1]=mode; f.payload[2]=tail;
+    out=f; return true;
+}
+bool makeBindAck(const orcon::Ids& ids,ramses::Frame& out) {
+    if(!validId(ids.us)||!validId(ids.fan)||ids.us==ids.fan) return false;
+    ramses::Frame f;
+    f.type=ramses::MsgType::I;
+    f.has_addr[0]=f.has_addr[1]=true; f.has_addr[2]=false;
+    f.addr[0]=ids.us; f.addr[1]=ids.fan; f.cmd=0x1FC9; f.len=1;
+    f.payload[0]=0x00;                              // pairing.log: closing I 1FC9, pl=00
     out=f; return true;
 }
 // Exact two-key JSON schema, without duplicate keys, escapes, arrays, coercion,
@@ -40,7 +46,7 @@ bool parseInput(const char* json,size_t len,Input& out) {
         }
         if(p==start||(p-start>1&&json[start]=='0')) return false;
         if(keyLen==4&&!memcmp(json+key,"mode",4)&&!mode) {
-            if(value<1||value>3) return false;
+            if(value>4) return false;
             parsed.mode=(uint8_t)value; mode=true;
         } else if(keyLen==7&&!memcmp(json+key,"request",7)&&!request) {
             if(!value) return false;
@@ -82,10 +88,15 @@ const char* phaseName(Phase p) {
     return "invalid";
 }
 bool DryRunBackend::prepare(const Request& r,size_t& bytes) {
-    ramses::Frame f; uint8_t packed[64]; size_t bits=0;
-    if(!makeMode04(r.ids,r.input.mode,f)) return false;
-    bytes=ramses::encodeFrame(f,packed,sizeof(packed),6,&bits);
-    return bytes==50&&bits==400;
+    ramses::Frame f; uint8_t packed[ramses::MAX_ONAIR]; size_t bits=0;   // 1FC9 offer is ~105 B on air
+    bool ok=false;
+    if(r.kind==(uint8_t)FrameKind::Mode) ok=makeModeCmd(r.ids,r.input.mode,r.tail,f);
+    else if(r.kind==(uint8_t)FrameKind::BindOffer) { f=orcon::make1FC9_bind(r.ids); ok=true; }
+    else if(r.kind==(uint8_t)FrameKind::BindAck) ok=makeBindAck(r.ids,f);
+    if(!ok) return false;
+    bytes=ramses::encodeFrame(f,packed,sizeof(packed),TX_PREAMBLE_BYTES,&bits);
+    if(r.kind==(uint8_t)FrameKind::Mode) return bytes==53&&bits==424;
+    return bytes>0&&bits>0;
 }
 void Owner::fail(Error e) { if(result_.error==Error::None) result_.error=e; step_=Step::Cleanup; }
 void Owner::finish(Error e) { if(result_.error==Error::None) result_.error=e; step_=Step::Publish; }
@@ -116,7 +127,7 @@ void Owner::tick(uint32_t now,bool rxHealthy) {
             if(due(now,deadline_)) { fail(Error::SendTimeout); break; }
             Completion c=port_.poll(now);
             if(c==Completion::Failed) fail(Error::Send);
-            else if(c==Completion::Complete) { result_.sentMs=now; step_=Step::Cleanup; }
+            else if(c==Completion::Complete) { result_.rfSent=port_.onAir(); result_.sentMs=now; step_=Step::Cleanup; }
             break;
         }
         case Step::Cleanup:
@@ -136,8 +147,24 @@ void Owner::tick(uint32_t now,bool rxHealthy) {
     }
 }
 static bool sameIds(const orcon::Ids& a,const orcon::Ids& b) { return a.us==b.us&&a.fan==b.fan; }
+void Controller::selectUnit(const ramses::DeviceId& id) {
+    if (unitSelected_ && observedUnit_==id) return;
+    observedUnit_=id; unitSelected_=true;
+    status_.haveUnit=status_.haveRemote=false;
+    status_.unitMode=0xFF; status_.unitMs=status_.remoteMs=0;
+}
+Admission Controller::begin(Request& request,uint32_t now) {
+    if(!ex_.requests.push(request)) return Admission::Busy;
+    status_.result=Result{}; status_.result.request=request;
+    status_.phase=Phase::Queued; status_.busy=true; ++status_.nextRequest;
+    status_.acceptedMs=now;
+    acceptedMs_=lastAcceptedMs_=now; haveAccepted_=true; ownerTimedOut_=false;
+    priorChanged_=false; observed_=Phase::NotConfirmed; observedMs_=0;
+    return Admission::Accepted;
+}
 Admission Controller::submit(Input input,const orcon::Ids& ids,bool known,bool ready,bool identityClear,uint32_t now) {
-    if(!input.request||input.mode<1||input.mode>3) return Admission::Invalid;
+    if (!status_.busy) selectUnit(ids.fan);
+    if(!input.request||input.mode>4) return Admission::Invalid;
     if(!known||!validIds(ids)) return Admission::UnknownUnit;
     const Request& last=status_.result.request;
     if(haveAccepted_&&input.request==last.input.request)
@@ -153,13 +180,50 @@ Admission Controller::submit(Input input,const orcon::Ids& ids,bool known,bool r
     if(!due(now,status_.remoteMs+REMOTE_GUARD_MS)) return Admission::RemoteActive;
     if(input.request==UINT32_MAX) return Admission::Replay; // never wrap/replay IDs
     Request request; request.input=input; request.ids=ids; request.expires=now+QUEUE_MS;
-    request.prior=status_.unitMode;
-    if(!ex_.requests.push(request)) return Admission::Busy;
-    status_.result=Result{}; status_.result.request=request;
-    status_.phase=Phase::Queued; status_.busy=true; ++status_.nextRequest;
-    acceptedMs_=lastAcceptedMs_=now; haveAccepted_=true; ownerTimedOut_=false;
-    priorChanged_=false; observed_=Phase::NotConfirmed; observedMs_=0;
-    return Admission::Accepted;
+    request.prior=status_.unitMode; request.tail=0x04;
+    return begin(request,now);
+}
+Admission Controller::submitCtl(uint8_t mode,uint8_t tail,const orcon::Ids& ids,bool known,bool ready,bool identityClear,uint32_t now,uint32_t sequence) {
+    if (!status_.busy) selectUnit(ids.fan);
+    if (sequence) {
+        const Request& last=status_.result.request;
+        if (haveAccepted_ && sequence==last.input.request)
+            return last.kind==(uint8_t)FrameKind::Mode && mode==last.input.mode &&
+                   tail==last.tail && sameIds(ids,last.ids) ? Admission::Duplicate : Admission::Conflict;
+        if (sequence!=status_.nextRequest) return Admission::Replay;
+    }
+    if (status_.nextRequest==UINT32_MAX) return Admission::Replay;
+    if(mode>4||(tail!=4&&tail!=7)) return Admission::Invalid; // never guess the unit family
+    if(!known||!validIds(ids)) return Admission::UnknownUnit;
+    if(status_.busy) return Admission::Busy;
+    if(!ready||status_.locked) return Admission::Unavailable;
+    if(identityCollided_||!identityClear||(status_.haveRemote&&status_.remoteId==ids.us)) return Admission::IdentityConflict;
+    if(!status_.haveRemote) return Admission::IdentityUnverified;
+    if(haveAccepted_&&(uint32_t)(now-lastAcceptedMs_)<RATE_CTL_MS) return Admission::Limited;
+    if(!status_.haveUnit||(uint32_t)(now-status_.unitMs)>=UNIT_STATE_MAX_AGE_MS) return Admission::UnitStateUnknown;
+    if(status_.unitMode==mode) return Admission::Unchanged;
+    if(!due(now,status_.remoteMs+REMOTE_GUARD_MS)) return Admission::RemoteActive;
+    Input input; input.request=status_.nextRequest; input.mode=mode;
+    Request request; request.input=input; request.ids=ids; request.expires=now+QUEUE_MS;
+    request.prior=status_.unitMode; request.tail=tail;
+    return begin(request,now);
+}
+Admission Controller::submitBind(uint8_t kind,const orcon::Ids& ids,bool ready,bool identityClear,uint32_t now) {
+    if(kind!=(uint8_t)FrameKind::BindOffer && kind!=(uint8_t)FrameKind::BindAck) return Admission::Invalid;
+    if(!validId(ids.us)) return Admission::Invalid;              // our own id must be real
+    if(kind==(uint8_t)FrameKind::BindAck &&                       // the ack answers a specific unit
+       (!validId(ids.fan)||ids.us==ids.fan)) return Admission::Invalid;
+    // The offer is a self broadcast: ids.fan is ignored by the builder.
+    if(status_.busy) return Admission::Busy;
+    if(!ready||status_.locked) return Admission::Unavailable;
+    if(identityCollided_||!identityClear) return Admission::IdentityConflict;
+    if(kind==(uint8_t)FrameKind::BindOffer &&                     // one offer per rate window;
+       haveAccepted_&&(uint32_t)(now-lastAcceptedMs_)<RATE_CTL_MS) // the ack is exempt: it is the
+        return Admission::Limited;                                // handshake's answer, not a new action
+    Input input; input.request=status_.nextRequest; input.mode=0;
+    Request request; request.input=input; request.ids=ids; request.expires=now+QUEUE_MS;
+    request.prior=0xFF; request.kind=kind;
+    return begin(request,now);
 }
 void Controller::consumeResult(uint32_t now) {
     Result result;
@@ -174,7 +238,12 @@ void Controller::consumeResult(uint32_t now) {
     if(status_.result.error!=Error::None) settle(Phase::Failed);
     else if(!result.touched||!result.rxRestored) {   // defensive: "success" without a restore
         status_.result.error=Error::RxRestore; status_.locked=true; settle(Phase::Failed);
-    } else if(result.rfSent) { status_.phase=Phase::AwaitUnit; if(interfered()||priorChanged_) settle(Phase::Ambiguous); }
+    } else if(result.rfSent) {
+        if(result.request.kind==(uint8_t)FrameKind::Mode) {   // only mode commands await a unit report
+            status_.phase=Phase::AwaitUnit;
+            if(interfered()||priorChanged_) settle(Phase::Ambiguous);
+        } else settle(Phase::Idle);   // bind offer/ack: send done; setupflow::Pair drives the UI
+    }
     else settle(Phase::DryRunComplete);
 }
 void Controller::tick(uint32_t now) {
@@ -202,6 +271,7 @@ void Controller::onFrame(const ramses::Frame& f,uint32_t receivedMs,uint32_t now
         tick(now); // exact grace boundary: delayed dequeue is no longer evidence
     const bool timed=receivedMs!=0&&due(now,receivedMs);
     const ramses::DeviceId unit=status_.busy?status_.result.request.ids.fan:current.fan; // pinned while open
+    selectUnit(unit);
     if((f.cmd==0x22F1||f.cmd==0x22F3)&&f.type!=ramses::MsgType::RP&&toUnit(f,unit)) {
         const uint32_t at=timed?receivedMs:now;  // untimed: cannot be placed, so count it as now
         if(!status_.haveRemote||due(at,status_.remoteMs)) status_.remoteMs=at;

@@ -26,6 +26,10 @@ public:
     void noteSync(int16_t rssi, uint32_t ms);
     // Next complete, checksum-clean frame from the buffered bytes, if any.
     bool next(Item& out);
+    // Drop all buffered bytes and partial sync state. Used after an SX1276 TX burst:
+    // bytes received while the radio transmitted are echo/noise and must never be
+    // decoded. Sync counters keep counting (sequence numbers stay monotonic).
+    void reset() { base_ += len_; len_ = 0; progress_ = 0; prev_ = 0; pre_ = 0; }
     size_t  room() const { return sizeof(buf_) - len_; }
     size_t  buffered() const { return len_; }
     uint8_t lastPre() const { return ring_[(syncs - 1) % RING].pre; }   // byte before the last 00

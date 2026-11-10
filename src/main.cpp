@@ -18,7 +18,7 @@
 #include "net.h"
 #include "display.h"
 #include "orcon_log.h"
-#if !ORCON_TX_POC
+#if !ORCON_TX_POC || ORCON_WEB_CONTROL
 #include "setup_web.h"
 #endif
 
@@ -72,11 +72,14 @@ void loop() {
     // 1) drain any received RAMSES frames into the state model
 #if ORCON_TX_POC
     txpoc::controller().consumeResult(millis());
+#if ORCON_WEB_CONTROL
+    setupweb::consumeTxResults(millis());
+#endif
 #endif
     ramses::Frame f;
     while (radio::poll(f)) {
         if (orcon::onFrame(f)) net::notifyStateChanged();
-#if !ORCON_TX_POC
+#if !ORCON_TX_POC || ORCON_WEB_CONTROL
         setupweb::onFrame(f, radio::lastSeq(), (int16_t)radio::lastRssi());   // same frame, same order
 #endif
 #if ORCON_TX_POC
@@ -91,7 +94,8 @@ void loop() {
 
 #if ORCON_TX_POC
     txpoc::controller().tick(millis()); // expire only after timestamped RX queue processing
-#else
+#endif
+#if !ORCON_TX_POC || ORCON_WEB_CONTROL
     setupweb::tick(millis());           // wizard timeouts: here, never inside a GET handler
 #endif
 #if defined(RADIO_SX1276)

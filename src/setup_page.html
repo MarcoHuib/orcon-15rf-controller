@@ -9,6 +9,7 @@
 :root{font:16px system-ui,-apple-system,Segoe UI,Arial,sans-serif;color:#25223a;background:#f5f4f9}
 *{box-sizing:border-box}
 body{margin:0;padding:28px 16px;background:radial-gradient(ellipse at 50% 5%,#fff,#f4f2fa 75%)}
+input,select{font:inherit;color:inherit;border:1px solid #d9cfe4;border-radius:9px;padding:9px 10px;max-width:100%;background:#fff}label{display:block;font-size:13px;margin:8px 0 5px}#saveName,#profileSel,#editProfileName{width:100%}
 button{font:inherit;color:inherit;cursor:pointer}button:focus-visible,a:focus-visible{outline:3px solid #8942be;outline-offset:3px}
 [hidden]{display:none!important}
 .app{max-width:1080px;margin:auto;background:#fff;border:1px solid #e9e5f0;border-radius:24px;box-shadow:0 15px 55px #39304818;overflow:hidden}
@@ -80,7 +81,7 @@ h1{font-size:clamp(28px,3.8vw,43px);letter-spacing:-1.6px;line-height:1.16;margi
 <section class="panel" id="readP" hidden aria-label="Uitlezen">
 <div id="pick"><h2>Kies je afstandsbediening</h2><p>Druk op een knop van je eigen afstandsbediening en kies hem hieronder.</p>
 <div class="list" id="remotes" role="radiogroup" aria-label="Gehoorde afstandsbedieningen"></div>
-<button class="act" id="readS" disabled>Start uitlezen</button></div>
+<button class="act" id="readS" hidden disabled>Opnieuw starten</button></div>
 <div id="run" hidden>
 <div class="ph"><b id="ptext"></b><span id="pct"></span></div>
 <div class="track" role="progressbar" aria-label="Voortgang" aria-valuemin="0" aria-valuemax="6" id="prog"><div id="fill"></div></div>
@@ -88,10 +89,15 @@ h1{font-size:clamp(28px,3.8vw,43px);letter-spacing:-1.6px;line-height:1.16;margi
 <button class="sec" id="readX">Annuleren</button></div>
 <p class="msg" id="readM" role="status"></p>
 </section>
-<section class="okbox" id="doneP" hidden><h2>Alle zes knoppen ontvangen</h2><p id="doneT"></p><ol class="list" id="results"></ol><button class="act" id="again">Opnieuw uitlezen</button></section>
+<section class="okbox" id="doneP" hidden><h2>Alle zes knoppen ontvangen</h2><p id="doneT"></p><ol class="list" id="results"></ol><label for="saveName">Profielnaam</label><input id="saveName" maxlength="48" placeholder="Ventilatie woonkamer" autocomplete="off">
+<button class="act" id="saveProfile">Profiel opslaan</button><p id="profileSaveM" class="msg" role="status"></p>
+<button class="sec" id="again">Opnieuw uitlezen</button></section>
 <section class="panel" id="ctlP" hidden aria-label="Ventilatie bedienen">
-<h2>Status</h2><p id="unit"></p>
-<div class="chips"><div class="chip" id="c0"><b>Geaccepteerd</b><span>–</span></div><div class="chip" id="c1"><b>Verzonden</b><span>–</span></div><div class="chip" id="c2"><b>Bevestigd door unit</b><span>–</span></div></div>
+<label for="profileSel">Profiel</label><select id="profileSel" aria-label="Actief ventilatieprofiel"></select>
+<button class="sec" id="renameProfile">Hernoemen</button><button class="sec" id="deleteProfile">Verwijderen</button>
+<div id="profileEdit" hidden><label for="editProfileName">Nieuwe profielnaam</label><input id="editProfileName" maxlength="48" autocomplete="off"><button class="sec" id="renameProfileSave">Naam opslaan</button></div>
+<p class="msg" id="profileNote" role="status"></p><h2>Status</h2><p id="unit"></p>
+<div class="chips"><div class="chip" id="c0"><b>Geaccepteerd</b><span>–</span></div><div class="chip" id="c1"><b>Verzonden</b><span>–</span></div><div class="chip" id="c2"><b>Terugmelding unit</b><span>–</span></div></div>
 <p class="msg" id="ctlM" role="status"></p>
 </section>
 <button class="sec" id="back" hidden>← Terug</button>
@@ -104,12 +110,12 @@ h1{font-size:clamp(28px,3.8vw,43px);letter-spacing:-1.6px;line-height:1.16;margi
 (()=>{
 'use strict';
 const $=id=>document.getElementById(id),keys=[...document.querySelectorAll('[data-key]')];
-const K=['away','auto','timer','1','2','3'],NM=['Woning','Auto','Timer','Stand 1','Stand 2','Stand 3'],PA=['ready','bind_sent','rf_confirmed','tx_failed'];
+const K=['away','auto','timer','1','2','3'],NM=['Woning','Auto','Timer','Stand 1','Stand 2','Stand 3'],PA=['ready','bind_sent','rf_confirmed','ack_sent','tx_failed'];
 const MODE={away:'Afwezig',auto:'Auto',low:'Stand 1',medium:'Stand 2',high:'Stand 3',boost:'Boost'},MK={away:'away',auto:'auto',low:'1',medium:'2',high:'3'};
 const MB=['Woning','Stand 1','Stand 2','Stand 3','Auto','auto2','boost','uit'];
 const NOTX='de zender is uitgeschakeld (alleen ontvangen). Er wordt niets verzonden.';
-const ERR={offline:'Geen verbinding met de controller.','tx-unavailable':'Deze firmware kan niet zenden. Er is niets verzonden.','session-busy':'Er loopt al een andere sessie; annuleer die eerst.','no-such-session':'Deze sessie bestaat niet meer.','remote-not-heard':'Deze afstandsbediening is niet recent gehoord.','rf-unavailable':'De radio-ontvanger is niet actief.','bad-token':'Sessie verlopen: herlaad de pagina.','too-fast':'Wacht even tussen twee commando’s.','unit-not-selected':'Nog geen ventilatie-unit gekozen (Dashboard → RF log).','tx-failed':'Verzenden mislukt: er is geen pakket verzonden.','unsupported-combination':'Koppelen vereist precies Auto + 1.','already-sent':'Het koppelverzoek is al verzonden.'};
-let S=null,R=null,P=null,C=null,page='home',pick='',T=0,busy=false,rsid=0,psid=0,on=0,eo=0;const sel=new Set();
+const ERR={offline:'Geen verbinding met de controller.','tx-unavailable':'Deze firmware kan niet zenden. Er is niets verzonden.','session-busy':'Er loopt al een andere sessie of transactie; wacht even of annuleer eerst.','no-such-session':'Deze sessie bestaat niet meer.','remote-not-heard':'Deze afstandsbediening is niet recent gehoord.','rf-unavailable':'De radio-ontvanger is niet actief.','bad-token':'Sessie verlopen: herlaad de pagina.','too-fast':'Wacht even tussen twee commando’s.','unit-not-selected':'Nog geen ventilatie-unit gekozen (eerst koppelen).','tx-failed':'Verzenden mislukt: er is geen pakket verzonden.','unsupported-combination':'Koppelen vereist precies Auto + 1.','already-sent':'Het koppelverzoek is al verzonden.','identity-conflict':'De eigen zender-ID wordt op de lucht gehoord; verzenden geblokkeerd.','unit-state-unknown':'De unit meldt zijn stand niet (recent genoeg); even wachten.','unit-already-in-mode':'De unit staat al in deze stand: er is niets verzonden.','remote-active':'De fysieke afstandsbediening is net actief; even wachten.','identity-unverified':'Druk eerst op de fysieke afstandsbediening om de zenderidentiteit te controleren.','stale-request':'Een andere bediening heeft de sessie bijgewerkt; kies de stand opnieuw.','request-conflict':'Dit verzoeknummer is al voor een ander commando gebruikt.','bad-profile-name':'Gebruik een naam van maximaal 48 UTF-8-bytes, zonder spaties aan begin of einde.','profile-incomplete':'Lees eerst alle zes knoppen volledig uit.','profile-limit':'Er zijn al vier profielen. Verwijder eerst een profiel.','profile-not-found':'Dit profiel bestaat niet meer.','profile-storage-unavailable':'Profielopslag is niet beschikbaar; bestaande gegevens blijven behouden.','profile-write-failed':'Opslaan is mislukt; probeer opnieuw.','profile-protocol-unsupported':'Dit profiel mist een volledig ondersteunde knopmapping; er wordt niets verzonden.','profile-backend-unavailable':'Profielbediening vereist de web-control-firmware.','profile-required':'Kies eerst een opgeslagen profiel; zonder profiel wordt niets verzonden.','profile-unit-mismatch':'Het profiel hoort niet bij de gekozen unit; er is niets verzonden.','profile-name-taken':'Er is al een profiel met deze naam.'};
+let savedSid=0;let S=null,R=null,P=null,C=null,page='home',pick='',T=0,busy=false,rsid=0,psid=0,on=0,eo=0;const sel=new Set();
 // Follow only a session this page started or found running: an old result is never shown as current.
 const own=(x,id)=>x&&id&&x.sid===id?x:null;
 const esc=s=>String(s).replace(/[&<>"]/g,c=>'&#'+c.charCodeAt(0)+';');
@@ -123,7 +129,7 @@ try{r=await fetch(u,b===undefined?{cache:'no-store'}:{method:'POST',headers:{'Co
 try{j=await r.json()}catch(e){}
 on=1;conn();if(!r.ok)throw j.error||'http-'+r.status;return j;
 }
-function conn(){const c=$('conn'),ok=on;c.textContent=ok?(S&&S.rx_only?'Verbonden · alleen ontvangen':'Verbonden'):'Geen verbinding';c.className='tag '+(ok?'ok':'bad')}
+function conn(){const c=$('conn'),ok=on;c.textContent=ok?(S&&S.caps&&S.caps.control_supported?S.caps.simulated?'Verbonden · dry-run':'Verbonden · webbediening':S&&S.rx_only?'Verbonden · alleen ontvangen':'Verbonden'):'Geen verbinding';c.className='tag '+(ok?'ok':'bad')}
 // Poll errors clear themselves on the next good poll; an action's error stays until the next action.
 function err(t,o){eo=o;$('err').textContent=t||'';$('err').hidden=!t}
 async function poll(){
@@ -132,7 +138,7 @@ if(!document.hidden)try{
 if(!S||!(page==='read'&&R&&R.status==='active'))S=await api('/api/setup/state');
 if(page==='read'){R=await api('/api/setup/read/state');if(R.status==='active')rsid=R.sid;R=own(R,rsid);d=R&&R.status==='active'?1000:2500}
 else if(page==='pair'&&S.caps.pair_supported){P=await api('/api/setup/pair/state');if(PA.includes(P.status))psid=P.sid;P=own(P,psid);d=P&&P.status!=='ready'&&PA.includes(P.status)?2000:5000}
-else if(page==='control'&&S.caps.control_supported){C=await api('/api/remote/state');d=C.confirm==='pending'?1000:10000}
+else if(page==='control'&&S.caps.control_supported){C=await api('/api/remote/state');d=C.confirm==='pending'?1000:2500}
 if(eo)err('');
 }catch(e){err(say(e),1)}
 draw();T=setTimeout(poll,d);
@@ -145,34 +151,38 @@ const ra=!!(rd&&R&&R.status==='active'),rdone=!!(rd&&R&&R.status==='done'),pread
 $('choices').hidden=!home;$('pairP').hidden=!pr;$('readP').hidden=!rd||rdone;$('doneP').hidden=!rdone;$('ctlP').hidden=!ct;$('back').hidden=home;
 $('title').textContent=home?'Orcon installatiewizard':pr?'Afstandsbediening koppelen':rd?(rdone?'Uitlezen voltooid':'Afstandsbediening uitlezen'):'Ventilatie bedienen';
 $('sub').textContent=home?'Kies wat je wilt doen.':pr?'Koppel deze controller met je ventilatie-unit.':rd?(ra?'Druk de oranje gemarkeerde knop op je fysieke afstandsbediening in.':rdone?'Alle knoppen zijn herkend.':'Kies eerst je eigen afstandsbediening.'):'Bedien je ventilatie-unit met de virtuele afstandsbediening.';
-const no=!S?'':pr&&!c.pair_supported?'Koppelen is met deze firmware niet mogelijk: '+NOTX:ct&&!c.control_supported?'Bedienen is met deze firmware niet mogelijk: '+NOTX:rd&&!c.read_supported?'Uitlezen is met deze radio niet mogelijk.':'';
-$('notice').textContent=no;$('notice').hidden=!no;if(S)conn();
-const live=ct&&c.control_supported&&!busy,um=S&&S.unit&&S.unit.known?MK[S.unit.mode]:'';
+const no=!S?'':pr&&!c.pair_supported?'Koppelen is met deze firmware niet beschikbaar. Echte RF-pairing wacht op een volledige protocolcapture.':ct&&!c.control_supported?'Bedienen is met deze firmware niet mogelijk: '+NOTX:rd&&!c.read_supported?'Uitlezen is met deze radio niet mogelijk.':'';
+const sim=(ct&&c.control_supported||pr&&c.pair_supported)&&c.simulated;
+$('notice').textContent=sim?'DRY-RUN: commando’s doorlopen de hele keten, maar er wordt niets over RF verzonden.':no;$('notice').hidden=!(sim||no);if(S)conn();
+const f=S&&S.profiles,ap=f&&f.items.find(p=>p.id===f.active),profileOk=(!f||f.storage_ok)&&(c.profile_control_supported?!!(ap&&ap.control_mapping):!ap);
+const live=ct&&c.control_supported&&profileOk&&!busy&&!(C&&C.confirm==='pending'),um=S&&S.unit&&S.unit.known?MK[S.unit.mode]:'';
 keys.forEach((b,i)=>{const k=K[i];
 b.disabled=!(pready&&!busy||live);
 b.classList.toggle('sel',pr&&sel.has(k));
 b.classList.toggle('done',!!(rd&&R&&i<R.step)||ct&&k===um);
 b.classList.toggle('cur',!!(ra&&i===R.step));
+b.style.visibility=(i===2&&ct&&c.timer_supported===false)?'hidden':'';
 b.setAttribute('aria-pressed',String(pr&&sel.has(k)));
 });
 $('rnote').textContent=home?'Voorbeeld van de Orcon-afstandsbediening':pr?(pready?'Kies Auto en 1: ze worden samen verzonden':'Virtuele afstandsbediening'):rd?'Alleen ter weergave · knoppen niet klikbaar':live||busy?'Klik op een knop om te verzenden':'Bedienen niet beschikbaar';
-if(pr)drawPair(c);if(rd)drawRead(c,ra,rdone);if(ct)drawCtl();
+if(pr)drawPair(c);if(rd)drawRead(c,ra,rdone);if(ct){drawProfiles();drawCtl()}
 }
 function drawPair(c){
-const s=P?P.status:'idle',stage=!c.pair_supported?-1:{ready:1,bind_sent:2,rf_confirmed:2,tx_failed:2,paired:3}[s]||0,wait=s==='bind_sent'||s==='rf_confirmed';
+const s=P?(c.simulated&&P.status==='paired'?'dry_run_complete':P.status):'idle',stage=!c.pair_supported?-1:{ready:1,bind_sent:2,rf_confirmed:2,ack_sent:2,tx_failed:2,paired:3}[s]||0,wait=s==='bind_sent'||s==='rf_confirmed'||s==='ack_sent';
 for(let i=0;i<3;i++){const e=$('ps'+i);e.classList.toggle('on',i===stage);e.classList.toggle('fin',i<stage);e.querySelector('.num').textContent=i<stage?'✓':i+1}
 const a=$('pairA');
-a.textContent=!c.pair_supported?'Koppelen niet beschikbaar':s==='ready'?'Combinatie Auto + 1 verzenden':wait?'Wachten op bevestiging…':s==='paired'?'Terug naar het begin':s==='tx_failed'?'Verzenden mislukt':'De unit staat in koppelmodus';
+a.textContent=!c.pair_supported?'Koppelen niet beschikbaar':s==='ready'?'Combinatie Auto + 1 verzenden':wait?'Wachten op bevestiging…':s==='paired'||s==='dry_run_complete'?'Terug naar het begin':s==='tx_failed'?'Verzenden mislukt':'De unit staat in koppelmodus';
 a.disabled=busy||!c.pair_supported||wait||s==='tx_failed'||s==='ready'&&!(sel.size===2&&sel.has('auto')&&sel.has('1'));
 $('pairX').hidden=!PA.includes(s);
 const m=$('pairM'),left=P&&P.left_s?' Nog '+P.left_s+' s.':'';
 m.className='msg '+(s==='paired'?'okt':s==='tx_failed'||s==='timeout'?'warn':'');
-m.textContent=!c.pair_supported?'':{ready:'Er is nog niets verzonden.',bind_sent:'Koppelverzoek verzonden; nog geen bevestiging van de unit.'+left,rf_confirmed:'RF-bevestiging ontvangen; wachten tot de firmware de unit vastlegt.'+left,tx_failed:'Het koppelverzoek is niet verzonden. Annuleer en probeer opnieuw.',paired:'Gekoppeld: bevestigd door de unit en vastgelegd in de firmware.',timeout:'Geen bevestiging binnen het koppelvenster: niet gekoppeld.',cancelled:'Geannuleerd. Een verzonden verzoek kan niet worden ingetrokken.'}[s]||'Er wordt pas iets verzonden na stap 2.';
+m.textContent=!c.pair_supported?'':{dry_run_complete:'Dry-run voltooid: niets verzonden en geen koppeling opgeslagen.',ready:'Er is nog niets verzonden.',bind_sent:'Koppelverzoek verzonden; nog geen bevestiging van de unit.'+left,rf_confirmed:'RF-antwoord ontvangen; de slotbevestiging wordt verzonden.'+left,ack_sent:'Slotbevestiging verzonden; de unit wordt vastgelegd.'+left,tx_failed:'Het koppelverzoek is niet verzonden. Annuleer en probeer opnieuw.',paired:'Gekoppeld: bevestigd door de unit en vastgelegd in de firmware.',timeout:'Geen bevestiging binnen het koppelvenster: niet gekoppeld.',cancelled:'Geannuleerd. Een verzonden verzoek kan niet worden ingetrokken.'}[s]||'Er wordt pas iets verzonden na stap 2.';
 }
 function drawRead(c,ra,rdone){
 $('pick').hidden=ra;$('run').hidden=!ra;
 const m=$('readM');m.className='msg';
 if(rdone){
+$('saveProfile').disabled=busy||savedSid===R.sid||!!(S.profiles&&!S.profiles.storage_ok);$('saveProfile').textContent=savedSid===R.sid?'Profiel opgeslagen':'Profiel opslaan';
 $('doneT').textContent='Alle stappen kwamen van afstandsbediening '+mid(R.remote)+'.';
 $('results').innerHTML=R.steps.map((s,i)=>li('ok','✓',NM[i],esc(s.cmd+' '+s.pl+' · '+s.rssi+' dBm'))).join('');
 return;
@@ -180,8 +190,8 @@ return;
 if(!ra){
 const rs=S&&S.remotes||[];
 if(!rs.some(r=>r.id===pick))pick='';
-$('remotes').innerHTML=rs.map(r=>'<button class="item'+(r.id===pick?' sel':'')+'" role="radio" aria-checked="'+(r.id===pick)+'" data-id="'+esc(r.id)+'"><span class="sym">'+(r.id===pick?'✓':'·')+'</span><b>'+esc(mid(r.id))+'</b><span class="st">'+r.age_s+' s geleden · '+r.rssi+' dBm</span></button>').join('')||'<p>Nog geen afstandsbediening gehoord.</p>';
-$('readS').disabled=busy||!pick||!c.read_supported;
+$('remotes').innerHTML=rs.map((r,i)=>'<button class="item'+(r.id===pick?' sel':'')+'" role="radio" aria-checked="'+(r.id===pick)+'" data-id="'+esc(r.id)+'"><span class="sym">'+(r.id===pick?'✓':'·')+'</span><b>'+'Afstandsbediening '+(i+1)+'</b><span class="st">'+esc(mid(r.id))+' · '+r.age_s+' s geleden · '+r.rssi+' dBm</span></button>').join('')||'<p>Nog geen afstandsbediening gehoord.</p>';
+$('readS').disabled=busy||!pick||!c.read_supported;$('readS').hidden=!pick;
 m.className='msg warn';
 m.textContent=R&&R.status==='timeout'?'Tijd verstreken: geen geldige knop binnen 60 s. Start opnieuw.':R&&R.status==='cancelled'?'Uitlezen geannuleerd.':'';
 return;
@@ -196,18 +206,29 @@ if(R.rf!=='receiving'||w==='wrong-button'||w==='unknown-command')m.className='ms
 if(R.others)t+=' '+R.others+'× signaal van een ander apparaat genegeerd.';
 m.textContent=t;
 }
+function drawProfiles(){
+const f=S&&S.profiles||{items:[],active:0,storage_ok:true,limit:4},p=f.items.find(x=>x.id===f.active);
+$('profileSel').innerHTML='<option value="0">Bestaande unit (geen profiel)</option>'+f.items.map(x=>'<option value="'+x.id+'">'+esc(x.name)+'</option>').join('');
+$('profileSel').value=String(f.active);$('profileSel').disabled=busy||!f.storage_ok;
+$('renameProfile').disabled=$('deleteProfile').disabled=busy||!p||!f.storage_ok;
+$('profileNote').textContent=!f.storage_ok?'Profielopslag niet beschikbaar; bestaande gegevens blijven behouden.':p?(S.caps.profile_control_supported===false&&S.caps.control_supported?'Profielbediening vereist de web-control-firmware.':p.control_mapping?'Vijf standen herkend. Opgeslagen profiel; RF-koppeling van deze controller is afzonderlijk nodig.':'Profiel opgeslagen; geen volledig ondersteunde TX-mapping. Timer wordt niet nagezonden.'):(S&&S.caps.profile_control_supported&&S.caps.control_supported?'Kies een profiel om te bedienen. ':'')+f.items.length+' van '+f.limit+' profielen opgeslagen. Opslaan of selecteren zendt niets uit.';
+}
 function drawCtl(){
 const u=S&&S.unit,x=C&&C.id?C:null,cf=x?x.confirm:'';
-$('unit').textContent=!u||!u.known?'Geen ventilatie-unit gekozen.':'Unit '+mid(u.id)+' meldt: '+(MODE[u.mode]||'onbekend')+(u.age_s>=0?' ('+u.age_s+' s geleden)':'');
+$('unit').textContent=!u||!u.known?'Geen ventilatie-unit gekozen.':'Ventilatie-unit meldt: '+(MODE[u.mode]||'onbekend')+(u.age_s>=0?' ('+u.age_s+' s geleden)':'');
+const r=S&&S.remote_request;if(r&&r.age_s>=0&&(u.age_s<0||r.age_s<u.age_s))$('unit').textContent+=' Afstandsbediening vraagt: '+(MODE[r.mode]||'onbekend')+'.';
 const f=(i,cls,t)=>{const e=$('c'+i);e.className='chip '+cls;e.lastChild.textContent=t};
-f(0,x?'y':'',x?'✓ '+NM[K.indexOf(x.key)]+(x.minutes?' '+x.minutes+' min':''):'–');
-f(1,x?x.sent?'y':'n':'',x?x.sent?'✓ ja':'✗ nee':'–');
-f(2,cf==='confirmed'?'y':cf==='not_confirmed'?'n':'',{pending:'wacht…',confirmed:'✓ ja',not_confirmed:'✗ geen melding binnen 10 s',not_available:'n.v.t. voor timer'}[cf]||'–');
-$('ctlM').textContent=busy?'Bezig met verzenden…':x?'Laatste commando '+x.age_s+' s geleden.':'';
+f(0,x?'y':'',x?'✓ '+(x.key==='away'?'Afwezig':NM[K.indexOf(x.key)])+(x.minutes?' '+x.minutes+' min':''):'–');
+f(1,x?x.sent?'y':'n':'',x?x.sent?'✓ ja (RF)':x.simulated?'dry-run: nee':'✗ nee':'–');
+f(2,cf==='confirmed'?'y':cf==='pending'?'':cf==='not_confirmed'||cf==='unchanged'||cf==='ambiguous'||cf==='not_available'&&x&&x.simulated?'n':'',cf==='pending'?'wacht…':cf==='confirmed'?'✓ ja':cf==='observed'?'stand waargenomen (geen ontvangstbewijs)':cf==='unchanged'?'stand ongewijzigd':cf==='ambiguous'?'onduidelijk':cf==='not_confirmed'?'✗ geen tijdige standmelding':cf==='not_available'&&x&&x.simulated?'geen RF (dry-run)':cf==='not_available'?'n.v.t. voor timer':'–');
+let t=busy?'Bezig met verzenden…':x?'Laatste commando '+x.age_s+' s geleden.':'';
+if(x&&x.phase){const phases={'queued':'Verzoek wacht op verwerking','dry-run-complete':'Dry-run voltooid','await-unit-status':'Wachten op een standmelding','unit-reported-mode':'Gewenste stand waargenomen; ontvangst van ons commando niet bewezen','unchanged':'Unit meldt nog dezelfde stand','not-confirmed':'Geen tijdige standmelding','ambiguous':'Standmelding niet eenduidig','failed':'Verzenden mislukt; mogelijk gedeeltelijk uitgezonden'};if(phases[x.phase])t+=(t?' ':'')+phases[x.phase]+'.';}
+$('ctlM').textContent=t;
 }
-const send=b=>act(async()=>{C=await api('/api/remote/send',b);$('mins').hidden=true});
+const send=b=>act(async()=>{if(C&&C.next_request)b={...b,request:C.next_request};C=await api('/api/remote/send',b);$('mins').hidden=true});
 document.querySelectorAll('[data-open]').forEach(b=>b.addEventListener('click',()=>go(b.dataset.open)));
 keys.forEach(b=>b.addEventListener('click',()=>{
+if(b.disabled)return;
 const k=b.dataset.key;
 if(page==='control'){if(busy||!S||!S.caps.control_supported)return;if(k==='timer')$('mins').hidden=!$('mins').hidden;else{$('mins').hidden=true;send({key:k})}return}
 if(page!=='pair'||!P||P.status!=='ready')return;
@@ -218,15 +239,21 @@ document.querySelectorAll('[data-min]').forEach(b=>b.addEventListener('click',()
 $('pairA').addEventListener('click',()=>{
 const s=P?P.status:'idle';
 if(!S||!S.caps.pair_supported)return;
-if(s==='paired')go('home');
+if(s==='paired'||s==='dry_run_complete')go('home');
 else if(s==='ready')act(async()=>{P=await api('/api/setup/pair/press',{sid:P.sid,keys:[...sel]})});
 else act(async()=>{P=await api('/api/setup/pair/start',{});psid=P.sid;sel.clear()});
 });
 $('pairX').addEventListener('click',()=>act(async()=>{P=await api('/api/setup/pair/cancel',{sid:P.sid});sel.clear()}));
-$('remotes').addEventListener('click',e=>{const b=e.target.closest('[data-id]');if(b){pick=b.dataset.id;draw()}});
+$('remotes').addEventListener('click',e=>{const b=e.target.closest('[data-id]');if(b&&!busy){pick=b.dataset.id;act(async()=>{R=await api('/api/setup/read/start',{remote:pick});rsid=R.sid})}});
 $('readS').addEventListener('click',()=>act(async()=>{R=await api('/api/setup/read/start',{remote:pick});rsid=R.sid}));
 $('readX').addEventListener('click',()=>act(async()=>{R=await api('/api/setup/read/cancel',{sid:R.sid})}));
 $('again').addEventListener('click',()=>{R=null;rsid=0;pick='';draw();poll()});
+$('saveProfile').addEventListener('click',()=>{if(!R||R.status!=='done'||savedSid===R.sid)return;const name=$('saveName').value||'';act(async()=>{S.profiles=await api('/api/profiles/save',{sid:R.sid,name});savedSid=R.sid;$('profileSaveM').textContent='Profiel opgeslagen. Kies het bij Ventilatie bedienen.'})});
+$('profileSel').addEventListener('change',()=>{const id=Number($('profileSel').value);act(async()=>{S.profiles=await api('/api/profiles/select',{id});C=null;$('profileEdit').hidden=true})});
+$('renameProfile').addEventListener('click',()=>{const f=S&&S.profiles,p=f&&f.items.find(x=>x.id===f.active);if(p){$('editProfileName').value=p.name;$('profileEdit').hidden=false}});
+$('renameProfileSave').addEventListener('click',()=>{const id=S&&S.profiles&&S.profiles.active,name=$('editProfileName').value||'';if(id)act(async()=>{S.profiles=await api('/api/profiles/rename',{id,name});$('profileEdit').hidden=true})});
+$('deleteProfile').addEventListener('click',()=>{const id=S&&S.profiles&&S.profiles.active;if(id)act(async()=>{S.profiles=await api('/api/profiles/delete',{id});C=null;$('profileEdit').hidden=true})});
+
 $('back').addEventListener('click',()=>{
 if(page==='read'&&R&&R.status==='active')api('/api/setup/read/cancel',{sid:R.sid}).catch(()=>{});
 if(page==='pair'&&P&&PA.includes(P.status))api('/api/setup/pair/cancel',{sid:P.sid}).catch(()=>{});

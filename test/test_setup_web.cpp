@@ -1,17 +1,24 @@
-// test_setup_web.cpp — the real setup_web.cpp + orcon.cpp behind a fake WebServer and fake
-// radio. Built twice: -DRX_ONLY=1 (Heltec V2) and -DRX_ONLY=0 (TX builds).
+// test/test_setup_web.cpp — the real setup_web.cpp + orcon.cpp behind a fake WebServer and fake
+// radio. Built three ways: -DRX_ONLY=1 (Heltec V2 monitor), -DRX_ONLY=0 (TX builds), and
+// -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 -DRX_ONLY=1 (Heltec V2 web control on the txpoc layer).
 // Covers: page/gzip headers, capabilities, POST guard (token, origin, content type, size,
 // unknown fields), input validation, session conflicts, GET without side effects, RX
 // pipeline integration, pairing statuses, virtual remote statuses and RX-only refusals.
 #include <Arduino.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
+#include "config.h"
 #include "setup_web.h"
+#include "remote_profiles.h"
+#include "setup_flow.h"
 #include "setup_page.h"
 #include "orcon.h"
 #include "orcon_log.h"
 #include "ramses_radio.h"
 #include "net.h"
+#if ORCON_TX_POC
+#include "tx_poc.h"
+#endif
 #include <map>
 using namespace ramses;
 
@@ -20,6 +27,7 @@ unsigned long millis() { return g_ms; }
 void delay(unsigned long ms) { g_ms += ms; }
 static std::map<uint16_t, int> g_sent;       // frames the fake radio transmitted, per code
 static bool g_radioOk = true;
+static bool g_apModeFake = false;
 static uint32_t g_syncs = 0;
 static uint8_t g_rxState = 0;
 namespace radio {
@@ -27,7 +35,36 @@ bool sendFrame(const Frame& f) { if (RX_ONLY || !g_radioOk) return false; ++g_se
 float lastRssi() { return -61; }
 RxDiagnostics rxDiagnostics() { RxDiagnostics d; d.coreSyncHits = g_syncs; d.rxState = g_rxState; return d; }
 }
-namespace net { bool maskIds() { return true; } const char* ipAddr() { return "192.0.2.5"; } }
+namespace net { bool apMode() { return g_apModeFake; } bool maskIds() { return true; } const char* ipAddr() { return "192.0.2.5"; } }
+
+#if ORCON_TX_POC
+// Test-side stand-in for tx_poc_runtime.cpp: the real Controller/Owner with a fake RF
+// backend. loopTick() below plays the radio-owner role; "onair" emulates the RF build.
+namespace txpoc {
+static Exchange s_ex;
+static Controller s_ctl(s_ex);
+struct FakeRf : Backend {
+    int sent[3] = {0, 0, 0};                    // prepared frames per FrameKind
+    bool healthy = true, onair = false;
+    uint32_t started = 0;
+    bool prepare(const Request& r, size_t& bytes) override {
+        if (r.kind > (uint8_t)FrameKind::BindAck) return false;
+        if (r.kind == (uint8_t)FrameKind::Mode) { Frame f; if (!makeModeCmd(r.ids, r.input.mode, r.tail, f)) return false; }
+        sent[r.kind]++; bytes = 50; return true;
+    }
+    bool start(uint32_t now) override { started = now; return true; }
+    Completion poll(uint32_t) override { return Completion::Complete; }  // the test clock is manual
+    bool cleanup() override { return true; }
+    bool restoreRx() override { return healthy; }
+    bool onAir() const override { return onair; }
+};
+static FakeRf s_rf;
+static Owner s_owner(s_ex, s_rf);
+Controller& controller() { return s_ctl; }
+bool rxReady() { return g_radioOk && s_rf.healthy; }
+bool ownerBusy() { return s_owner.step() != Step::Idle; }
+}
+#endif
 
 static int failures = 0;
 #define CHECK(c,m) do{ if(!(c)){printf("  [FAIL] %s (line %d)\n",m,__LINE__);failures++;} else printf("  [ ok ] %s\n",m);}while(0)
@@ -42,6 +79,14 @@ static int call(const char* method, const char* path, const char* body = "{}", c
                 const char* type = "application/json", const char* origin = "http://192.0.2.5") {
     srv.req.clear(); srv.sent.clear(); srv.out.clear(); srv.code = 0;
     srv.host = "192.0.2.5"; srv.body = body;
+#if ORCON_TX_POC
+    if (!strcmp(path, "/api/remote/send") && !strstr(body, "request") && srv.body.length() > 1) {
+        std::string sequenced(body);
+        sequenced.pop_back();
+        sequenced += ",\"request\":" + std::to_string(txpoc::controller().status().nextRequest) + "}";
+        srv.body = sequenced.c_str();
+    }
+#endif
     if (token) srv.req["X-Orcon-Token"] = token;
     if (type) srv.req["Content-Type"] = type;
     if (origin) srv.req["Origin"] = origin;
@@ -59,14 +104,35 @@ static Frame fr(MsgType t, DeviceId src, DeviceId dst, uint16_t cmd, std::initia
     f.len = uint8_t(pl.size()); uint8_t i = 0; for (uint8_t b : pl) f.payload[i++] = b;
     return f;
 }
-// What main.cpp does for every decoded frame: orcon first, then the wizard, same order.
-static void rx(const Frame& f) { g_ms += 400; ++g_syncs; orcon::onFrame(f); setupweb::onFrame(f, g_syncs, -61); }
-static void loopTick() { setupweb::tick(g_ms); }
+// What main.cpp does for every decoded frame: orcon first, then the wizard (and the
+// txpoc controller on web-control builds), same order.
+static void rx(const Frame& f) {
+    g_ms += 400; ++g_syncs; orcon::onFrame(f); setupweb::onFrame(f, g_syncs, -61);
+#if ORCON_TX_POC
+    txpoc::controller().onFrame(f, g_ms, g_ms, orcon::ids());
+#endif
+}
+static void loopTick() {
+#if ORCON_TX_POC
+    // One call = one main-loop pass, but a txpoc transaction needs the owner to walk
+    // Prepare..Publish; run a small burst like successive loop iterations would.
+    for (int i = 0; i < 8; i++) { txpoc::s_owner.tick(g_ms, txpoc::s_rf.healthy); txpoc::controller().tick(g_ms); }
+#endif
+    setupweb::tick(g_ms);
+}
 static Frame press(uint8_t mode) { return fr(MsgType::I, REM, UNIT, 0x22F1, {0x00, mode, 0x04}); }
 
+struct ProfileMemory : profiles::Storage {
+    std::vector<uint8_t> blob;bool failWrite=false;
+    bool read(uint8_t* out,size_t cap,size_t& n)override{n=blob.size();if(n>cap)return false;if(n)memcpy(out,blob.data(),n);return true;}
+    bool write(const uint8_t* in,size_t n)override{if(failWrite)return false;blob.assign(in,in+n);return true;}
+};
+static ProfileMemory profileMemory;
 int main() {
     printf("Setup web API tests (RX_ONLY=%d)\n", RX_ONLY);
     orcon::begin(37, 404, 29, 202);
+    profiles::store().begin(profileMemory);
+    setupweb::restoreProfileSelection();
     setupweb::begin(srv);
 
     // ---- page ------------------------------------------------------------------------------
@@ -80,8 +146,15 @@ int main() {
 
     // ---- capabilities ------------------------------------------------------------------------
     CHECK(call("GET", "/api/setup/state") == 200, "GET state");
+#if ORCON_TX_POC
+    CHECK(J["rx_only"] == true && J["caps"]["tx_supported"] == true && J["caps"]["pair_supported"] == bool(!ORCON_TX_RF_ENABLE) &&
+          J["caps"]["control_supported"] == true && J["caps"]["read_supported"] == true &&
+          J["caps"]["simulated"] == bool(!ORCON_TX_RF_ENABLE) && J["caps"]["timer_supported"] == false,
+          "web-control caps: control through the txpoc layer, simulated (dry-run), five functions");
+#else
     CHECK(J["rx_only"] == bool(RX_ONLY) && J["caps"]["tx_supported"] == !RX_ONLY && J["caps"]["pair_supported"] == !RX_ONLY &&
           J["caps"]["control_supported"] == !RX_ONLY && J["caps"]["read_supported"] == true, "capabilities come from the build");
+#endif
     CHECK(J["token"] == TOKEN && J["active"] == "none" && J["unit"]["id"] == "29:000202", "token, session and selected unit reported");
     CHECK(J["remotes"].size() == 0, "no remote heard yet");
     srv.req.clear(); srv.host = "attacker.example"; srv.routes["GET /api/setup/state"](); deserializeJson(J, srv.out);
@@ -117,12 +190,27 @@ int main() {
     CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\"}") == 503 && err("rf-unavailable"), "RF down: refused");
     g_rxState = 0;
 
+    CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\",\"remote\":\"29:000303\"}") == 400 && err("bad-json"), "duplicate JSON keys rejected before interpretation");
+    CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\"}{}") == 400 && err("bad-json"), "trailing JSON object rejected");
+#if ORCON_TX_POC
+    CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\"}", TOKEN, "application/json", nullptr) == 403,
+          "web-control mutations require an Origin");
+#endif
+
+#if ORCON_TX_POC
+    g_apModeFake = true;
+    CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\"}") == 403, "setup AP refuses web-control mutations");
+    g_apModeFake = false;
+    CHECK(call("POST", "/api/remote/send", "{\"key\":\"2\",\"request\":0}") == 400 && err("bad-request"), "zero command sequence refused");
+    CHECK(call("POST", "/api/remote/send", "{\"key\":\"2\",\"request\":1.5}") == 400 && err("bad-request"), "noninteger command sequence refused");
+#endif
+
     // ---- read session through the RX pipeline -------------------------------------------------
     CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\"}") == 201 && J["status"] == "active" && J["step"] == 0,
           "start: 201 active, step 0");
     const uint32_t sid = J["sid"];
     CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\"}") == 409 && err("session-busy"), "second session refused");
-    CHECK(call("POST", "/api/setup/pair/start") == (RX_ONLY ? 501 : 409), "pairing during reading refused");
+    CHECK(call("POST", "/api/setup/pair/start") == (RX_ONLY && (!ORCON_TX_POC || ORCON_TX_RF_ENABLE) ? 501 : 409), "pairing during reading refused");
     rx(fr(MsgType::I, REM2, UNIT, 0x22F1, {0x00, 0x00, 0x04}));         // neighbour presses the right key
     rx(press(0x03));                                                    // ours, wrong key
     call("GET", "/api/setup/read/state");
@@ -131,7 +219,6 @@ int main() {
     for (int k = 0; k < 6; k++) {
         rx(modes[k] == 0xFF ? fr(MsgType::I, REM, UNIT, 0x22F3, {0x00, 0x12, 0x1E, 0x03, 0x04, 0x04, 0x04}) : press(modes[k]));
         rx(modes[k] == 0xFF ? fr(MsgType::I, REM, UNIT, 0x22F3, {0x00, 0x12, 0x1E, 0x03, 0x04, 0x04, 0x04}) : press(modes[k]));   // repeat
-        rx(fr(MsgType::I, UNIT, UNIT, 0x31D9, {0x00, 0x00, 0x01}));     // the unit answers: no evidence
         loopTick();
     }
     call("GET", "/api/setup/read/state");
@@ -139,6 +226,31 @@ int main() {
           J["steps"][0]["rssi"] == -61, "six presses -> done with commands, payloads, RSSI");
     CHECK(J["steps"][0]["ev"].as<uint32_t>() < J["steps"][5]["ev"].as<uint32_t>(), "event ids increase");
     CHECK(call("POST", "/api/setup/read/cancel", "{\"sid\":1}") == 409, "cancel of a finished session refused");
+    { const auto own=orcon::ids().us;const auto sent=g_sent;
+      char body[160];snprintf(body,sizeof(body),"{\"sid\":%u,\"name\":\"Ventilatie woonkamer\"}",unsigned(sid));
+      CHECK(call("POST","/api/profiles/save",body)==201 && J["items"].size()==1 && J["active"]==0,"finished read saved as persistent profile without selecting it");
+      const uint32_t id=J["items"][0]["id"];
+      CHECK(J["items"][0]["paired"]==false && J["items"][0]["control_mapping"]==true,"profile has five validated modes, not a pairing credential");
+      CHECK(call("POST","/api/profiles/save",body)==201 && J["items"].size()==1,"duplicate profile save does not create duplicates");
+      CHECK(profiles::store().begin(profileMemory) && profiles::store().find(id),"profile reload survives a simulated reboot");
+      snprintf(body,sizeof(body),"{\"id\":%u}",unsigned(id));
+      CHECK(call("POST","/api/profiles/select",body)==200 && J["active"]==id,"profile selected and selection persisted");
+      CHECK(orcon::ids().us==own && orcon::ids().fan==UNIT && g_sent==sent,"selection never clones remote identity or sends RF");
+      orcon::setIds(own.cls,own.serial,UNIT32.cls,UNIT32.serial);
+      { char saved[160];snprintf(saved,sizeof(saved),"{\"sid\":%u,\"name\":\"Ventilatie woonkamer\"}",unsigned(sid));
+        CHECK(call("POST","/api/profiles/save",saved)==201 && orcon::ids().fan==(RX_ONLY?UNIT:UNIT32) && g_sent==sent,
+              "saving an active profile keeps routing aligned without RF"); }
+      orcon::setIds(own.cls,own.serial,UNIT.cls,UNIT.serial);
+      profileMemory.failWrite=true;
+      CHECK(call("POST","/api/profiles/rename","{\"id\":1,\"name\":\"Keuken\"}")==503 && err("profile-write-failed"),"NVS failure is reported without false success");
+      profileMemory.failWrite=false;
+      CHECK(call("POST","/api/profiles/rename","{\"id\":1,\"name\":\"Keuken\\u0000extra\"}")==400 && err("bad-profile-name"),"embedded NUL in profile name rejected");
+      CHECK(call("POST","/api/profiles/rename","{\"id\":1,\"name\":\"Keuken\"}")==200 && J["items"][0]["name"]=="Keuken","profile renamed");
+      CHECK(call("POST","/api/profiles/delete",body)==200 && J["items"].size()==0 && J["active"]==0,"active profile deleted safely");
+      CHECK(call("POST","/api/profiles/select","{\"id\":999}")==404 && err("profile-not-found"),"missing profile refused");
+      CHECK(call("POST","/api/profiles/save","{\"sid\":999,\"name\":\"Naam\"}")==409,"profile save requires the completed session");
+    }
+
 
     // ---- GET has no side effects; timeouts only from the loop ----------------------------------
     CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\"}") == 201, "restart");
@@ -163,7 +275,128 @@ int main() {
     CHECK(call("POST", "/api/setup/read/cancel", b) == 200 && J["status"] == "cancelled", "cancel");
     CHECK(!orcon::idsDirty(), "reading never marks identities for NVS");
 
-#if RX_ONLY
+#if ORCON_TX_POC
+#if ORCON_TX_RF_ENABLE
+    CHECK(call("POST", "/api/setup/pair/start") == 501 && err("pairing-unverified"), "RF pairing blocked without complete offer capture");
+    CHECK(call("POST", "/api/setup/pair/press", "{\"sid\":1,\"keys\":[\"auto\",\"1\"]}") == 501, "RF bind press also blocked");
+    CHECK(txpoc::s_rf.sent[1] == 0 && txpoc::s_rf.sent[2] == 0, "unverified binding never reaches backend");
+    orcon::setIds(37,404,32,202);
+#else
+    // ---- web-control pairing: offer -> W 1FC9 confirm -> closing ack -> learned unit ------------
+    orcon::setIds(37, 404, 32, 0);                                     // unit not yet known
+    CHECK(call("POST", "/api/setup/pair/press", "{\"sid\":1,\"keys\":[\"auto\",\"1\"]}") == 409, "press without session refused");
+    CHECK(call("POST", "/api/setup/pair/start") == 201 && J["status"] == "ready" && J["simulated"] == true,
+          "start: ready, dry-run flagged, nothing sent yet");
+    const uint32_t ps = J["sid"];
+    auto press2 = [&](const char* keys) { char x[96]; snprintf(x, sizeof(x), "{\"sid\":%u,\"keys\":%s}", unsigned(ps), keys); return call("POST", "/api/setup/pair/press", x); };
+    CHECK(press2("[\"auto\"]") == 422 && err("unsupported-combination"), "Auto alone: 422");
+    CHECK(press2("[\"auto\",\"auto\"]") == 400 && err("bad-keys"), "duplicate key: 400");
+    CHECK(press2("[\"1\",\"auto\"]") == 200 && J["status"] == "ready" && txpoc::s_rf.sent[1] == 0,
+          "valid press: accepted, transmission still pending (async owner)");
+    loopTick();
+    call("GET", "/api/setup/pair/state");
+    CHECK(J["status"] == "dry_run_complete" && J["bind_sent"] == false && txpoc::s_rf.sent[1] == 1,
+          "dry-run offer constructed once, never claimed on air, session released");
+    CHECK(J["paired"] == false && J["rf_confirmed"] == false, "dry-run cannot pair");
+    rx(fr(MsgType::W, UNIT32, US, 0x1FC9, {0x00, 0x31, 0xD9, 0x80, 0, 0xCA}));
+    loopTick(); call("GET", "/api/setup/pair/state");
+    CHECK(J["rf_confirmed"] == false && txpoc::s_rf.sent[2] == 0, "RX after dry-run causes no ack or pairing");
+    { DeviceId learned(0,0);
+      CHECK(!setupweb::takeLearnedFan(learned), "dry-run never offers an identity for persistence"); }
+    orcon::setIds(37, 404, 32, 202); // separately configured synthetic unit
+
+#endif
+    // ---- web-control TX needs an active, verified profile: nothing is guessed ------------------
+    rx(fr(MsgType::I, REM, UNIT32, 0x22F1, {0x00, 0x01, 0x04})); rx(fr(MsgType::I, UNIT32, UNIT32, 0x31D9, {0x00, 0x00, 0x01})); g_ms += 4000;
+    CHECK(call("POST", "/api/remote/send", "{\"key\":\"2\"}") == 409 && err("profile-required") && txpoc::s_rf.sent[0] == 0,
+          "no active profile: TX refused before admission");
+    { setupflow::Read read; read.st = setupflow::St::Done; read.step = setupflow::K_N; read.remote = REM;
+      read.targetKnown = true; read.target = UNIT32;
+      for (uint8_t k = 0; k < setupflow::K_N; ++k) { read.got[k].cmd = k == setupflow::K_TIMER ? 0x22F3 : 0x22F1; read.got[k].len = k == setupflow::K_TIMER ? 7 : 3;
+                                                    read.got[k].pl[1] = setupflow::modeOfKey(k); read.got[k].pl[2] = 4; }
+      uint32_t id = 0; CHECK(profiles::store().save(read, "Woonkamer", id) == profiles::Error::None, "verified tail-04 profile stored");
+      char body[32]; snprintf(body, sizeof(body), "{\"id\":%u}", unsigned(id));
+      CHECK(call("POST", "/api/profiles/select", body) == 200 && orcon::ids().fan == UNIT32 && orcon::ids().us == US, "profile selected, own identity kept");
+      orcon::setIds(37, 404, 32, 303);                                // target drifted away from the profile
+      CHECK(call("POST", "/api/remote/send", "{\"key\":\"2\"}") == 409 && err("profile-unit-mismatch") && txpoc::s_rf.sent[0] == 0,
+            "profile unit differs from the TX target: refused");
+      orcon::setIds(37, 404, 32, 202);
+    }
+    // ---- web-control remote: five functions, dry-run then on-air correlation -------------------
+    CHECK(call("POST", "/api/remote/send", "{\"key\":\"timer\"}") == 400 && err("bad-key"), "no timer on this build");
+    CHECK(call("POST", "/api/remote/send", "{\"key\":\"timer\",\"minutes\":30}") == 400, "timer with minutes still refused");
+    CHECK(call("POST", "/api/remote/send", "{\"key\":\"1\",\"minutes\":15}") == 400 && err("bad-minutes"), "minutes only meaningful for timer");
+    CHECK(call("POST", "/api/remote/send", "{\"code\":\"22F1\",\"payload\":\"000307\"}") == 400 && err("unknown-field"),
+          "no raw RF payloads accepted");
+    rx(fr(MsgType::I, REM, UNIT32, 0x22F1, {0x00, 0x01, 0x04}));                                                   // physical remote: identity + unit state
+    rx(fr(MsgType::I, UNIT32, UNIT32, 0x31D9, {0x00, 0x00, 0x01}));
+    g_ms += 4000;                                                      // past the remote-activity guard
+    CHECK(call("POST", "/api/remote/send", "{\"key\":\"1\"}") == 409 && err("unit-already-in-mode"),
+          "unit already in stand 1: nothing sent");
+    // dry-run: the whole chain except the air interface; confirmation stays not_available.
+    CHECK(call("POST", "/api/remote/send", "{\"key\":\"2\"}") == 202 && J["accepted"] == true &&
+          J["sent"] == false && J["simulated"] == bool(!ORCON_TX_RF_ENABLE), "accepted; no send before owner work");
+    CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\"}") == 409 && err("session-busy"), "read session cannot overlap pending TX");
+    loopTick(); call("GET", "/api/remote/state");
+    CHECK(J["phase"] == "dry-run-complete" && J["confirm"] == "not_available" && J["rf_sent"] == false,
+          "dry-run never claims a send or a confirmation");
+    // on-air emulation: send completes -> the unit's own 31D9 in the window confirms.
+    txpoc::s_rf.onair = true;
+    g_ms += txpoc::RATE_CTL_MS;
+    rx(fr(MsgType::I, REM, UNIT32, 0x22F1, {0x00, 0x01, 0x04})); rx(fr(MsgType::I, UNIT32, UNIT32, 0x31D9, {0x00, 0x00, 0x01})); g_ms += 4000;
+    CHECK(call("POST", "/api/remote/send", "{\"key\":\"2\"}") == 202 && J["sent"] == false, "queued: sent only after the owner ran");
+    loopTick(); call("GET", "/api/remote/state");
+    CHECK(J["sent"] == true && J["rf_sent"] == true && J["phase"] == "await-unit-status", "RF send done, awaiting the unit");
+    rx(fr(MsgType::I, UNIT32, UNIT32, 0x31D9, {0x00, 0x00, 0x02}));
+    loopTick(); call("GET", "/api/remote/state");
+    CHECK(J["confirm"] == "pending" && J["phase"] == "await-unit-status", "a match stays provisional inside the window");
+    g_ms += txpoc::CONFIRM_MS + txpoc::EXPIRY_GRACE_MS + 1;            // the observation window ends
+    loopTick(); call("GET", "/api/remote/state");
+    CHECK(J["confirm"] == "observed" && J["unit_mode"] == "medium" && J["unit_confirmed"] == false, "matching unit mode is observed, not proof of command delivery");
+    { const uint32_t request = J["id"]; const int sent = txpoc::s_rf.sent[0];
+      char duplicate[96]; snprintf(duplicate, sizeof(duplicate), "{\"key\":\"2\",\"request\":%u}", unsigned(request));
+      CHECK(call("POST", "/api/remote/send", duplicate) == 200 && txpoc::s_rf.sent[0] == sent,
+            "duplicate HTTP request returns original result without sending again");
+      snprintf(duplicate, sizeof(duplicate), "{\"key\":\"3\",\"request\":%u}", unsigned(request));
+      CHECK(call("POST", "/api/remote/send", duplicate) == 409 && err("request-conflict"), "same sequence with different command refused");
+    }
+    // away + auto also work; a remote press during the guard is refused.
+    txpoc::s_rf.onair = false;
+    g_ms += txpoc::RATE_CTL_MS;
+    rx(fr(MsgType::I, REM, UNIT32, 0x22F1, {0x00, 0x00, 0x04}));       // physical remote to our unit
+    CHECK(call("POST", "/api/remote/send", "{\"key\":\"3\"}") == 409 && err("remote-active"), "physical remote active: wait");
+    g_ms += txpoc::REMOTE_GUARD_MS;
+    rx(fr(MsgType::I, UNIT32, UNIT32, 0x31D9, {0x00, 0x00, 0x01}));    // fresh unit state
+    CHECK(call("POST", "/api/remote/send", "{\"key\":\"3\"}") == 202, "stand 3 accepted after the guard");
+    CHECK(call("POST", "/api/remote/send", "{\"key\":\"auto\"}") == 409 && err("session-busy"),
+          "one open transaction at a time");
+    loopTick(); g_ms += txpoc::RATE_CTL_MS;
+    CHECK(call("POST", "/api/remote/send", "{\"key\":\"auto\"}") == 202 && J["key"] == "auto", "auto accepted");
+    loopTick();
+    // RX health gates admission.
+    g_radioOk = false; g_ms += txpoc::RATE_CTL_MS;
+    CHECK(call("POST", "/api/remote/send", "{\"key\":\"away\"}") == 503 && err("rf-unavailable"), "RX unhealthy: refused");
+    g_radioOk = true; g_ms += txpoc::RATE_CTL_MS;
+    rx(fr(MsgType::I, REM, UNIT32, 0x22F1, {0x00, 0x00, 0x04}));       // tail 04 learned from the remote
+    rx(fr(MsgType::I, UNIT32, UNIT32, 0x31D9, {0x00, 0x00, 0x01})); g_ms += 4000;
+    CHECK(call("POST", "/api/remote/send", "{\"key\":\"away\"}") == 202, "away accepted");
+    loopTick();
+    call("GET", "/api/remote/state");
+    CHECK(J["key"] == "away", "away tracked as last command");
+    // All five user functions traverse admission -> owner -> final API status.
+    { const char* key[] = {"away","1","2","3","auto"};
+      for (uint8_t m=0; m<5; ++m) {
+        g_ms += txpoc::RATE_CTL_MS;
+        rx(fr(MsgType::I, UNIT32, UNIT32, 0x31D9, {0x00,0x00,uint8_t((m+1)%5)}));
+        char body[48]; snprintf(body,sizeof(body),"{\"key\":\"%s\"}",key[m]);
+        CHECK(call("POST","/api/remote/send",body)==202 && txpoc::controller().status().result.request.input.mode==m,
+              "five-button API mapping preserves mode byte");
+        loopTick(); call("GET","/api/remote/state");
+        CHECK(J["key"]==key[m] && J["rf_sent"]==false && J["confirm"]=="not_available",
+              "five-button dry-run completes without claiming RF confirmation");
+      }
+    }
+#elif RX_ONLY
     // ---- RX-only: pairing and control refused, nothing reaches the radio -----------------------
     const uint32_t refused = orcon::state().txRefused;
     CHECK(call("POST", "/api/setup/pair/start") == 501 && err("tx-unavailable"), "pair start: 501 tx-unavailable");
@@ -232,7 +465,7 @@ int main() {
     CHECK(J["confirm"] == "pending", "a report from another device is no confirmation");
     rx(fr(MsgType::I, UNIT, UNIT, 0x31D9, {0x00, 0x00, 0x02}));
     call("GET", "/api/remote/state");
-    CHECK(J["confirm"] == "confirmed" && J["unit_mode"] == "medium", "unit's own 31D9 with the mode -> confirmed");
+    CHECK(J["confirm"] == "observed" && J["unit_mode"] == "medium" && J["unit_confirmed"]==false, "legacy mode observation is not causal TX confirmation");
     g_ms += 2000;
     CHECK(call("POST", "/api/remote/send", "{\"key\":\"timer\",\"minutes\":30}") == 202 && J["confirm"] == "not_available" &&
           g_sent[0x22F3] == 1, "timer: 22F3 once, no fake confirmation");
@@ -245,6 +478,38 @@ int main() {
     call("GET", "/api/remote/state");
     CHECK(J["accepted"] == true && J["sent"] == false && J["confirm"] == "none", "state: accepted, not sent");
 #endif
+
+#if ORCON_TX_POC
+    { setupflow::Read read;read.st=setupflow::St::Done;read.step=setupflow::K_N;read.remote=REM;
+      read.targetKnown=true;read.target=UNIT32;
+      for(uint8_t k=0;k<setupflow::K_N;++k){read.got[k].cmd=k==setupflow::K_TIMER?0x22F3:0x22F1;read.got[k].len=k==setupflow::K_TIMER?7:3;read.got[k].pl[1]=setupflow::modeOfKey(k);read.got[k].pl[2]=7;}
+      uint32_t id=0;CHECK(profiles::store().save(read,"Geteste familie",id)==profiles::Error::None,"captured family mapping stored");
+      char body[48];snprintf(body,sizeof(body),"{\"id\":%u}",unsigned(id));
+      CHECK(call("POST","/api/profiles/select",body)==200 && orcon::ids().us==US,"profile routes target without cloning remote");
+      rx(fr(MsgType::I,REM,UNIT32,0x22F1,{0,1,7}));rx(fr(MsgType::I,UNIT32,UNIT32,0x31D9,{0,0,1}));g_ms+=4000;
+      CHECK(call("POST","/api/remote/send","{\"key\":\"3\"}")==202 && txpoc::controller().status().result.request.tail==7,"active profile supplies its validated family byte to TX");
+      CHECK(call("POST","/api/profiles/delete",body)==409 && err("session-busy"),"profile cannot change during open TX");
+      loopTick();
+      CHECK(call("POST","/api/profiles/delete",body)==200 && J["active"]==0,"deleting active profile restores base routing");
+    }
+#endif
+
+    // Worst-case bounded state: twelve discovered remotes and four escaped names.
+    { for(uint32_t n=0;n<profiles::LIMIT;++n) {
+        setupflow::Read read;read.st=setupflow::St::Done;read.step=setupflow::K_N;read.remote=DeviceId(29,600+n);
+        for(uint8_t k=0;k<setupflow::K_N;++k){read.got[k].cmd=k==setupflow::K_TIMER?0x22F3:0x22F1;read.got[k].len=k==setupflow::K_TIMER?7:3;read.got[k].pl[1]=setupflow::modeOfKey(k);read.got[k].pl[2]=4;}
+        char name[profiles::NAME_BYTES+1];memset(name,'"',profiles::NAME_BYTES);name[0]=char('A'+n);name[profiles::NAME_BYTES]=0;uint32_t id=0;
+        CHECK(profiles::store().save(read,name,id)==profiles::Error::None,"bounded profile capacity can store escaped names");
+      }
+      for(uint32_t n=0;n<12;++n)rx(fr(MsgType::I,DeviceId(29,700+n),UNIT,0x22F1,{0,1,4}));
+      CHECK(call("GET","/api/setup/state")==200 && J["profiles"]["items"].size()==4 && J["remotes"].size()==12,
+            "full discovery and profile response fits bounded JSON buffer");
+      profileMemory.blob[0]^=1;CHECK(!profiles::store().begin(profileMemory),"corrupt profile storage fails closed");
+#if ORCON_TX_POC
+      rx(fr(MsgType::I,UNIT32,UNIT32,0x31D9,{0,0,1}));g_ms+=4000;
+      CHECK(call("POST","/api/remote/send","{\"key\":\"2\"}")==503 && err("profile-storage-unavailable"),"corrupt profile storage blocks fallback TX");
+#endif
+    }
 
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");
     return failures ? 1 : 0;

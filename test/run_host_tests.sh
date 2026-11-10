@@ -5,7 +5,8 @@
 # runtime initialization before main(), so a broken sanitizer cannot hang forever.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-OUT="$(mktemp -d)"
+OUT="${HOST_TEST_OUTPUT_DIR:-$(mktemp -d)}"
+mkdir -p "$OUT"
 CXX="${CXX:-g++}"
 read -r -a FLAGS <<<"-std=c++17 -O1 -g ${CXXFLAGS:-}"
 run() {
@@ -37,16 +38,20 @@ run rxpipe   -pthread -I src test/test_rxpipe.cpp src/rx_stream.cpp src/ramses_c
 run netcfg   -I src test/test_netcfg.cpp
 run oled     -I src test/test_oled_power.cpp
 run tx_poc   -pthread -Wall -Wextra -Werror -I src test/test_tx_poc.cpp src/tx_poc.cpp src/ramses_codec.cpp src/orcon_frames.cpp
+run profiles -Wall -Wextra -Werror -I src test/test_remote_profiles.cpp src/remote_profiles.cpp src/setup_flow.cpp
 run setup    -Wall -Wextra -Werror -I src test/test_setup.cpp src/setup_flow.cpp
-# Setup wizard HTTP glue: the real setup_web.cpp behind a fake WebServer, RX-only and TX.
-# Needs the pinned ArduinoJson that `pio run -e heltec_v2_sx1276` fetches into .pio/libdeps.
+# Setup wizard HTTP glue: the real setup_web.cpp behind a fake WebServer, RX-only, TX and
+# web-control (txpoc layer). Needs the pinned ArduinoJson that `pio run -e heltec_v2_sx1276` fetches.
 AJ=.pio/libdeps/heltec_v2_sx1276/ArduinoJson/src
-WEB="-Wall -Wextra -Werror -DARDUINOJSON_ENABLE_ARDUINO_STRING=1 -I test/shim_web -I src -I $AJ test/test_setup_web.cpp src/setup_web.cpp src/setup_flow.cpp $ORCON"
+WEB="-Wall -Wextra -Werror -DARDUINOJSON_ENABLE_ARDUINO_STRING=1 -I test/shim_web -I src -I $AJ test/test_setup_web.cpp src/setup_web.cpp src/setup_flow.cpp src/remote_profiles.cpp $ORCON"
 if [ -d "$AJ" ]; then
     run setup_web_rx -DRADIO_SX1276=1 -DRX_ONLY=1 $WEB
     run setup_web_tx -DRADIO_CC1101_ASYNC=1 -DRX_ONLY=0 $WEB
+    run setup_web_webctl -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 $WEB src/tx_poc.cpp
+    run setup_web_webctl_rf -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 -DORCON_TX_RF_ENABLE=1 $WEB src/tx_poc.cpp
 else
     echo "setup_web: NOT TESTED (no $AJ; run 'pio run -e heltec_v2_sx1276' once)"
 fi
+python3 tools/test_sx1276_tx.py
 python3 tools/gen_setup_page.py --check
 node test/test_setup_page.js | tail -1

@@ -166,6 +166,29 @@ int main() {
         Pair c; c.start(12, 0); c.cancel(); CHECK(!strcmp(c.status(false, bcast), "cancelled"), "cancel");
     }
 
+    {
+        Pair p; p.start(20,1000); p.bindResult(true,1010);
+        Frame w=fr(MsgType::W,UNIT,US,0x1FC9,{0x00,0x31,0xD9,0x74,0x00,0xCA});
+        Frame bad=w; bad.len=3; p.onFrame(bad,US,true); CHECK(!p.confirmed,"truncated bind tuple rejected");
+        bad=w; bad.type=MsgType::I; p.onFrame(bad,US,true); CHECK(!p.confirmed,"only W answers the offer");
+        bad=w; bad.payload[5]^=1; p.onFrame(bad,US,true); CHECK(!p.confirmed,"tuple identity must match sender");
+        bad=w; bad.payload[2]=0xF1; p.onFrame(bad,US,true); CHECK(!p.confirmed,"unexpected bind code rejected");
+        p.onFrame(w,US,true); CHECK(p.confirmed&&!p.webctlPaired(),"complete W is not a finished handshake");
+        p.markAckSent(); p.tick(1100,p.webctlPaired(),UNIT);
+        CHECK(p.st==St::Done&&p.webctlPaired(),"ack result settles the active session immediately");
+        Pair t; t.start(21,1000); t.bindResult(true,1010); t.cancel(); t.onFrame(w,US,true);
+        CHECK(!t.confirmed,"cancelled session ignores a late answer");
+        t.start(22,1000); t.bindResult(true,1010); t.tick(1010+Pair::WINDOW_MS,false,UNIT);
+        t.onFrame(w,US,true); CHECK(!t.confirmed,"expired session ignores a late answer");
+    }
+    { const char* const keys[]={"key","request"};
+      CHECK(uniqueObjectKeys("{\"key\":\"2\",\"request\":1}",keys,2),"unique API keys accepted");
+      CHECK(!uniqueObjectKeys("{\"key\":\"1\",\"key\":\"2\"}",keys,2),"duplicate API keys rejected");
+      CHECK(!uniqueObjectKeys("{\"key\":\"2\"}{}",keys,2),"trailing JSON rejected");
+      CHECK(!uniqueObjectKeys("{\"key\":{\"key\":\"2\"}}",keys,2),"nested API keys rejected");
+      CHECK(!hostAllowed("attacker.local","192.0.2.5"),"unrelated local hostname rejected");
+    }
+
     // ---- virtual remote command status --------------------------------------------------------
     {
         Cmd c;

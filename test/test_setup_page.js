@@ -95,7 +95,7 @@ const read = (sid, status, step, extra = {}) => ({ sid, status, step, remote: '2
         ok('control screen on RX-only: notice, keys disabled, no remote API call');
         p.$('back').click(); await flush();
         p.dom.all.find(e => e.dataset.open === 'pair').click(); await p.refresh();
-        assert.equal(p.$('pairA').disabled, true); assert.match(p.$('notice').textContent, /Koppelen is met deze firmware niet mogelijk/);
+        assert.equal(p.$('pairA').disabled, true); assert.match(p.$('notice').textContent, /Koppelen is met deze firmware niet beschikbaar/);
         p.$('pairA').click(); await flush(); assert.equal(p.posts().length, 0);
         ok('pair screen on RX-only: visibly unavailable, nothing sent');
     }
@@ -109,15 +109,14 @@ const read = (sid, status, step, extra = {}) => ({ sid, status, step, remote: '2
             'POST /api/setup/read/start': c => { rs = read(3, 'active', 0); return [201, rs]; },
         }, 'read');
         assert.equal(p.$('readP').hidden, false); assert.match(p.$('remotes').innerHTML, /29:00••01/);
-        assert.doesNotMatch(p.$('remotes').innerHTML, /29:000101<\/b>/); ok('heard remotes listed with masked IDs');
+        assert.doesNotMatch(p.$('remotes').innerHTML, /29:000101<\/b>/); assert.match(p.$('remotes').innerHTML, /<b>Afstandsbediening 1<\/b>/);ok('heard remotes named with secondary masked IDs');
         assert.equal(p.$('readS').disabled, true); ok('start disabled until a remote is chosen explicitly');
         p.$('remotes').click({ target: { closest: () => ({ dataset: { id: '29:000101' } }) } });
-        assert.equal(p.$('readS').disabled, false);
-        p.$('readS').click(); await flush();
+        await flush();
         const st = p.posts()[0];
         assert.equal(st.key, 'POST /api/setup/read/start'); assert.deepEqual(st.body, { remote: '29:000101' });
         assert.equal(st.headers['X-Orcon-Token'], 'tok123'); assert.equal(st.headers['Content-Type'], 'application/json');
-        ok('start posts the chosen remote with token + JSON content type');
+        ok('selection immediately posts the chosen remote with token + JSON content type');
         assert.ok(p.keys[0].classList.contains('cur') && !p.keys[0].classList.contains('done')); assert.ok(p.keys.every(k => k.disabled));
         ok('step 1: first key orange, all keys not clickable');
         rs = read(3, 'active', 2, { why: 'wrong-button', why_cmd: '22F1', why_mode: 3, why_ev: 8 }); await p.refresh();
@@ -147,7 +146,7 @@ const read = (sid, status, step, extra = {}) => ({ sid, status, step, remote: '2
         assert.equal(p.$('doneP').hidden, true); assert.ok(!p.keys.some(k => k.classList.contains('done')));
         ok('previous finished session is not presented as this result');
         p.$('remotes').click({ target: { closest: () => ({ dataset: { id: '29:000101' } }) } });
-        p.$('readS').click(); await flush();
+        await flush();
         p.$('readX').click(); await flush();
         assert.equal(p.posts()[1].key, 'POST /api/setup/read/cancel'); assert.match(p.$('readM').textContent, /geannuleerd/);
         assert.equal(p.$('pick').hidden, false); ok('cancel posts the session id and returns to selection');
@@ -164,7 +163,7 @@ const read = (sid, status, step, extra = {}) => ({ sid, status, step, remote: '2
             'POST /api/setup/read/start': () => [409, { error: 'session-busy' }],
         }, 'read');
         p.$('remotes').click({ target: { closest: () => ({ dataset: { id: '29:000101' } }) } });
-        p.$('readS').click(); await flush();
+        await flush();
         assert.equal(p.$('err').hidden, false); assert.match(p.$('err').textContent, /andere sessie/);
         assert.equal(p.$('run').hidden, true); assert.ok(!p.keys.some(k => k.classList.contains('cur')));
         ok('API error shown; no session presented as started');
@@ -188,7 +187,7 @@ const read = (sid, status, step, extra = {}) => ({ sid, status, step, remote: '2
         assert.match(p.$('c0').lastChild.textContent, /Stand 2/); assert.match(p.$('c1').lastChild.textContent, /ja/);
         assert.equal(p.$('c2').lastChild.textContent, 'wacht…'); ok('accepted / sent / confirmation shown separately');
         cs = { ...cs, confirm: 'not_confirmed' }; await p.refresh();
-        assert.match(p.$('c2').lastChild.textContent, /geen melding/); assert.ok(p.$('c2').classList.contains('n'));
+        assert.match(p.$('c2').lastChild.textContent, /geen tijdige standmelding/); assert.ok(p.$('c2').classList.contains('n'));
         ok('no unit report -> not confirmed (never assumed)');
         p.keys[2].click(); await flush(); assert.equal(p.$('mins').hidden, false); assert.equal(p.posts().length, 1);
         ok('Timer asks for a duration before anything is sent');
@@ -224,5 +223,95 @@ const read = (sid, status, step, extra = {}) => ({ sid, status, step, remote: '2
         assert.match(p.$('pairM').textContent, /Gekoppeld/); ok('paired only when the firmware says so');
     }
 
+    // ---- web-control build: dry-run badge, no timer, phase line, ack step -----------------------------------
+    {
+        const CAPS_WC = { rx_supported: true, tx_supported: true, read_supported: true, pair_supported: true,
+                          control_supported: true, simulated: true, timer_supported: false };
+        let cs = { supported: true, id: 0, key: '', minutes: 0, accepted: false, sent: false, confirm: 'none',
+                   age_s: 0, phase: 'idle', error: 'none', rf_sent: false, simulated: true, unit_mode: 'low', unit_age_s: 4 };
+        const p = await page({
+            'GET /api/setup/state': () => [200, state(CAPS_WC)],
+            'GET /api/remote/state': () => [200, cs],
+            'POST /api/remote/send': () => { cs = { ...cs, id: 1, key: '3', accepted: true, sent: false, confirm: 'not_available', phase: 'dry-run-complete' }; return [202, cs]; },
+        }, 'control');
+        assert.match(p.$('notice').textContent, /DRY-RUN/); ok('webctl dry-run: prominent notice, keys still work');
+        assert.equal(p.keys[2].style.visibility, 'hidden'); ok('webctl: timer button hidden (five functions only)');
+        p.keys[5].click(); await flush();
+        assert.equal(p.posts().length, 1); assert.deepEqual(p.posts()[0].body, { key: '3' });
+        assert.match(p.$('c1').lastChild.textContent, /dry-run: nee/);
+        assert.match(p.$('c2').lastChild.textContent, /geen RF \(dry-run\)/);
+        assert.match(p.$('ctlM').textContent, /Dry-run voltooid/); ok('dry-run statuses: not sent, not confirmed, phase shown');
+        let ps = { supported: true, sid: 4, status: 'ack_sent', bind_sent: true, rf_confirmed: true, ack_sent: true, paired: false, left_s: 120, simulated: true };
+        const p2 = await page({
+            'GET /api/setup/state': () => [200, state(CAPS_WC)],
+            'GET /api/setup/pair/state': () => [200, ps],
+        }, 'pair');
+        assert.match(p2.$('pairM').textContent, /Slotbevestiging verzonden/);
+        assert.equal(p2.$('pairX').hidden, false); ok('pairing: closing-ack step shown, cancel still possible');
+        ps = { ...ps, status: 'paired', paired: true }; await p2.refresh();
+        assert.match(p2.$('pairM').textContent, /Dry-run voltooid/);assert.doesNotMatch(p2.$('pairM').textContent, /Gekoppeld:/); ok('dry-run never displays a real pairing success');
+    }
+
+    {   // web-control firmware: no active profile -> nothing to send, keys stay disabled
+        const caps={...CAPS_TX,simulated:true,timer_supported:false,profile_control_supported:true};
+        let f={storage_ok:true,active:0,limit:4,items:[{id:3,name:'Woonkamer',control_mapping:true,paired:false},{id:4,name:'Zolder',control_mapping:false,paired:false}]};
+        const cs={supported:true,id:0,key:'',confirm:'none',phase:'idle',next_request:1};
+        const p=await page({
+            'GET /api/setup/state':()=>[200,state(caps,{profiles:f})],
+            'GET /api/remote/state':()=>[200,cs],
+            'POST /api/profiles/select':c=>{f={...f,active:c.body.id};return [200,f];},
+        },'control');
+        assert.ok(p.keys.every(k=>k.disabled));assert.match(p.$('profileNote').textContent,/Kies een profiel/);ok('web control without an active profile: keys disabled');
+        p.$('profileSel').value='4';p.$('profileSel').handlers.change[0]();await flush();
+        assert.ok(p.keys.every(k=>k.disabled));ok('profile without a complete mapping: keys stay disabled');
+        p.$('profileSel').value='3';p.$('profileSel').handlers.change[0]();await flush();
+        assert.ok(!p.keys[4].disabled);ok('verified active profile enables control');
+        assert.ok(!p.posts().some(x=>x.key.includes('/api/remote/send')));ok('profile selection itself sends nothing');
+    }
+    {
+        const caps={...CAPS_TX,simulated:false,timer_supported:false};
+        let cs={id:1,key:'3',sent:true,confirm:'observed',phase:'unit-reported-mode',age_s:1,next_request:2};
+        const p=await page({
+            'GET /api/setup/state':()=>[200,state(caps,{remote_request:{mode:'high',age_s:0}})],
+            'GET /api/remote/state':()=>[200,cs],
+            'POST /api/remote/send':c=>{assert.deepEqual(c.body,{key:'2',request:2});cs={id:2,key:'2',sent:false,confirm:'pending',next_request:3};return [202,cs];},
+        },'control');
+        assert.match(p.$('unit').textContent,/Afstandsbediening vraagt: Stand 3/);ok('physical remote request visible without a unit answer');
+        assert.match(p.$('c2').lastChild.textContent,/geen ontvangstbewijs/);assert.ok(!p.$('c2').classList.contains('y'));ok('matching mode observation does not claim command confirmation');
+        p.keys[4].click();await flush();assert.equal(p.posts().length,1);ok('web commands include the API sequence');
+        assert.ok(p.keys.every(k=>k.disabled));ok('pending transaction disables further commands');
+    }
+
+    {
+        let rs=read(0,'idle',0),f={storage_ok:true,active:0,limit:4,items:[]},fail=true;
+        const p=await page({
+            'GET /api/setup/state':()=>[200,state(CAPS_RX,{profiles:f})],
+            'GET /api/setup/read/state':()=>[200,rs],
+            'POST /api/setup/read/start':()=>{rs=read(41,'done',6);return [201,rs];},
+            'POST /api/profiles/save':c=>{assert.deepEqual(c.body,{sid:41,name:'Ventilatie woonkamer'});if(fail)return [503,{error:'profile-write-failed'}];f={...f,items:[{id:1,name:'Ventilatie woonkamer',control_mapping:true,paired:false}]};return [201,f];},
+        },'read');
+        p.$('remotes').click({target:{closest:()=>({dataset:{id:'29:000101'}})}});await flush();
+        assert.equal(p.$('doneP').hidden,false);assert.equal(p.$('saveProfile').textContent,'Profiel opslaan');ok('completed read offers a primary save-profile action');
+        p.$('saveName').value='Ventilatie woonkamer';p.$('saveProfile').click();await flush();
+        assert.match(p.$('err').textContent,/Opslaan is mislukt/);assert.equal(p.$('saveProfile').disabled,false);ok('storage failure remains retryable without showing success');
+        fail=false;p.$('saveProfile').click();await flush();
+        assert.match(p.$('profileSaveM').textContent,/Profiel opgeslagen/);assert.equal(p.$('saveProfile').disabled,true);ok('successful profile save is shown after server persistence');
+        assert.ok(!p.calls.some(x=>x.key.includes('/api/remote/send')));ok('profile save never sends a ventilation command');
+    }
+    {
+        let f={storage_ok:true,active:0,limit:4,items:[{id:1,name:'Woonkamer',control_mapping:true,paired:false},{id:2,name:'Slaapkamer',control_mapping:false,paired:false}]};
+        const p=await page({
+            'GET /api/setup/state':()=>[200,state(CAPS_RX,{profiles:f})],
+            'POST /api/profiles/select':c=>{f={...f,active:c.body.id};return [200,f];},
+            'POST /api/profiles/rename':c=>{assert.deepEqual(c.body,{id:1,name:'Keuken'});f={...f,items:f.items.map(x=>x.id===1?{...x,name:c.body.name}:x)};return [200,f];},
+            'POST /api/profiles/delete':c=>{assert.deepEqual(c.body,{id:1});f={...f,active:0,items:f.items.filter(x=>x.id!==1)};return [200,f];},
+        },'control');
+        assert.match(p.$('profileSel').innerHTML,/Woonkamer/);assert.match(p.$('profileSel').innerHTML,/Slaapkamer/);ok('compact selector lists multiple saved profile names');
+        p.$('profileSel').value='1';p.$('profileSel').handlers.change[0]();await flush();
+        assert.equal(p.$('profileSel').value,'1');assert.match(p.$('profileNote').textContent,/afzonderlijk nodig/);ok('profile selection follows persisted active ID without claiming pairing');
+        p.$('renameProfile').click();p.$('editProfileName').value='Keuken';p.$('renameProfileSave').click();await flush();assert.match(p.$('profileSel').innerHTML,/Keuken/);ok('profile can be renamed in place');
+        p.$('deleteProfile').click();await flush();assert.doesNotMatch(p.$('profileSel').innerHTML,/Keuken/);assert.match(p.$('profileSel').innerHTML,/Slaapkamer/);ok('deleting active profile preserves the others');
+        assert.ok(!p.calls.some(x=>x.key.includes('/api/remote/send')));ok('profile management works in RX-only firmware without any TX action');
+    }
     console.log(`setup page: ${n} checks, 0 failures`);
 })().catch(e => { console.error(e); process.exit(1); });

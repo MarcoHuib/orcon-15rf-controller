@@ -31,16 +31,18 @@ static Admission sub(Controller& c,Input in,uint32_t now,bool ready=true,bool cl
 }
 static const uint32_t T0=1000, ADMIT=T0+REMOTE_GUARD_MS+100;   // first admissible time after prime(T0)
 
+static const uint8_t MANCH[]={0xAA,0xA9,0xA6,0xA5,0x9A,0x99,0x96,0x95,0x6A,0x69,0x66,0x65,0x5A,0x59,0x56,0x55};
 static void golden() {
-    for(uint8_t mode=1;mode<=3;++mode) {
-        Frame f; CHECK(makeMode04(ids(),mode,f));
+    for(uint8_t mode=0;mode<=4;++mode) {                 // away,1,2,3,auto — the five known commands
+        Frame f; CHECK(makeModeCmd(ids(),mode,4,f));
         uint8_t expected[]={0x1C,0x74,0,0x65,0x74,0,0xCA,0x22,0xF1,3,0,mode,4,(uint8_t)(0xB3-mode)};
         uint8_t logical[96];size_t n=buildLogical(f,logical,sizeof(logical));
         CHECK(n==sizeof(expected)&&!memcmp(logical,expected,n));
+        const uint8_t csumHi=(uint8_t)(mode==4?MANCH[0x0A]:MANCH[0x0B]);   // checksum 0xB3-mode
+        const uint8_t csumLo=MANCH[mode==4?0x0F:(3-mode)];
         uint8_t wireExpected[]={0xFF,0,0x33,0x55,0x53,0xA9,0x5A,0x95,0x9A,0xAA,0xAA,0x96,0x99,
-            0x95,0x9A,0xAA,0xAA,0x5A,0x66,0xA6,0xA6,0x55,0xA9,0xAA,0xA5,0xAA,0xAA,
-            0xAA,(uint8_t)(mode==1?0xA9:mode==2?0xA6:0xA5),0xAA,0x9A,0x65,
-            (uint8_t)(mode==1?0xA6:mode==2?0xA9:0xAA),0x35};
+            0x95,0x9A,0xAA,0xAA,0x5A,MANCH[0x0A],0xA6,0xA6,0x55,0xA9,0xAA,0xA5,0xAA,0xAA,
+            0xAA,MANCH[mode],0xAA,0x9A,csumHi,csumLo,0x35};
         uint8_t wire[64];CHECK(wireFromLogical(logical,n,wire,sizeof(wire))==sizeof(wireExpected));
         CHECK(!memcmp(wire,wireExpected,sizeof(wireExpected)));
         // Independent UART bit assembly from literal wire vector, not our codec/table.
@@ -54,10 +56,20 @@ static void golden() {
         uint8_t packed[64];size_t bitlen=0;
         CHECK(encodeFrame(f,packed,sizeof(packed),6,&bitlen)==50&&bitlen==400);
         CHECK(!memcmp(expectedPacked,packed,50));
+        // Production training uses eight UART bytes like CC1101; only final
+        // idle-high padding to a full packet byte differs from the UART stream.
+        bits.clear(); for(int j=0;j<8;++j)uart(0x55); for(uint8_t b:wireExpected)uart(b);
+        CHECK(bits.size()==420); while(bits.size()%8)bits.push_back(1);
+        uint8_t production[53]={};
+        for(size_t j=0;j<bits.size();++j)production[j/8]|=uint8_t(bits[j]<<(7-j%8));
+        CHECK(encodeFrame(f,packed,sizeof(packed),TX_PREAMBLE_BYTES,&bitlen)==53&&bitlen==424);
+        CHECK(!memcmp(production,packed,53));
         Frame legacy=orcon::make22F1(ids(),(orcon::Mode)mode);CHECK(legacy.payload[2]==7);
     }
-    Frame f;CHECK(!makeMode04(ids(),0,f)&&!makeMode04(ids(),4,f));
-    orcon::Ids bad=ids();bad.fan=DeviceId(63,0x3FFFF);CHECK(!makeMode04(bad,1,f));
+    Frame f;CHECK(!makeModeCmd(ids(),5,4,f));            // only the five known commands
+    CHECK(!makeModeCmd(ids(),1,0,f));                    // tail must be explicit
+    CHECK(makeModeCmd(ids(),0,4,f)&&f.payload[1]==0);    // away is a real command now
+    orcon::Ids bad=ids();bad.fan=DeviceId(63,0x3FFFF);CHECK(!makeModeCmd(bad,1,4,f));
     bad=ids();bad.fan.serial=0;CHECK(!validIds(bad));
     bad=ids();bad.us.serial=0x40000;CHECK(!validIds(bad));
     bad=ids();bad.us.cls=64;CHECK(!validIds(bad));
@@ -65,10 +77,11 @@ static void golden() {
 }
 static void schema() {
     Input v;
-    const char* good[]={"{\"mode\":1,\"request\":1}"," { \"request\" : 42,\"mode\":3 }\n"};
+    const char* good[]={"{\"mode\":1,\"request\":1}"," { \"request\" : 42,\"mode\":3 }\n",
+                        "{\"mode\":0,\"request\":9}","{\"mode\":4,\"request\":2}"};   // away + auto
     for(auto s:good)CHECK(parseInput(s,strlen(s),v));
-    const char* bad[]={"", "{}", "[]", "null", "{\"mode\":1}","{\"mode\":0,\"request\":1}",
-        "{\"mode\":4,\"request\":1}","{\"mode\":true,\"request\":1}","{\"mode\":\"1\",\"request\":1}",
+    const char* bad[]={"", "{}", "[]", "null", "{\"mode\":1}","{\"mode\":5,\"request\":1}",
+        "{\"mode\":true,\"request\":1}","{\"mode\":\"1\",\"request\":1}",
         "{\"mode\":1.0,\"request\":1}","{\"mode\":-1,\"request\":1}","{\"mode\":01,\"request\":1}",
         "{\"mode\":1,\"request\":0}","{\"mode\":1,\"request\":4294967296}",
         "{\"mode\":1,\"mode\":2}","{\"mode\":1,\"request\":1,\"raw\":1}",
@@ -176,7 +189,7 @@ static void dryRunFaults() {
         CHECK(sub(c,input(1,2),ADMIT)==Admission::Accepted);
         for(uint32_t t=ADMIT;t<ADMIT+200;t+=5){o.tick(t,true);c.tick(t);}
         const Status& s=c.status();
-        CHECK(s.phase==Phase::DryRunComplete&&s.result.touched&&s.result.rxRestored&&!s.result.rfSent&&s.result.bytes==50);
+        CHECK(s.phase==Phase::DryRunComplete&&s.result.touched&&s.result.rxRestored&&!s.result.rfSent&&s.result.bytes==53);
         see(c,statusFrame(ids().fan,2),ADMIT+300);CHECK(c.status().phase==Phase::DryRunComplete);
     }
 }
@@ -200,7 +213,7 @@ static void transactions() {
     CHECK(c.submit(input(1,2),changed,true,true,true,A+1)==Admission::Conflict);
     for(uint32_t t=A;t<A+100;t+=5){owner.tick(t,true);c.tick(t);}
     CHECK(c.status().phase==Phase::DryRunComplete&&!c.status().busy);
-    CHECK(!c.status().result.rfSent&&c.status().result.rxRestored&&c.status().result.bytes==50);
+    CHECK(!c.status().result.rfSent&&c.status().result.rxRestored&&c.status().result.bytes==53);
     CHECK(c.status().result.request.ids.fan==ids().fan);
     CHECK(sub(c,input(2,3),A+100)==Admission::Limited);
     see(c,statusFrame(ids().fan,1),A+RATE_MS-10);                      // keep the unit state fresh
@@ -480,7 +493,99 @@ static void interleavings() {
         CHECK(f.cleanups==1&&f.restores==1);
     }
 }
+// The observed 1FC9 handshake (pairing.log): only the COMPLETE logged payloads are used
+// as fixtures — the truncated offer bytes are never reconstructed.
+static void bindHandshake() {
+    // Synthetic unit -> us, preserving the complete six-byte tuple shape.
+    orcon::Ids id; id.us=DeviceId(29,7); id.fan=DeviceId(29,9);
+    Frame w; w.type=MsgType::W; w.has_addr[0]=w.has_addr[1]=true; w.has_addr[2]=false;
+    w.addr[0]=id.fan; w.addr[1]=id.us; w.cmd=0x1FC9;
+    const uint8_t pl[]={0x00,0x31,0xD9,0x74,0x00,0x09};
+    w.len=(uint8_t)sizeof(pl); memcpy(w.payload,pl,sizeof(pl));
+    uint8_t logical[96];size_t n=buildLogical(w,logical,sizeof(logical));CHECK(n!=0);
+    uint8_t wire[64];size_t wn=wireFromLogical(logical,n,wire,sizeof(wire));CHECK(wn!=0);
+    size_t consumed=0;Frame back;CHECK(extractWireFrame(wire,wn,&consumed,back));
+    CHECK(back.type==MsgType::W&&back.cmd==0x1FC9&&back.len==6&&!memcmp(back.payload,pl,6));
+    CHECK(back.addr[0]==id.fan&&back.addr[1]==id.us);
+    // Our closing frame of that handshake: I 1FC9 us->fan, payload exactly one 0x00 byte.
+    Frame ack;CHECK(makeBindAck(id,ack));
+    CHECK(ack.type==MsgType::I&&ack.cmd==0x1FC9&&ack.len==1&&ack.payload[0]==0x00);
+    CHECK(ack.addr[0]==id.us&&ack.addr[1]==id.fan);
+    orcon::Ids bad=id;bad.fan=DeviceId(63,0x3FFFF);Frame tmp;CHECK(!makeBindAck(bad,tmp));
+    bad.fan=DeviceId(29,7);CHECK(!makeBindAck(bad,tmp));        // fan == us
+    Frame offer=orcon::make1FC9_bind(id);CHECK(offer.cmd==0x1FC9&&offer.len==24);
+}
+// Web-control admission: five commands, server-sequenced, tail passthrough, bind rules.
+static void webCtl() {
+    Exchange ex;Controller c(ex);DryRunBackend dry;dry.setRxHealthy(true);Owner o(ex,dry);
+    prime(c,T0);                                                // unit in mode 1, remote heard
+    CHECK(c.submitCtl(2,0,ids(),true,true,true,ADMIT)==Admission::Invalid);   // unknown family: never guessed
+    CHECK(c.submitCtl(2,5,ids(),true,true,true,ADMIT)==Admission::Invalid);
+    CHECK(c.submitCtl(2,4,ids(),true,true,true,ADMIT)==Admission::Accepted);
+    CHECK(c.status().result.request.tail==0x04);
+    CHECK(c.status().result.request.input.request==c.status().nextRequest-1);
+    CHECK(c.status().acceptedMs==ADMIT);
+    CHECK(c.submitCtl(3,4,ids(),true,true,true,ADMIT+1)==Admission::Busy);   // one open transaction
+    for(uint32_t t=ADMIT;t<ADMIT+200;t+=5){o.tick(t,true);c.tick(t);}
+    CHECK(c.status().phase==Phase::DryRunComplete&&!c.status().result.rfSent);
+    // A backend that really transmits opens the confirmation window.
+    {   struct Air:Fake{bool onAir()const override{return true;}} af;
+        Exchange ae;Controller ac(ae);Owner ao(ae,af);prime(ac,T0);
+        CHECK(sub(ac,input(1,2),ADMIT)==Admission::Accepted);
+        for(uint32_t t=ADMIT;t<ADMIT+200;t+=5){ao.tick(t,true);ac.tick(t);}
+        CHECK(ac.status().result.rfSent&&ac.status().phase==Phase::AwaitUnit);
+        see(ac,statusFrame(ids().fan,2),ADMIT+300);ac.tick(ADMIT+CONFIRM_MS+EXPIRY_GRACE_MS+300);
+        CHECK(ac.status().phase==Phase::UnitReported);          // full chain: send -> unit reports
+    }
+    // Learned unit-family tail (e.g. 07 HRC400) is used verbatim.
+    const uint32_t P2=ADMIT+5000;prime(c,P2,1);
+    const uint32_t A2=P2+REMOTE_GUARD_MS;
+    CHECK(c.submitCtl(3,7,ids(),true,true,true,A2)==Admission::Accepted);
+    CHECK(c.status().result.request.tail==7);
+    for(uint32_t t=A2;t<A2+200;t+=5){o.tick(t,true);c.tick(t);}
+    // 2 s web-control spacing; away(0) is admitted like any other command.
+    CHECK(c.submitCtl(0,4,ids(),true,true,true,A2+RATE_CTL_MS-1)==Admission::Limited);
+    const uint32_t A3=A2+RATE_CTL_MS;prime(c,A3-REMOTE_GUARD_MS,4);   // unit now in auto
+    CHECK(c.submitCtl(4,4,ids(),true,true,true,A3)==Admission::Unchanged);
+    const uint32_t A4=A3+RATE_CTL_MS;prime(c,A4-REMOTE_GUARD_MS,1);
+    CHECK(c.submitCtl(0,4,ids(),true,true,true,A4)==Admission::Accepted);
+    CHECK(c.status().result.request.input.mode==0);
+    for(uint32_t t=A4;t<A4+200;t+=5){o.tick(t,true);c.tick(t);}
+    CHECK(c.status().phase==Phase::DryRunComplete);
+    // Bind admission: offer needs only a real own id (fan may be broadcast); the ack
+    // needs the confirming unit; the offer has the 2 s floor, the ack is exempt.
+    Exchange bx;Controller bc(bx);DryRunBackend bd;bd.setRxHealthy(true);Owner bo(bx,bd);
+    orcon::Ids noFan;noFan.us=ids().us;noFan.fan=DeviceId(63,0x3FFFF);
+    CHECK(bc.submitBind((uint8_t)FrameKind::BindOffer,noFan,true,true,5000)==Admission::Accepted);
+    CHECK(bc.submitBind((uint8_t)FrameKind::BindOffer,noFan,true,true,5000)==Admission::Busy);
+    for(uint32_t t=5000;t<5200;t+=5){bo.tick(t,true);bc.tick(t);}
+    CHECK(bc.status().phase==Phase::DryRunComplete&&!bc.status().result.rfSent);
+    CHECK(bc.submitBind((uint8_t)FrameKind::BindOffer,noFan,true,true,5300)==Admission::Limited);
+    orcon::Ids withFan;withFan.us=ids().us;withFan.fan=ids().fan;
+    CHECK(bc.submitBind((uint8_t)FrameKind::BindOffer,withFan,true,true,5300)==Admission::Limited);
+    CHECK(bc.submitBind((uint8_t)FrameKind::BindAck,withFan,true,true,5350)==Admission::Accepted);  // exempt
+    CHECK(bc.submitBind((uint8_t)FrameKind::BindAck,noFan,true,true,5400)==Admission::Invalid);     // fan still bcast
+    CHECK(bc.submitBind(9,noFan,true,true,5400)==Admission::Invalid);                              // unknown kind
+    orcon::Ids noUs;noUs.us=DeviceId(0,0);noUs.fan=ids().fan;
+    CHECK(bc.submitBind((uint8_t)FrameKind::BindOffer,noUs,true,true,5400)==Admission::Invalid);
+    for(uint32_t t=5350;t<5600;t+=5){bo.tick(t,true);bc.tick(t);}
+    CHECK(bc.status().phase==Phase::DryRunComplete);
+}
 static void independentRegressions() {
+    { Exchange ex; Controller c(ex); prime(c,T0);
+      orcon::Ids other=ids(); other.fan=NEIGHBOUR_UNIT;
+      CHECK(c.submitCtl(2,4,other,true,true,true,ADMIT)==Admission::IdentityUnverified);
+      CHECK(!c.status().haveUnit&&!c.status().haveRemote);
+      see(c,remoteFrame(1,false,0x22F1,other.fan),ADMIT);
+      CHECK(!c.status().haveUnit);
+    }
+    { Exchange ex;Controller c(ex);prime(c,T0);
+      CHECK(c.submitCtl(2,4,ids(),true,true,true,ADMIT,1)==Admission::Accepted);
+      CHECK(c.submitCtl(2,4,ids(),true,true,true,ADMIT+1,1)==Admission::Duplicate);
+      CHECK(c.submitCtl(3,4,ids(),true,true,true,ADMIT+1,1)==Admission::Conflict);
+      CHECK(c.submitCtl(2,4,ids(),true,true,true,ADMIT+1,9)==Admission::Replay);
+    }
+
     { Exchange ex; Controller c(ex); armSent(ex,c);
       see(c,statusFrame(ids().fan,2),RESTORED+100);
       CHECK(c.status().phase==Phase::AwaitUnit&&c.status().busy);
@@ -533,5 +638,5 @@ static void independentRegressions() {
       c.tick(r.sentMs+CONFIRM_MS+EXPIRY_GRACE_MS);CHECK(c.status().phase==Phase::UnitReported);
     }
 }
-int main(){independentRegressions();golden();schema();faults();ownerTrace();dryRunFaults();transactions();correlation();identity();health();security();interleavings();concurrency();
+int main(){independentRegressions();golden();bindHandshake();webCtl();schema();faults();ownerTrace();dryRunFaults();transactions();correlation();identity();health();security();interleavings();concurrency();
     printf("TX-PoC: %d checks, %d failures\n",checks,fails);return fails?1:0;}

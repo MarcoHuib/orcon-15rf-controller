@@ -36,7 +36,8 @@ assert radio.count('txpoc::serviceOwner(')==1
 owner=radio.split('static void rxTask(void*) {',1)[1].split('\nbool begin()',1)[0]
 assert 'txpoc::serviceOwner(' in owner
 net=Path('src/net.cpp').read_text()
-routes,legacy=net.split('    char csrf[33]; pocToken(',1)[1].split('\n#else\n',1)
+routes,rest=net.split('    char csrf[33]; pocToken(',1)[1].split('\n#elif ORCON_WEB_CONTROL\n',1)
+webctl,legacy=rest.split('\n#else\n',1)
 legacy=legacy.split('#endif // ORCON_TX_POC routes',1)[0]
 on=lambda block:set(re.findall(r'server\.on\(\s*"([^"]+)"',block))
 # Static route proof (runtime 403 needs hardware): exactly these PoC routes, every legacy one absent.
@@ -44,13 +45,20 @@ assert on(routes)=={'/','/api/tx-poc/state','/api/tx-poc/mode','/api/oled'},on(r
 legacy_routes=on(legacy); assert {'/api/cmd','/api/ids','/api/wifi','/api/log','/update','/api/state'}<=legacy_routes
 assert not (legacy_routes-{'/','/api/oled'})&on(routes)
 assert 'server.onNotFound([](){ server.send(403,' in routes
+assert on(webctl)=={'/log','/api/log','/api/state'},on(webctl)
+assert 'setupweb::begin(server)' in webctl
+assert 'r.kind != (uint8_t)FrameKind::Mode' in Path('src/tx_poc_runtime.cpp').read_text()
+assert 'n > 64' in radio and 'g_radio.packetMode()' in radio
 assert 'pocAuthorize(true)' in routes.split('"/api/oled"',1)[1].split('\n',1)[0]
 ready=net.split('static bool pocReady()',1)[1].split('\n}',1)[0]
 assert 'txpoc::rxReady()' in ready and 'rxDiagnostics' not in ready  # RX health only via the atomic heartbeat
 runtime=Path('src/tx_poc_runtime.cpp').read_text()
-assert 'health.store(packHealth(now,rxHealthy),std::memory_order_release)' in runtime
+assert re.search(r'health.store\(packHealth\(now,\s*rxHealthy\),\s*std::memory_order_release\)',runtime)
 assert 'health.load(std::memory_order_acquire)' in runtime
 assert 'pocAuthorize(true)' in net.split('static void handlePocMode()',1)[1].split('\n}',1)[0]
+assert '#if ORCON_TX_RF_ENABLE' in net.split('static void handlePocMode()',1)[1].split('String body=',1)[0]
+assert 'rf-web-control-required' in net
+assert '#if ORCON_TX_RF_ENABLE' in net.split('static void handlePocRoot()',1)[1].split('server.sendHeader',1)[0]
 assert 'radio::sendFrame' not in net.split('static void handlePocMode()',1)[1].split('\n}',1)[0]
 main=Path('src/main.cpp').read_text()
 assert '#if !RX_ONLY\n    orcon::tick(millis());\n#endif' in main
@@ -65,15 +73,17 @@ assert '-DORCON_TX_RF_ENABLE=1' in ini['env:heltec_v2_sx1276_tx_poc']['build_fla
 
 base=['RADIO_SX1276=1','BOARD_HELTEC_V2=1']
 valid=[('rx-default',base,{'RX_ONLY':'1','ORCON_TX_POC':'0','ORCON_TX_RF_ENABLE':'0','MQTT_ENABLED':'1'}),
-       ('dryrun',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=0'],{'RX_ONLY':'1','ORCON_TX_POC':'1','MQTT_ENABLED':'0'})]
+       ('dryrun',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=0'],{'RX_ONLY':'1','ORCON_TX_POC':'1','MQTT_ENABLED':'0'}),
+       ('rf-web',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1'],{'RX_ONLY':'1','ORCON_TX_POC':'1','ORCON_TX_RF_ENABLE':'1','ORCON_WEB_CONTROL':'1','MQTT_ENABLED':'0'})]
 for name,defs,wanted in valid:
     result=run([a.compiler,'-std=c++11','-I','src','-x','c++','-dM','-E','-']+['-D'+x for x in defs],input='#include "config.h"\n')
     assert result.returncode==0,(name,result.stderr)
     macros=dict(re.findall(r'^#define (\w+) (.*)$',result.stdout,re.M))
     assert all(macros.get(k)==v for k,v in wanted.items()),(name,wanted)
     print('PASS capability',name,'exit',result.returncode)
-invalid=[('rf-reserved',base+['ORCON_TX_POC=1','RX_ONLY=1','ORCON_TX_RF_ENABLE=1'],'RF TX is not released'),
-         ('rf-alone',['ORCON_TX_RF_ENABLE=1'],'RF TX is not released'),
+invalid=[('rf-alone',['ORCON_TX_RF_ENABLE=1'],'RF TX requires'),
+         ('web-alone',['ORCON_WEB_CONTROL=1'],'Web control requires'),
+         ('invalid-web',base+['ORCON_WEB_CONTROL=2'],'capabilities must be 0 or 1'),
          ('missing-board',['RADIO_SX1276=1','ORCON_TX_POC=1','RX_ONLY=1'],'PoC requires'),
          ('legacy-unlocked',base+['ORCON_TX_POC=1','RX_ONLY=0'],'PoC requires'),
          ('nonboolean-legacy',base+['ORCON_TX_POC=1','RX_ONLY=2'],'PoC requires'),

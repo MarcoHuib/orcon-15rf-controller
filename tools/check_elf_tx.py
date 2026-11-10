@@ -112,7 +112,7 @@ def analyse(elf, env, bindir):
     backends = sorted(n for _, (n, _) in objects.items() if n.startswith('vtable for txpoc::'))
     if env == 'heltec_v2_sx1276':
         problems += [f'RX-only image links TX-PoC code: {n}' for n in poc[:5]]
-    elif env == 'heltec_v2_sx1276_tx_poc_dryrun':
+    elif env in ('heltec_v2_sx1276_tx_poc_dryrun', 'heltec_v2_sx1276_webctl_dryrun'):
         if backends != ['vtable for txpoc::DryRunBackend']:
             problems.append(f'txpoc Backend implementations other than DryRunBackend: {backends}')
         dry = [n for n in names if n.startswith('txpoc::DryRunBackend::')]
