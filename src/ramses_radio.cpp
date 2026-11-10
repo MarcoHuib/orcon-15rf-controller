@@ -230,6 +230,7 @@ static volatile int16_t  g_rssiNow = 0;
 static uint32_t g_lastReceivedMs = 0;
 #endif
 static uint32_t g_lastSeq = 0;                  // loop: sync number of the frame poll() returned
+static rxs::FrameQueue<16, SyncInfo> g_sq;      // RX task -> loop: syncs for the live RF console
 
 #if ORCON_TX_RF_ENABLE
 const char* name() { return "SX1276 direct RX + txpoc packet TX"; }
@@ -293,6 +294,8 @@ static void rxTask(void*) {
                     int16_t rssi = (int16_t)g_radio.getRSSI(false, true);
                     g_dec.noteSync(rssi, now);
                     g_lastSyncMs = now;
+                    SyncInfo si; si.seq = g_dec.syncs; si.ms = now; si.rssi = rssi; si.pre = g_dec.lastPre();
+                    g_sq.push(si);                  // never blocks: full = dropped + counted
 #if DEBUG_RX_HEX
                     // one line per sync: no [rx] line with the same number = garbled frame
                     Serial.printf("[sync %lu %lu %ddBm pre=%02X]\n", (unsigned long)g_dec.syncs,
@@ -367,6 +370,8 @@ bool poll(ramses::Frame& out) {                 // loop side: frames the RX task
 }
 
 uint32_t lastSeq() { return g_lastSeq; }
+bool pollSync(SyncInfo& out) { return g_sq.pop(out); }
+uint32_t syncInfoDrops() { return g_sq.dropped.load(); }
 #if ORCON_TX_POC
 uint32_t lastReceivedMs() { return g_lastReceivedMs; }
 #endif
@@ -489,6 +494,8 @@ RxDiagnostics rxDiagnostics() {
 float lastRssi() { return g_rssi; }
 #if !defined(RADIO_SX1276)
 uint32_t lastSeq() { return 0; }
+bool pollSync(SyncInfo&) { return false; }
+uint32_t syncInfoDrops() { return 0; }
 #endif
 
 } // namespace radio

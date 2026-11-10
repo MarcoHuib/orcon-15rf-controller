@@ -86,6 +86,43 @@ Read-state:
  "steps":[{"key":"away","ok":true,"cmd":"22F1","pl":"000004","rssi":-61,"ev":5},{"key":"timer","ok":false},…]}
 ```
 
+### Live RF Console (`GET /api/setup/console?after=<seq>`)
+
+Uitklapbaar onderaan "Uitlezen", standaard dicht. De pagina pollt alleen als de console open
+is, je op "Uitlezen" staat en het tabblad zichtbaar is: elke 1 s, direct opnieuw bij `more`, en
+na een fout pas na 3 s. Er is geen WebSocket.
+
+```json
+{"now":51000,"next":9,"oldest":6,"lost":2,"more":false,
+ "ev":[{"s":7,"t":50900,"k":"OK","m":"29:****01 knop Auto geaccepteerd: stap 2/6"}]}
+```
+
+- **Bron.** Alleen echte gegevens:
+  - syncs uit de RX-taak (nummer, RSSI, pre-byte);
+  - gedecodeerde frames uit de bestaande drain;
+  - het oordeel van de wizard per frame van een afstandsbediening;
+  - sessieovergangen;
+  - deltas in RX-health (overflow, queue-drops, radio uit RX, herstart, gemiste sync-notities);
+  - elke 30 s een samenvatting (syncs, frames, syncs zonder geldig frame, ruis).
+- **Soorten.**
+  - `RAW`: radio-activiteit. Een sync zonder geldig frame binnen 1,5 s heet "geen geldig frame".
+  - `RX`: een checksum-schoon frame.
+  - `OK`: een knop die de wizard accepteerde.
+  - `FILTER`: telt niet, met de reden (andere afstandsbediening, verkeerde knop, herhaling, vóór de stap, geen knopdruk).
+  - Verder `INFO`, `WARN` en `ERR`. API-fouten en time-outs voegt de pagina zelf toe als `ERR`.
+- **Begrenzing.**
+  - De firmware houdt een ring van 64 events van ten hoogste 99 tekens. Dat is vaste RAM zonder heap en zonder NVS.
+  - Een antwoord bevat maximaal 16 events en is kleiner dan 3 KB.
+  - `lost` telt events die de ring al had overschreven.
+  - Een cursor van vóór een herstart begint weer bij de oudste.
+  - De pagina bewaart maximaal 300 regels.
+- **RX-taak.** Die doet per sync één niet-blokkerende push in een lock-free queue van 16 plekken. Is die vol, dan wordt de notitie geteld en weggegooid ("console miste N syncs"). De RX-taak wacht nooit.
+- **Privacy.** Apparaat-ID's verschijnen alleen gemaskeerd (`29:****01`). Token, IP en WiFi-gegevens staan nooit in de console. Een vreemde `Host` krijgt 403 (bescherming tegen DNS-rebinding).
+- **Kopiëren.**
+  - Gebruikt `navigator.clipboard` alleen in een secure context.
+  - Op http gebruikt de pagina een tijdelijk tekstveld met `execCommand('copy')`.
+  - Lukt dat niet, dan zegt de console dat.
+
 ### Koppelen (alleen TX-builds)
 | Endpoint | Body | Succes | Fouten |
 |---|---|---|---|

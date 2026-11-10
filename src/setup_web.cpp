@@ -6,6 +6,7 @@
 #include "setup_web.h"
 #include "setup_flow.h"
 #include "remote_profiles.h"
+#include "rf_console.h"
 #include "config.h"
 #include "net.h"
 #include "orcon.h"
@@ -19,6 +20,7 @@
 #include <ArduinoJson.h>
 #include <esp_system.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include "setup_page.h"            // after Arduino.h: PROGMEM comes from the core
 
@@ -55,6 +57,8 @@ static bool     g_pendOffer = false, g_pendAck = false;   // bind sends awaiting
 static ramses::DeviceId g_learnedFan;                     // pairing result to persist (net.cpp)
 #endif
 static char     g_out[3072];                  // one response at a time (loop task only)
+static rfcon::Ring g_con;                     // live RF console (loop task only)
+static char     g_conOut[3072];
 
 struct Out {
     size_t n = 0; bool ok = true;
@@ -522,6 +526,130 @@ static void handleRemoteSend() {
 #endif // ORCON_TX_POC
 #endif // CAN_TX
 
+// ---- live RF console ------------------------------------------------------------------
+// Facts only: syncs from the RX task's note queue, decoded frames from the existing drain,
+// the wizard's own verdict, session changes and RX health deltas. Masked IDs only.
+static const char* const KEY_NL[K_N] = { "Afwezig", "Auto", "Timer", "1", "2", "3" };
+static const uint32_t GARBLED_MS = 1500;      // a sync without a clean frame by then: undecoded
+struct Open { uint32_t seq = 0, ms = 0; int16_t rssi = 0; };
+static Open     g_open[8];                    // syncs still waiting for their frame
+static uint32_t g_lastHealthMs = 0, g_lastSumMs = 0, g_sumSyncs = 0, g_sumFrames = 0, g_sumBad = 0;
+static radio::RxDiagnostics g_h;               // last health snapshot
+static uint32_t g_hSyncDrops = 0;
+static bool     g_hInit = false;
+static St       g_cSt = St::Idle;
+static uint32_t g_cSid = 0;
+
+static void drainSyncs() {
+    radio::SyncInfo si;
+    while (radio::pollSync(si)) {
+        g_con.add(rfcon::RAW, si.ms, "sync #%lu %d dBm pre=%02X", (unsigned long)si.seq, si.rssi, si.pre);
+        Open* slot = &g_open[0];
+        for (Open& o : g_open) { if (!o.seq) { slot = &o; break; } if (o.ms < slot->ms) slot = &o; }
+        if (slot->seq) {                       // 8 open at once: report the oldest as unresolved
+            g_con.add(rfcon::RAW, si.ms, "sync #%lu: niet meer gevolgd (te veel tegelijk)", (unsigned long)slot->seq);
+        }
+        slot->seq = si.seq; slot->ms = si.ms; slot->rssi = si.rssi;
+    }
+}
+static void resolveSync(uint32_t seq) { for (Open& o : g_open) if (seq && o.seq == seq) o.seq = 0; }
+static void expireSyncs(uint32_t now) {
+    for (Open& o : g_open) if (o.seq && now - o.ms >= GARBLED_MS) {
+        g_con.add(rfcon::RAW, now, "sync #%lu %d dBm: geen geldig frame (verminkt of onvolledig)", (unsigned long)o.seq, o.rssi);
+        g_sumBad++; o.seq = 0;
+    }
+}
+static bool listedRemote(const ramses::DeviceId& id) {
+    const rlog::Device* dev = nullptr;
+    const size_t n = rlog::devices(&dev);
+    for (size_t i = 0; i < n; i++) if (dev[i].id == id && (dev[i].roles & rlog::ROLE_REMOTE)) return true;
+    return false;
+}
+static void consoleFrame(const ramses::Frame& f, uint32_t seq, int16_t rssi, Why w, uint32_t othersBefore) {
+    char t[96];
+    rfcon::frameText(f, seq, rssi, t, sizeof(t));
+    const uint32_t now = millis();
+    g_con.add(rfcon::RX, now, "%s", t);
+    if ((f.cmd != 0x22F1 && f.cmd != 0x22F3) || !f.has_addr[0]) return;   // only remote commands matter here
+    char id[12]; rfcon::maskId(f.addr[0], id);
+    const uint8_t k = keyOfFrame(f);
+    const char* key = k < K_N ? KEY_NL[k] : "geen knop";
+    const uint8_t want = g_read.step < K_N ? g_read.step : 0;
+    switch (w) {
+    case Why::Accepted:  g_con.add(rfcon::OK, now, "%s knop %s geaccepteerd: stap %u/6", id, key, g_read.step); return;
+    case Why::Duplicate: g_con.add(rfcon::FILTER, now, "%s telt niet: herhaling van de vorige druk", id); return;
+    case Why::WrongKey:  g_con.add(rfcon::FILTER, now, "%s telt niet: knop %s, verwacht %s", id, key, KEY_NL[want]); return;
+    case Why::Unknown:   g_con.add(rfcon::FILTER, now, "%s telt niet: %04X is geen knop van deze wizard", id, f.cmd); return;
+    case Why::Stale:     g_con.add(rfcon::FILTER, now, "%s telt niet: van vóór de huidige stap", id); return;
+    default: break;
+    }
+    if (g_read.others > othersBefore) {
+        g_con.add(rfcon::FILTER, now, "%s telt niet: niet de gekozen afstandsbediening", id); return;
+    }
+    if (g_read.st == St::Active && f.type != ramses::MsgType::I) {
+        g_con.add(rfcon::FILTER, now, "%s telt niet: geen knopdruk (type %s)", id, f.type == ramses::MsgType::RP ? "RP" : "RQ/W"); return;
+    }
+    const bool listed = listedRemote(f.addr[0]);
+    g_con.add(listed ? rfcon::INFO : rfcon::FILTER, now, "%s knop %s: %s", id, key,
+              listed ? "in de lijst gehoorde afstandsbedieningen (geen uitleessessie actief)"
+                     : "niet in de lijst (een antwoord RP telt niet als afstandsbediening)");
+}
+static void consoleTick(uint32_t now) {
+    drainSyncs();
+    expireSyncs(now);
+    if (g_read.sid != g_cSid || g_read.st != g_cSt) {          // session changes
+        char id[12]; rfcon::maskId(g_read.remote, id);
+        if (g_read.st == St::Active) g_con.add(rfcon::INFO, now, "uitlezen gestart (sessie %lu, %s): druk %s", (unsigned long)g_read.sid, id, KEY_NL[g_read.step < K_N ? g_read.step : 0]);
+        else if (g_read.st == St::Done) g_con.add(rfcon::INFO, now, "uitlezen voltooid: alle 6 knoppen van %s", id);
+        else if (g_read.st == St::Timeout) g_con.add(rfcon::WARN, now, "time-out: geen geldige knop binnen 60 s (stap %u)", g_read.step + 1);
+        else if (g_read.st == St::Cancelled) g_con.add(rfcon::INFO, now, "uitlezen geannuleerd");
+        g_cSid = g_read.sid; g_cSt = g_read.st;
+    }
+    if (g_hInit && now - g_lastHealthMs < 1000) return;
+    g_lastHealthMs = now;
+    const radio::RxDiagnostics d = radio::rxDiagnostics();
+    const uint32_t sd = radio::syncInfoDrops();
+    if (!g_hInit) {
+        g_h = d; g_hSyncDrops = sd; g_hInit = true; g_lastSumMs = now;
+        g_sumSyncs = d.coreSyncHits; g_sumFrames = d.frames; g_sumBad = 0;
+        static const char* const S[] = { "ontvangend", "herstellend", "uitgevallen" };
+        g_con.add(d.rxState ? rfcon::ERR : rfcon::INFO, now, "console gestart: radio %s, %lu syncs, %lu frames sinds boot",
+                  S[d.rxState < 3 ? d.rxState : 2], (unsigned long)d.coreSyncHits, (unsigned long)d.frames);
+        return;
+    }
+    if (d.uartOverflows != g_h.uartOverflows) g_con.add(rfcon::WARN, now, "UART-overflow +%lu: ontvangen bytes verloren", (unsigned long)(d.uartOverflows - g_h.uartOverflows));
+    if (d.queueDrops != g_h.queueDrops) g_con.add(rfcon::WARN, now, "frame-queue vol: +%lu frames gedropt", (unsigned long)(d.queueDrops - g_h.queueDrops));
+    if (d.rxLost != g_h.rxLost) g_con.add(rfcon::WARN, now, "radio buiten RX aangetroffen (+%lu)", (unsigned long)(d.rxLost - g_h.rxLost));
+    if (d.rxRecoveries != g_h.rxRecoveries) g_con.add(rfcon::WARN, now, "radio-herstart, poging %u", d.rxRecoveries);
+    if (sd != g_hSyncDrops) g_con.add(rfcon::WARN, now, "console miste %lu syncs (lus te traag)", (unsigned long)(sd - g_hSyncDrops));
+    if (d.rxState != g_h.rxState) {
+        if (d.rxState == 0) g_con.add(rfcon::INFO, now, "radio weer ontvangend");
+        else g_con.add(rfcon::ERR, now, "%s", d.rxState == 1 ? "radio herstelt: er wordt nu niets ontvangen" : "radio uitgevallen (herstel opgebruikt)");
+    }
+    g_h = d; g_hSyncDrops = sd;
+    if (now - g_lastSumMs >= 30000) {
+        g_con.add(rfcon::INFO, now, "laatste %lu s: %lu syncs, %lu frames, %lu zonder geldig frame; ruis %d dBm",
+                  (unsigned long)((now - g_lastSumMs) / 1000), (unsigned long)(d.coreSyncHits - g_sumSyncs),
+                  (unsigned long)(d.frames - g_sumFrames), (unsigned long)g_sumBad, d.rssiNow);
+        g_lastSumMs = now; g_sumSyncs = d.coreSyncHits; g_sumFrames = d.frames; g_sumBad = 0;
+    }
+}
+static void handleConsole() {
+    if (!hostOk()) { fail(403, "forbidden-request"); return; }
+    const String a = g_srv->arg("after");
+    char* end = nullptr;
+    unsigned long after = strtoul(a.c_str(), &end, 10);
+    if (!a.length() || (end && *end)) after = 0;                 // absent or not a number: from the start
+    consoleTick(millis());                                       // fresh syncs/health in this reply
+    for (uint32_t max = 16; max; max /= 2)
+        if (g_con.json(uint32_t(after), max, millis(), g_conOut, sizeof(g_conOut))) {
+            g_srv->sendHeader("Cache-Control", "no-store");
+            g_srv->send(200, "application/json", g_conOut);
+            return;
+        }
+    fail(500, "response-too-large");
+}
+
 // ---- wiring ------------------------------------------------------------------------
 void begin(WebServer& s) {
     g_srv = &s;
@@ -538,6 +666,7 @@ void begin(WebServer& s) {
     s.on("/api/profiles/select", HTTP_POST, [](){handleProfileEdit("select");});
     s.on("/api/profiles/rename", HTTP_POST, [](){handleProfileEdit("rename");});
     s.on("/api/profiles/delete", HTTP_POST, [](){handleProfileEdit("delete");});
+    s.on("/api/setup/console",     HTTP_GET,  handleConsole);
     s.on("/api/setup/read/start",  HTTP_POST, handleReadStart);
     s.on("/api/setup/read/state",  HTTP_GET,  handleReadState);
     s.on("/api/setup/read/cancel", HTTP_POST, handleReadCancel);
@@ -557,7 +686,11 @@ void begin(WebServer& s) {
 
 void onFrame(const ramses::Frame& f, uint32_t seq, int16_t rssi) {
     ++g_ev;                                         // monotonic per boot: orders events for the page
-    g_read.onFrame(f, g_ev, seq, millis(), rssi);
+    drainSyncs();                                   // this frame's sync note is already queued
+    resolveSync(seq);
+    const uint32_t othersBefore = g_read.others;
+    const Why w = g_read.onFrame(f, g_ev, seq, millis(), rssi);
+    consoleFrame(f, seq, rssi, w, othersBefore);
     if (!SIMULATED) g_pair.onFrame(f, orcon::ids().us, ORCON_TX_POC);
     if (f.cmd == 0x31D9 && f.len >= 3 && f.has_addr[0] && orcon::state().fanKnown && f.addr[0] == orcon::ids().fan &&
         (f.type == ramses::MsgType::I || f.type == ramses::MsgType::RP))
@@ -585,10 +718,12 @@ void consumeTxResults(uint32_t now) {
 
 void tick(uint32_t now) {
     g_read.tick(now);
+    consoleTick(now);
 #if ORCON_TX_POC
     consumeTxResults(now); // settle completions before expiry or any follow-up
     g_pair.tick(now, pairDone(), pairFan());
-    if (g_pair.st == St::Active && g_pair.confirmed && !g_pair.ackSent &&
+    // The only automatic TX: compiled out wherever pairing is unsupported (RF builds).
+    if (CAN_PAIR && g_pair.st == St::Active && g_pair.confirmed && !g_pair.ackSent &&
         !g_pair.txFailed && !g_pendAck) {
         orcon::Ids ids = orcon::ids(); ids.fan = g_pair.from;
         const rlog::Device* heard = nullptr; const size_t heardN = rlog::devices(&heard);

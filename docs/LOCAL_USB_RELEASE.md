@@ -2,7 +2,9 @@
 
 Deze procedure is bedoeld voor de Heltec V2 met klassieke ESP32-D0WDQ6, SX1276
 en 8 MB flash. Selecteer de afzonderlijke dry-runomgeving; het projectbrede
-PlatformIO-default is een ander bord. De RF-omgeving blijft compile-time verboden.
+PlatformIO-default is een ander bord. De RF-omgevingen (`heltec_v2_sx1276_tx_poc`,
+`heltec_v2_sx1276_webctl`) zijn bouwbaar, maar deze tool weigert ze: ze missen de
+RX-only-marker en staan niet in `LOCAL_ENVS`. Firmwarebarrières: zie `tools/test_tx_poc_safety.py`.
 Geen GitHub Actions, artifactdownloads, remote CI-status of PlatformIO-upload.
 
 ## Lokale voorbereiding, zonder bordtoegang

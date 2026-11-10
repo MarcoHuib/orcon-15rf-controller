@@ -64,6 +64,43 @@ main=Path('src/main.cpp').read_text()
 assert '#if !RX_ONLY\n    orcon::tick(millis());\n#endif' in main
 assert main.index('controller().consumeResult(millis())') < main.index('while (radio::poll(f))') < main.index('controller().onFrame(') < main.index('controller().tick(')
 assert Path('src/rx_only.h').read_text().count('"maskids", "showfilter", "roomidx"')==1
+# ---- Phase 2 (RF targets kept in main): equivalent replacement for the removed phase-1 #error.
+# Every transmission is user-initiated and fully gated in firmware, not only by the flash tool.
+def fn(text,head):                                     # body of the first function starting with head
+    return text.split(head,1)[1].split('\n}\n',1)[0]
+def tx_paths_safe(web,net,radio,runtime,main):
+    assert web.count('controller().submitCtl(')==1 and 'submitCtl' not in net+main
+    send=fn(web,'static void handleRemoteSend() {')     # the web-control (first) definition
+    order=['guard(d, K, 3)','"profile-storage-unavailable"','"profile-required"','"profile-protocol-unsupported"',
+           '"profile-unit-mismatch"','"identity-conflict"','controller().submitCtl(']
+    pos=[send.find(x) for x in order]
+    assert all(x>=0 for x in pos) and pos==sorted(pos),('send gate order',list(zip(order,pos)))
+    assert 'identityClear' in send.split('submitCtl(',1)[1] and 'txpoc::rxReady()' in send.split('submitCtl(',1)[1]
+    assert net.count('controller().submit(')==1 and 'submit' not in main.replace('consumeResult','')
+    poc=fn(net,'static void handlePocMode() {')
+    assert poc.find('rf-web-control-required')>=0 and poc.find('rf-web-control-required')<poc.find('controller().submit(')
+    assert web.count('submitBind(')==2
+    press=fn(web,'static void handlePairPress() {'); tick=fn(web,'void tick(uint32_t now) {')
+    assert press.find('if (!CAN_PAIR)')>=0 and press.find('if (!CAN_PAIR)')<press.find('submitBind(')
+    assert tick.find('if (CAN_PAIR &&')>=0 and tick.find('if (CAN_PAIR &&')<tick.find('submitBind(')
+    assert 'CAN_PAIR = CAN_TX && CAN_RX && (!ORCON_TX_POC || SIMULATED);' in web
+    assert 'static const bool SIMULATED = !ORCON_TX_RF_ENABLE;' in web
+    guard='#if defined(RADIO_SX1276) && ORCON_TX_POC && ORCON_TX_RF_ENABLE\nnamespace sx1276 {'
+    rf=radio.split(guard,1)[1].split('#endif // RADIO_SX1276 && ORCON_TX_POC && ORCON_TX_RF_ENABLE',1)[0]
+    assert radio.count('startTransmit(')==1 and 'startTransmit(' in rf
+    be=runtime.split('#if ORCON_TX_RF_ENABLE\n',1)[1].split('#else\nstatic DryRunBackend backend;\n#endif',1)
+    assert len(be)==2 and 'class Sx1276Backend' in be[0] and 'class Sx1276Backend' not in be[1]+runtime.split('#if ORCON_TX_RF_ENABLE\n',1)[0]
+web=Path('src/setup_web.cpp').read_text(); main_src=Path('src/main.cpp').read_text()
+tx_paths_safe(web,net,radio,runtime:=Path('src/tx_poc_runtime.cpp').read_text(),main_src)
+for name,old,new in [('no-profile-gate','if(!profile){fail(409,"profile-required");return;}',''),
+                     ('no-unit-gate','if(!(profile->unit==orcon::ids().fan)){fail(409,"profile-unit-mismatch");return;}',''),
+                     ('auto-ack-ungated','if (CAN_PAIR && g_pair.st','if (g_pair.st'),
+                     ('pairing-on-rf','(!ORCON_TX_POC || SIMULATED)','(true)'),
+                     ('second-send-path','static void handleRemoteState() { remoteBody(200); }','static void handleRemoteState() { txpoc::controller().submitCtl(1,4,orcon::ids(),true,true,true,0); }')]:
+    mutated=web.replace(old,new,1); assert mutated!=web,name
+    try: tx_paths_safe(mutated,net,radio,runtime,main_src)
+    except AssertionError: print('PASS TX-path guard rejects mutation',name)
+    else: raise AssertionError('TX-path guard accepted mutation '+name)
 ini=configparser.ConfigParser(interpolation=None); ini.read('platformio.ini')
 assert ini['platformio']['default_envs']=='heltec_v3_cc1101_ota' # existing default unchanged
 baseline=ini['env:heltec_v2_sx1276']['build_flags']
@@ -82,6 +119,9 @@ for name,defs,wanted in valid:
     assert all(macros.get(k)==v for k,v in wanted.items()),(name,wanted)
     print('PASS capability',name,'exit',result.returncode)
 invalid=[('rf-alone',['ORCON_TX_RF_ENABLE=1'],'RF TX requires'),
+         ('rf-wrong-board',['RADIO_SX1276=1','ORCON_TX_POC=1','RX_ONLY=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1'],'PoC requires'),
+         ('rf-legacy-unlocked',base+['ORCON_TX_POC=1','RX_ONLY=0','ORCON_TX_RF_ENABLE=1'],'PoC requires'),
+         ('rf-v3-radio',['BOARD_HELTEC_V2=1','RADIO_CC1101_ASYNC=1','ORCON_TX_POC=1','RX_ONLY=1','ORCON_TX_RF_ENABLE=1'],'PoC requires'),
          ('web-alone',['ORCON_WEB_CONTROL=1'],'Web control requires'),
          ('invalid-web',base+['ORCON_WEB_CONTROL=2'],'capabilities must be 0 or 1'),
          ('missing-board',['RADIO_SX1276=1','ORCON_TX_POC=1','RX_ONLY=1'],'PoC requires'),

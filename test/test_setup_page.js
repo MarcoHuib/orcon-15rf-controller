@@ -52,7 +52,7 @@ async function page(routes, hash = '') {
     const fetch = async (url, o = {}) => {
         const key = (o.method || 'GET') + ' ' + url;
         calls.push({ key, headers: o.headers || {}, body: o.body ? JSON.parse(o.body) : undefined });
-        const h = routes[key];
+        const h = routes[key] || routes[key.split('?')[0]];
         if (!h) return { ok: false, status: 404, json: async () => ({ error: 'no-route' }) };
         const [status, body] = h(calls[calls.length - 1]);
         return { ok: status < 300, status, json: async () => body };
@@ -313,5 +313,51 @@ const read = (sid, status, step, extra = {}) => ({ sid, status, step, remote: '2
         p.$('deleteProfile').click();await flush();assert.doesNotMatch(p.$('profileSel').innerHTML,/Keuken/);assert.match(p.$('profileSel').innerHTML,/Slaapkamer/);ok('deleting active profile preserves the others');
         assert.ok(!p.calls.some(x=>x.key.includes('/api/remote/send')));ok('profile management works in RX-only firmware without any TX action');
     }
+
+    // ---- Live RF Console ------------------------------------------------------------------------
+    {
+        let cs = () => [200, { now: 50000, next: 4, oldest: 1, lost: 0, more: false, ev: [
+            { s: 1, t: 49000, k: 'RAW', m: 'sync #12 -81 dBm pre=FF' },
+            { s: 2, t: 49100, k: 'RX', m: '#13 -45 dBm I 22F1 29:****01>29:****02 pl=000404' },
+            { s: 3, t: 49200, k: 'FILTER', m: '29:****01 telt niet: <b>x</b> herhaling' }] }];
+        const p = await page({
+            'GET /api/setup/state': () => [200, state(CAPS_RX)],
+            'GET /api/setup/read/state': () => [200, read(0, 'idle', 0)],
+            'GET /api/setup/console': c => cs(c),
+        }, 'read');
+        const ccalls = () => p.calls.filter(c => c.key.startsWith('GET /api/setup/console'));
+        assert.ok(!('open' in p.$('con').attrs) && !p.$('con').open); assert.equal(ccalls().length, 0);
+        await p.refresh(); assert.equal(ccalls().length, 0);
+        ok('console collapsed by default and never polled while closed');
+        p.$('con').open = true; p.$('con').handlers.toggle.forEach(f => f()); await flush();
+        assert.equal(ccalls()[0].key, 'GET /api/setup/console?after=0');
+        const html = p.$('cT').innerHTML;
+        assert.match(html, /class="kRAW"><b>RAW<\/b>\d\d:\d\d:\d\d sync #12 -81 dBm pre=FF/);
+        assert.match(html, /class="kRX">/); assert.match(html, /class="kFILTER">/);
+        assert.match(html, /&#60;b&#62;x&#60;\/b&#62;/); assert.doesNotMatch(html, /<b>x<\/b>/);
+        assert.equal(p.$('cS').textContent, 'live');
+        ok('opening polls from the start; raw/decoded/filtered lines colour-coded and escaped');
+        cs = () => [200, { now: 51000, next: 9, oldest: 6, lost: 2, more: false, ev: [{ s: 6, t: 50900, k: 'OK', m: 'knop Auto geaccepteerd: stap 2/6' }] }];
+        await p.refresh();
+        assert.equal(ccalls()[1].key, 'GET /api/setup/console?after=3'); ok('delta poll continues after the last sequence number');
+        assert.match(p.$('cT').innerHTML, /class="kWARN"><b>WARN<\/b>.* 2 gebeurtenis\(sen\) gemist/); assert.match(p.$('cT').innerHTML, /class="kOK">/);
+        ok('missed events reported, accepted press shown as OK');
+        cs = () => [500, { error: 'response-too-large' }]; await p.refresh();
+        assert.match(p.$('cT').innerHTML, /class="kERR"><b>ERR<\/b>.*API-fout: response-too-large/);
+        cs = () => { throw new Error('net'); }; await p.refresh(); await p.refresh();
+        assert.equal((p.$('cT').innerHTML.match(/geen verbinding/g) || []).length, 1); ok('API errors shown once each, not repeated');
+        cs = () => [200, { now: 1000, next: 2, oldest: 1, lost: 0, more: false, ev: [{ s: 1, t: 900, k: 'INFO', m: 'console gestart' }] }];
+        await p.refresh(); assert.match(p.$('cT').innerHTML, /opnieuw begonnen/); ok('controller restart detected from the sequence');
+        p.$('cP').click(); await flush(); const before = ccalls().length; await p.refresh();
+        assert.equal(ccalls().length, before); assert.equal(p.$('cP').textContent, 'Hervatten'); assert.equal(p.$('cS').textContent, 'gepauzeerd');
+        p.$('cP').click(); await flush(); assert.equal(ccalls().length, before + 1); ok('pause stops polling, resume continues');
+        p.$('cW').click(); assert.equal(p.$('cT').innerHTML, ''); ok('clear empties the console');
+        p.$('cC').click(); await flush(); assert.match(p.$('cS').textContent, /kopiëren niet mogelijk|gekopieerd/); ok('copy reports its result');
+        p.$('con').open = false; p.$('con').handlers.toggle.forEach(f => f()); const closed = ccalls().length; await p.refresh();
+        assert.equal(ccalls().length, closed); assert.equal(p.$('cS').textContent, 'gesloten'); ok('closing stops polling');
+        p.$('con').open = true; p.$('back').click(); await flush(); const away = ccalls().length; await p.refresh();
+        assert.equal(ccalls().length, away); ok('leaving the read page stops polling even when open');
+    }
+
     console.log(`setup page: ${n} checks, 0 failures`);
 })().catch(e => { console.error(e); process.exit(1); });
