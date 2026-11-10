@@ -26,10 +26,10 @@ Voor builds moeten de lokale PlatformIO-platformen, toolchains en bibliotheken
 beschikbaar zijn. De runner bouwt uitsluitend expliciete omgevingen, nooit upload.
 
 ```bash
-SHA=f79439f72d8869ff9822e9470d376d10cd429dee   # uit Release-identiteit, nooit HEAD van een docs-commit
+SHA=627f9cdd9de6d034a3ad8c5b730fecac1abe1f00   # uit Release-identiteit, nooit HEAD van een docs-commit
 DRY=heltec_v2_sx1276_tx_poc_dryrun
 RX=heltec_v2_sx1276
-EVIDENCE=build/claude-release-f79439f-r2
+EVIDENCE=build/claude-release-627f9cd
 # Gebruik een nieuwe bewijsmap bij herhaling; overschrijf bewaarde releasebewijzen niet.
 pwsh -NoProfile -File tools/test_local.ps1 -OutputDirectory "$EVIDENCE" -Firmware
 # Controleer: runner exit 0, RESULTS.json.commit == SHA, dirty leeg, alle checks PASS.
@@ -68,20 +68,24 @@ Dit is aanvullend bewijs naast de compile-time-weigering, geen volledig bewijs.
 ## Release-identiteit
 
 Eén firmwarecommit voor beide V2-images:
-`f79439f72d8869ff9822e9470d376d10cd429dee` (branch `fix/codex-local-release-review`).
-Lokaal bewijs op schone boom: `build/claude-release-f79439f-r2/` (73/73 PASS, exit 0,
-vijf firmwarebuilds, bronstabiliteit PASS). UBSan apart: 24/24 PASS. ASan+UBSan en
-TSan: lege runtimeprobe faalt (124 timeout, 139 crash), alle suites NOT TESTED.
+`627f9cdd9de6d034a3ad8c5b730fecac1abe1f00`. Lokaal bewijs op schone boom:
+`build/claude-release-627f9cd/` (73/73 PASS, exit 0, vijf firmwarebuilds,
+bronstabiliteit PASS); UBSan 24/24 PASS. ASan+UBSan en TSan: runtimeprobe faalt
+op deze Mac (124/139), dus NOT TESTED. Ten opzichte van de vorige kandidaat
+`f79439f` verschilt het dry-run-image alleen in commitstempel, buildtijd en
+image-hashes; alleen de app1-precheck veranderde.
 
 | Image | Bytes | SHA-256 |
 | --- | --- | --- |
-| dry-run `firmware.bin` | 897472 | `2cc10e1fa3030ddf7776667e393a216e2adec8dfc7353450dd821265040166c7` |
-| dry-run `firmware.elf` | | `d9ef07d1d09a2bc18ce5b321d8dce2a3d28f9df7b90d6a00ff04dc182bcc25e5` |
-| RX-only `firmware.bin` | 1043424 | `0aa84a730b99c3e86592afd797a06d14a3853a1760cbe12e7354e660ddc0283a` |
-| RX-only `firmware.elf` | | `eee42591df2ebd42bd66a5f3f57e1b89183a940338df58da97412339f5e97bf1` |
+| dry-run `firmware.bin` | 897472 | `141ae932156b55d00abd5c41759cd4463f821a475fa992e08ddf122f001d16df` |
+| dry-run `firmware.elf` | | `4e21e7387f92914bf430b4ab85ee3c6d5833663ad589e26dd0dfbff286483f3d` |
+| RX-only `firmware.bin` | 1043424 | `9565ab44cf8f8ce0cac89ccceffd06b69df17f64d60ad97c29d308a18ea8a9e3` |
+| RX-only `firmware.elf` | | `6b24e94dc9de6d9b22928a61d0f6e6c8c68e0d4580f6ce398104b8c06dfe7288` |
 
 Bootloader, tabel en `boot_app0` zijn byte-gelijk aan de pins hieronder. Eerdere
-pakketten (d5c6603, f04ae0f) missen app1-/ELF-bewijs en worden geweigerd.
+pakketten (d5c6603, f04ae0f, f79439f) zijn geen releasekandidaat meer.
+
+Precheck op het echte bord (2026-11-10 10:54–11:00 UTC) voor deze commit: PASS.
 
 ## Bestaande rollback en herkomst
 
@@ -140,7 +144,12 @@ Na toestemming voor de specifieke release en deze handelingen:
    onderbroken app0-write kan de bootloader namelijk naar app1 laten uitwijken.
    Alleen een volledig gewiste app1 of het onafhankelijk gepinde RX-only-image van
    d5c39e1 (`6939546a…a7db`, pin in `tools/check_flash_package.py`) met gewiste rest
-   is toegestaan. Onbekende, beschadigde of gedeeltelijk gewiste inhoud is NO-GO;
+   is toegestaan. Eén uitzondering, op uitdrukkelijke keuze van de gebruiker: de op
+   dit bord gemeten niet-opstartbare toestand (alles `0xFF` behalve 16 bytes op
+   `0x66F000`, geen imageheader, partitie-SHA-256 `937d903c…38a9`). Die geldt alleen
+   bij exact deze hash, byte-indeling en tabel, en alleen als de door de chip
+   gemelde MAC gelijk is aan het lokale pinbestand `.flashtools/board.mac`, dus niet
+   via `HELTEC_MAC`. Precheck leest die sector daarna nog eens en eist identieke bytes. Onbekende, beschadigde of gedeeltelijk gewiste inhoud is NO-GO;
    er volgt geen erase, reparatie of bypass. Bij iedere mislukte precheck worden de
    readbacks met SHA-256 bewaard in `.flashtools/evidence/` (git-genegeerd).
 
