@@ -977,6 +977,9 @@ const char* ssidName()     { return g_apMode ? WIFI_AP_NAME : g_ssid.c_str(); }
 bool        apMode()       { return g_apMode; }
 bool        wifiConnected(){ return !g_apMode && WiFi.status() == WL_CONNECTED; }
 bool        maskIds()      { return g_maskIds; }
+void        restartSoon()  { g_rebootAt = millis() + 1200; }
+// Only SSID + password: profiles, MQTT, OLED and IDs stay. An empty SSID makes wifiConnect() start the setup AP.
+void        forgetWifi()   { prefs.begin("orcon", false); prefs.remove("ssid"); prefs.remove("pass"); prefs.end(); restartSoon(); }
 const char* mqttHost()     { return g_mqttHost.c_str(); }
 bool        mqttConnected() {
 #if MQTT_ENABLED

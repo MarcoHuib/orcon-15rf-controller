@@ -16,4 +16,6 @@ bool        wifiConnected();  // station mode and associated with the configured
 const char* mqttHost();
 bool        mqttConnected();
 bool        maskIds();        // privacy setting: mask device IDs in the UI
+void        restartSoon();    // reboot after the HTTP reply has gone out
+void        forgetWifi();     // drop the stored network; the next boot starts the setup AP
 }

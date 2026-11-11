@@ -130,12 +130,81 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.equal(p.$('profName').textContent, 'Geen profiel geselecteerd'); assert.ok(!p.$('cProf').classList.contains('on'));
         ok('WiFi card shows the network as text; no profile -> "Geen profiel geselecteerd"');
         assert.ok(p.dom.all.some(e => e.attrs.class === 'choice card off' && e.attrs['aria-disabled'] === 'true')); ok('Siri is a disabled placeholder');
-        assert.match(p.$('sysSub').textContent, /^Klassiek dashboard/); assert.equal(p.$('cSys').attrs.href, '/dashboard'); ok('Systeem card names its target: the classic dashboard');
+        assert.equal(p.$('sysSub').textContent, 'Firmware, herstarten en informatie'); assert.equal(p.$('cSys').dataset.open, 'system'); ok('Systeem card opens the in-app Systeem screen');
+        assert.equal(p.$('tech').hidden, false); assert.ok(!('open' in p.$('tech').attrs)); assert.match(html, /<details class="tech" id="tech" hidden><summary><span>Technische status tonen<\/span>/);
+        assert.ok(html.indexOf('id="mins"') < html.indexOf('id="tech"') && html.indexOf('id="tech"') < html.indexOf('id="ctlP"') && html.indexOf('id="ctlP"') < html.indexOf('</details>', html.indexOf('id="tech"')) && html.indexOf('id="ctlP"') < html.indexOf('id="notice"'));
+        ok('technical status: collapsed by default under the remote, no longer a dashboard card');
         wifi = { connected: false, ssid: '' }; caps = { ...CAPS_RX, settings_pages: false }; await p.refresh();
         assert.equal(p.$('wifiSub').textContent, 'Niet verbonden'); assert.ok(p.$('cWifi').classList.contains('off') && p.$('cSys').classList.contains('off'));
         assert.match(p.$('sysSub').textContent, /Niet beschikbaar/); ok('no WiFi -> "Niet verbonden"; no classic pages -> cards disabled');
         p.$('cProf').click(); await flush(); assert.equal(p.location.hash, '#profiles'); assert.equal(p.$('back').hidden, false);
         p.$('back').click(); await flush(); assert.equal(p.location.hash, '#control'); ok('profile card opens Profielen; back returns to the dashboard');
+        const q = await page({ 'GET /api/setup/state': () => [200, state(CAPS_RX, { profiles: PF([PI(2, 'Washok', '29:000101')], 2), caps: { ...CAPS_RX, settings_pages: false } })] }, 'system');
+        assert.equal(q.location.hash, '#control'); assert.ok(!q.calls.some(c => c.key === 'GET /api/state' || c.key === 'GET /api/netcfg'));
+        ok('settings screens absent on builds without the classic settings APIs (opened by URL -> dashboard)');
+    }
+    {   // WiFi + Systeem screens: in-app, back on every sub-screen, existing APIs only, confirmation before a reboot
+        let x = { uptime_ms: 90061000, heap_min: 171008, rf_frames: 42, oled_available: true, oled_mode: 'auto', oled_on: false, mqtt_on: false, mqtt_connected: false };
+        const nc = { ssid: 'Thuis <5G>', mqtt: '', mqtt_on: false }, wifiPosts = [], oledPosts = [];
+        const wifi = { connected: true, ap: false, ap_name: 'Orcon15RF-Setup', ip: '192.0.2.5', ssid: 'Thuis <5G>' };
+        const p = await page({
+            'GET /api/setup/state': () => [200, state({ ...CAPS_RX, settings_pages: true }, { wifi, fw: '0123456789abcdef0123456789abcdef01234567', profiles: PF([PI(2, 'Washok', '29:000101')], 2) })],
+            'GET /api/state': () => [200, x], 'GET /api/netcfg': () => [200, nc],
+            'GET /api/scan': () => [200, [{ ssid: 'Buren', rssi: -80, lock: true }, { ssid: 'Thuis <5G>', rssi: -50, lock: true }, { ssid: 'Buren', rssi: -60, lock: false }, { ssid: '', rssi: -40, lock: false }]],
+            'POST /api/wifi': c => { wifiPosts.push(c.body); return [200, { ok: 1 }]; },
+            'POST /api/oled': c => { oledPosts.push(c.body); if (c.body.mode) x = { ...x, oled_mode: c.body.mode }; return [200, { ok: 1 }]; },
+            'POST /api/setup/restart': () => [200, { ok: true, restarting: true }],
+            'POST /api/setup/wifi/forget': () => [200, { ok: true, restarting: true }],
+        }, 'control');
+        const open = async k => { p.dom.all.find(e => e.dataset.open === k).click(); await flush(); };
+        const back = async () => { p.$('back').click(); await flush(); };
+        await open('wifi');
+        assert.equal(p.location.hash, '#wifi'); assert.equal(p.$('title').textContent, 'WiFi'); assert.equal(p.$('back').hidden, false);
+        assert.ok(p.$('dash').hidden && p.$('lay').classList.contains('solo') && p.$('tech').hidden);
+        assert.equal(p.$('wName').textContent, 'Thuis <5G>'); assert.equal(p.$('wSub').textContent, 'Verbonden · IP-adres 192.0.2.5');
+        assert.match(p.$('wfSub').textContent, /accesspoint Orcon15RF-Setup/); assert.equal(p.posts().length, 0);
+        ok('WiFi card opens the WiFi screen in place of the dashboard: active network, status, IP address');
+        await open('wifinew'); assert.equal(p.location.hash, '#wifinew');
+        p.$('wScan').click(); await flush(); const sl = p.$('wSel').innerHTML;
+        assert.ok(sl.indexOf('Thuis &#60;5G&#62;') < sl.indexOf('Buren') && (sl.match(/Buren/g) || []).length === 2 && /Buren · -60 dBm · open/.test(sl) && !/value=""[^>]*>[^<]*-40/.test(sl));
+        ok('scan: networks sorted by signal, de-duplicated, hidden (empty) names skipped, escaped');
+        p.$('wSave').click(); await flush(); assert.match(p.$('err').textContent, /netwerknaam/);
+        p.$('wSsid').value = 'Thuis <5G>'; p.$('wPass').value = 'kort'; p.$('wSave').click(); await flush(); assert.match(p.$('err').textContent, /8 tot 63/);
+        assert.equal(wifiPosts.length, 0); p.$('wShow').checked = true; p.$('wShow').handlers.change[0](); assert.equal(p.$('wPass').type, 'text');
+        p.$('wPass').value = ''; p.$('wSave').click(); await flush();
+        assert.deepEqual(wifiPosts, [{ ssid: 'Thuis <5G>', pass: '' }]); assert.match(p.$('setM').textContent, /herstart en verbindt met “Thuis <5G>”.*Orcon15RF-Setup/);
+        ok('new network: validated, show-password toggle, empty password keeps the stored one, no MQTT fields sent');
+        await back(); assert.equal(p.location.hash, '#wifi'); await back(); assert.equal(p.location.hash, '#control'); ok('back: new network -> WiFi -> dashboard');
+        await open('wifi'); dlg.confirm = false; dlg.asked = []; p.$('wForget').click(); await flush();
+        assert.ok(!p.posts().some(c => c.key.endsWith('/wifi/forget')) && /accesspoint Orcon15RF-Setup/.test(dlg.asked[0]));
+        dlg.confirm = true; p.$('wForget').click(); await flush();
+        const fg = p.posts().find(c => c.key === 'POST /api/setup/wifi/forget'); assert.ok(fg && fg.headers['X-Orcon-Token'] === 'tok123');
+        assert.match(p.$('setM').textContent, /Orcon15RF-Setup.*192\.168\.4\.1/); ok('forget WiFi: only after confirmation, guarded request, recovery via the setup AP explained');
+        await back(); await open('system');
+        assert.equal(p.location.hash, '#system'); assert.equal(p.$('title').textContent, 'Systeem'); assert.equal(p.$('fwSub').textContent, 'Versie 0123456');
+        assert.equal(p.$('oledSub').textContent, 'Automatisch: uit na 30 seconden'); assert.equal(p.$('intSub').textContent, 'MQTT uit');
+        assert.ok(p.dom.all.some(e => e.attrs.href === '/dashboard' && /card/.test(e.attrs.class || '')));
+        ok('Systeem: firmware, restart, device info, OLED, integrations and the legacy dashboard');
+        dlg.confirm = false; p.$('sRestart').click(); await flush(); assert.ok(!p.posts().some(c => c.key.endsWith('/restart')));
+        dlg.confirm = true; p.$('sRestart').click(); await flush(); assert.ok(p.posts().some(c => c.key === 'POST /api/setup/restart')); assert.match(p.$('setM').textContent, /herstart/);
+        ok('restart only after confirmation');
+        await open('firmware'); assert.match(p.$('fwKv').innerHTML, /0123456789abcdef0123456789abcdef01234567/); assert.match(p.$('fwKv').innerHTML, /Niet vast te stellen/);
+        assert.ok(!/Update installeren|beschikbaar: v/.test(html)); await back(); assert.equal(p.location.hash, '#system');
+        ok('firmware: real version, no invented update, no install button; back -> Systeem');
+        await open('info'); const ik = p.$('infoKv').innerHTML;
+        assert.ok(/1 d 1 u 1 min/.test(ik) && /167 KB/.test(ik) && /<dd>42<\/dd>/.test(ik) && /Thuis &#60;5G&#62;/.test(ik)); await back();
+        ok('device info from the existing state API, escaped');
+        await open('oled'); assert.match(p.$('oMode').innerHTML, /aria-checked="true" data-om="auto"/);
+        p.$('oMode').click({ target: { closest: () => ({ dataset: { om: 'on' }, disabled: false }) } }); await flush();
+        p.$('oWake').click(); await flush(); assert.deepEqual(oledPosts, [{ mode: 'on' }, { toggle: 1 }]); assert.match(p.$('oMode').innerHTML, /aria-checked="true" data-om="on"/);
+        await back(); ok('OLED moved to Systeem: existing modes and wake toggle, same /api/oled');
+        await open('integr'); assert.equal(p.$('mqOn').checked, false); assert.equal(p.$('mqHost').value, '');
+        p.$('mqSave').click(); await flush(); assert.match(p.$('err').textContent, /niets gewijzigd/);
+        p.$('mqOn').checked = true; p.$('mqSave').click(); await flush(); assert.match(p.$('err').textContent, /broker/);
+        p.$('mqHost').value = '192.0.2.9'; p.$('mqSave').click(); await flush();
+        assert.deepEqual(wifiPosts[1], { mqtt_on: true, mqtt: '192.0.2.9' }); assert.equal(wifiPosts.length, 2);
+        ok('MQTT under Systeem > Integraties: never switched on implicitly, only MQTT fields sent (WiFi kept)');
+        await back(); await back(); assert.equal(p.location.hash, '#control');
     }
 
     // ---- read: pick remote, progress only from server state, wrong button, done ---------------------
