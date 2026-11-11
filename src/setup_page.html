@@ -268,7 +268,7 @@ const f=prof(),p=f.items.find(x=>x.id===f.active),w=S&&S.wifi,sp=c.settings_page
 $('profName').textContent=!f.storage_ok?'Profielopslag niet beschikbaar':p?p.name:'Geen profiel geselecteerd';
 $('profSub').textContent=p?'Actief profiel':f.items.length?'Kies een profiel':'Maak een profiel aan';$('cProf').classList.toggle('on',!!p);
 $('wifiSub').textContent=!w?'':w.connected?'Verbonden met '+w.ssid:'Niet verbonden';
-$('sysSub').textContent=sp?'Firmware, herstarten en informatie':'Niet beschikbaar in deze firmware';
+$('sysSub').textContent=sp?'Klassiek dashboard: firmwareversie, RF-log en diagnose':'Niet beschikbaar in deze firmware';
 for(const i of['cWifi','cSys']){$(i).classList.toggle('off',!sp);$(i).setAttribute('aria-disabled',String(!sp))}
 }
 function drawProfiles(){

@@ -206,10 +206,15 @@ Een verzonden aanbod kan niet worden ingetrokken. Na `cancel` loopt het venster 
 | `#read`, `#pair` | de bestaande procedures, ongewijzigd | welkom (lopende sessie wordt geannuleerd) |
 | `#done` | *Koppeling voltooid* + profielnaam + *Actief*, knop *Naar bediening* | – |
 
-- Een op `#new` gekozen naam wordt na de zes knoppen automatisch één keer opgeslagen
+- Een op `#new` gekozen naam wordt na de zes knoppen automatisch opgeslagen
   (`/api/profiles/save` slaat op én activeert atomair). Pas als het antwoord dit profiel
   als actief toont, verschijnt `#done`. Annuleren of een fout slaat niets op; het oude
   actieve profiel blijft.
+- Een tijdelijke fout bij dat opslaan (geen verbinding, `session-busy`,
+  `profile-write-failed`, HTTP 5xx) wordt bij een volgende poll opnieuw geprobeerd, maximaal
+  3 pogingen per uitleessessie. De uitleessessie blijft afgerond op de controller, dus
+  opnieuw opslaan met dezelfde `sid` is veilig. Daarna, of bij een blijvende fout, meldt de
+  pagina dat *Profiel opslaan* (met de naam al ingevuld) het opnieuw probeert.
 - Profielen zijn per fysieke afstandsbediening. Hoort de uitgelezen afstandsbediening al bij
   een ander profiel, dan weigert de pagina het opslaan in plaats van dat profiel te hernoemen.
 - Een profiel kiezen (`/api/profiles/select`) brengt je terug naar het dashboard; nieuwe
@@ -217,7 +222,12 @@ Een verzonden aanbod kan niet worden ingetrokken. Na `cancel` loopt het venster 
 - Het laatste profiel verwijderen opent `#welcome`; het actieve verwijderen laat de gebruiker
   opnieuw kiezen. WiFi- en controllerinstellingen staan in een andere NVS-namespace.
 - *Simulatie instellen* maakt (nog) geen profiel: de koppelprocedure is op RX-only en RF-builds
-  geblokkeerd en levert geen knopmapping op. Siri is een uitgeschakelde placeholder.
+  geblokkeerd en levert geen knopmapping op. De kaart zegt dat: "Niet beschikbaar met deze
+  firmware", of "Experimenteel: maakt nog geen profiel aan" waar koppelen bestaat. Siri is
+  een uitgeschakelde placeholder.
+- De Systeemkaart opent het klassieke (Engelstalige) dashboard `/dashboard`: firmwareversie,
+  links naar WiFi/MQTT/display, RF-log en debug. Een aparte instellingenpagina of
+  herstartfunctie bestaat nog niet.
 - Polling: 1 s tijdens uitlezen en bij een openstaande bevestiging, 2 s tijdens koppelen,
   anders 2,5–10 s; gepauzeerd als het tabblad verborgen is.
 - Groen, *Actief* en "Gekoppeld" verschijnen alleen op basis van een serverantwoord.

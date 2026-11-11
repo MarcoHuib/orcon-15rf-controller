@@ -130,6 +130,7 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.equal(p.$('profName').textContent, 'Geen profiel geselecteerd'); assert.ok(!p.$('cProf').classList.contains('on'));
         ok('WiFi card shows the network as text; no profile -> "Geen profiel geselecteerd"');
         assert.ok(p.dom.all.some(e => e.attrs.class === 'choice card off' && e.attrs['aria-disabled'] === 'true')); ok('Siri is a disabled placeholder');
+        assert.match(p.$('sysSub').textContent, /^Klassiek dashboard/); assert.equal(p.$('cSys').attrs.href, '/dashboard'); ok('Systeem card names its target: the classic dashboard');
         wifi = { connected: false, ssid: '' }; caps = { ...CAPS_RX, settings_pages: false }; await p.refresh();
         assert.equal(p.$('wifiSub').textContent, 'Niet verbonden'); assert.ok(p.$('cWifi').classList.contains('off') && p.$('cSys').classList.contains('off'));
         assert.match(p.$('sysSub').textContent, /Niet beschikbaar/); ok('no WiFi -> "Niet verbonden"; no classic pages -> cards disabled');
