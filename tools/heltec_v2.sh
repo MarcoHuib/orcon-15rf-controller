@@ -19,10 +19,10 @@ DEV_DIR="${DEV_DIR:-/dev}"
 ESPTOOL_SHA256="dc4ef26b659e1a8dcb019147c0ea6d94980b34de99fbe09121c7941c8b254531"
 LOCAL_ENV="${LOCAL_ENV:-}"     # empty permits ONLY the pinned historical rollback
 LOCAL_ENVS="heltec_v2_sx1276 heltec_v2_sx1276_tx_poc_dryrun"   # the only images that may be written
-# The one-shot RF test image is deliberately NOT in LOCAL_ENVS. package/verify/precheck/flash
-# accept it only with ORCON_RF_TEST_ACK set to this exact phrase, and flash asks for it again.
+# The RF test image (capped packets per boot) is deliberately NOT in LOCAL_ENVS. package/verify/
+# precheck/flash accept it only with ORCON_RF_TEST_ACK set to this exact phrase; flash asks again.
 RF_TEST_ENV="heltec_v2_sx1276_rftest"
-RF_TEST_ACK="one RF packet per boot"
+RF_TEST_ACK="RF test image"
 env_ok() { [[ " $LOCAL_ENVS " == *" $1 "* ]] || { [ "$1" = "$RF_TEST_ENV" ] && [ "${ORCON_RF_TEST_ACK:-}" = "$RF_TEST_ACK" ]; }; }
 # A local package needs these local checks PASS on the same clean commit (RESULTS.json).
 ROLLBACK_COMMIT="d5c39e1b4d1f0ed37defe69b51e3562c36058208"  # immutable local trust anchor
@@ -146,8 +146,8 @@ markers() {   # image contents per environment; network firmware update must be 
     local f=$1 env=$2 s
     if [ "$env" = "$RF_TEST_ENV" ]; then
         env_ok "$env" || die "RF test image refused: ORCON_RF_TEST_ACK not given"
-        grep -q -a "SX1276 direct RX + txpoc packet TX (ONE-SHOT RF TEST: max 1 packet per boot)" "$f" \
-            || die "one-shot RF test marker missing (uncapped RF image?)"
+        grep -q -a -E "SX1276 direct RX \+ txpoc packet TX \(RF TEST: max [0-9]+ packets per boot\)" "$f" \
+            || die "RF test marker missing (uncapped RF image?)"
     else
         grep -q -a "SX1276 direct RX (TX disabled)" "$f" || die "not the SX1276 RX-only backend"
     fi
@@ -312,7 +312,7 @@ flash() {
     read -r -p "Write ${sha:0:7} (${LOCAL_ENV:-heltec_v2_sx1276}) on $PORT? Type yes: " ok
     [ "$ok" = "yes" ] || die "aborted by user"
     if [ "$LOCAL_ENV" = "$RF_TEST_ENV" ]; then
-        echo "WARNING: one-shot RF TEST image: after boot the web page can put ONE real 868 MHz packet on air."
+        echo "WARNING: RF TEST image: the web page can put real 868 MHz packets on air (capped per boot, 2 s apart)."
         read -r -p "Type the RF test acknowledgement phrase: " ok
         [ "$ok" = "$RF_TEST_ACK" ] || die "RF test image not confirmed"
     fi

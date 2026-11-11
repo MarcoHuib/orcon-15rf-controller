@@ -15,14 +15,17 @@ shim = r'''
 #include <cstdio>
 #include <cstring>
 #include <array>
+#include <atomic>
 #define RADIOLIB_ERR_NONE 0
 #define RADIOLIB_ENCODING_NRZ 0
 #define RADIOLIB_SHAPING_0_5 2
-static int checks=0, fails=0, failAt=0, calls=0, starts=0, badWrite=-1;
+static int checks=0, fails=0, failAt=0, calls=0, starts=0, badWrite=-1, rxAfter=0, waits=0;
+static void delayMicroseconds(int) { ++waits; }
 #define CHECK(x) do { ++checks; if(!(x)) { ++fails; printf("FAIL line %d: %s\n",__LINE__,#x); } } while(0)
 static std::array<uint8_t,256> regs;
 struct Mod {
-    uint8_t SPIreadRegister(uint8_t a) { return regs[a]; }
+    // rxAfter > 0: the chip reports FSRx (0x04) for that many op-mode reads before RX (0x05).
+    uint8_t SPIreadRegister(uint8_t a) { if(a==1&&regs[1]==4&&rxAfter>0&&--rxAfter==0) regs[1]=5; return regs[a]; }
     void SPIwriteRegister(uint8_t a,uint8_t v) { if(a!=badWrite) regs[a]=v; }
 } g_mod;
 static bool fault() { return ++calls==failAt; }
@@ -39,7 +42,7 @@ struct Radio {
         CHECK(regs[0x25]==0&&regs[0x26]==2&&regs[0x27]==0);
         if(fault()) return -1; regs[1]=3; regs[0x40]=0; return 0;
     }
-    int receiveDirect() { if(fault()) return -1; regs[0x31]&=0xbf; regs[0x40]=0x0c; regs[1]=5; return 0; }
+    int receiveDirect() { if(fault()) return -1; regs[0x31]&=0xbf; regs[0x40]=0x0c; regs[1]=rxAfter?4:5; return 0; }
 } g_radio;
 static bool g_rxReady=true;
 static uint8_t g_op=5;
@@ -50,7 +53,7 @@ tests = r'''
 static void reset() {
     regs.fill(0); regs[1]=5; regs[0x40]=0x0c; regs[0x20]=0x12; regs[0x21]=0x34;
     regs[0x25]=0; regs[0x26]=2; regs[0x27]=0x90; regs[0x30]=0x80;
-    calls=starts=failAt=0; badWrite=-1; g_rxReady=true;
+    calls=starts=failAt=waits=rxAfter=0; badWrite=-1; g_rxReady=true;
 }
 int main() {
     uint8_t data[106]={};
@@ -69,6 +72,13 @@ int main() {
     reset(); badWrite=0x27; CHECK(!txBegin(data,50)); CHECK(starts==0); badWrite=-1; CHECK(txRestoreRx());
     reset(); CHECK(txBegin(data,50)); failAt=calls+2; CHECK(!txRestoreRx()); CHECK(!g_rxReady&&!txActive());
     reset(); CHECK(txBegin(data,50)); badWrite=0x30; CHECK(!txRestoreRx()); CHECK(!g_rxReady&&!txActive());
+    CHECK((restoreDiag()>>24)==2 && ((restoreDiag()>>16)&0xff)==0x30);          // which register, for the web layer
+    reset(); CHECK(txBegin(data,50)); failAt=calls+1; CHECK(!txRestoreRx()); CHECK(restoreDiag()==0x01000000u);
+    reset(); CHECK(txBegin(data,50)); failAt=calls+2; CHECK(!txRestoreRx()); CHECK(restoreDiag()==0x03000000u);
+    // FSK RX passes through FSRx: a short transition is waited for, a stuck one fails closed.
+    reset(); CHECK(txBegin(data,50)); rxAfter=4; CHECK(txRestoreRx()); CHECK(g_op==5&&g_rxReady&&restoreDiag()==0&&waits>0&&waits<=20);
+    reset(); CHECK(txBegin(data,50)); rxAfter=1000; CHECK(!txRestoreRx()); CHECK(!g_rxReady&&restoreDiag()==0x04000004u&&waits==20);
+    reset(); CHECK(txBegin(data,50)); CHECK(txRestoreRx()); CHECK(restoreDiag()==0&&waits==0);              // no wait when already RX
     printf("SX1276 register/restore model: %d checks, %d failures\n",checks,fails); return fails?1:0;
 }
 '''

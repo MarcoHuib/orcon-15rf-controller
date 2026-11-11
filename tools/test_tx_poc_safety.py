@@ -112,7 +112,7 @@ base=['RADIO_SX1276=1','BOARD_HELTEC_V2=1']
 valid=[('rx-default',base,{'RX_ONLY':'1','ORCON_TX_POC':'0','ORCON_TX_RF_ENABLE':'0','MQTT_ENABLED':'1'}),
        ('dryrun',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=0'],{'RX_ONLY':'1','ORCON_TX_POC':'1','MQTT_ENABLED':'0'}),
        ('rf-web',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1'],{'RX_ONLY':'1','ORCON_TX_POC':'1','ORCON_TX_RF_ENABLE':'1','ORCON_WEB_CONTROL':'1','MQTT_ENABLED':'0'}),
-       ('rf-one-shot',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_MAX_PER_BOOT=1'],{'ORCON_TX_RF_ENABLE':'1','ORCON_TX_MAX_PER_BOOT':'1','MQTT_ENABLED':'0'})]
+       ('rf-test-cap',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_MAX_PER_BOOT=50'],{'ORCON_TX_RF_ENABLE':'1','ORCON_TX_MAX_PER_BOOT':'50','MQTT_ENABLED':'0'})]
 for name,defs,wanted in valid:
     result=run([a.compiler,'-std=c++11','-I','src','-x','c++','-dM','-E','-']+['-D'+x for x in defs],input='#include "config.h"\n')
     assert result.returncode==0,(name,result.stderr)
@@ -132,8 +132,8 @@ invalid=[('rf-alone',['ORCON_TX_RF_ENABLE=1'],'RF TX requires'),
          ('dual-radio',base+['RADIO_CC1101_ASYNC=1','ORCON_TX_POC=1','RX_ONLY=1'],'PoC requires'),
          ('pintest',base+['PINTEST=1','ORCON_TX_POC=1','RX_ONLY=1'],'PoC requires'),
          ('invalid-capability',base+['ORCON_TX_POC=2'],'capabilities must be 0 or 1'),
-         ('cap-without-rf',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_MAX_PER_BOOT=1'],'ORCON_TX_MAX_PER_BOOT is 0, or 1'),
-         ('cap-above-one',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_TX_MAX_PER_BOOT=2'],'ORCON_TX_MAX_PER_BOOT is 0, or 1')]
+         ('cap-without-rf',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_MAX_PER_BOOT=1'],'ORCON_TX_MAX_PER_BOOT is 0, or 1..100'),
+         ('cap-above-limit',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_TX_MAX_PER_BOOT=101'],'ORCON_TX_MAX_PER_BOOT is 0, or 1..100')]
 for name,defs,diagnostic in invalid:
     result=run([a.compiler,'-std=c++11','-I','src','-x','c++','-fsyntax-only','-']+['-D'+x for x in defs],input='#include "config.h"\n')
     assert result.returncode!=0 and diagnostic in result.stderr,(name,result.returncode,result.stderr)

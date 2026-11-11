@@ -28,7 +28,7 @@ def img(kind_byte, hdr, body, size):
     return out + b"\x00" * (size - len(out))
 markers = {"heltec_v2_sx1276": b"SX1276 direct RX (TX disabled) RX-ONLY TEST FIRMWARE",
            "heltec_v2_sx1276_tx_poc_dryrun": b"SX1276 direct RX (TX disabled) tx-poc-dryrun DRY-RUN ONLY / NO RF",
-           "heltec_v2_sx1276_rftest": b"SX1276 direct RX + txpoc packet TX (ONE-SHOT RF TEST: max 1 packet per boot)"}[env]
+           "heltec_v2_sx1276_rftest": b"SX1276 direct RX + txpoc packet TX (RF TEST: max 50 packets per boot)"}[env]
 if mut == "rf-uncapped": markers = b"SX1276 direct RX + txpoc packet TX"
 fw_hdr = b"\x02\x20" if mut == "fw-header-4mb" else b"\x02\x30"
 stamp = b"" if mut == "no-stamp" else sha.encode()
@@ -218,8 +218,8 @@ lines = open(sys.argv[1]).read().splitlines()
 reads = [l.split("read_flash ", 1)[1].split()[:2] for l in lines if "read_flash" in l]
 assert reads.index(["0x8000", "0xc00"]) < reads.index(["0x340000", "0x330000"]), reads
 assert not any("write_flash" in l or "erase" in l for l in lines)' "$W/esptool.log"
-# One-shot RF test image: a separate, explicitly acknowledged path; RX-only/dry-run unchanged.
-RFT=heltec_v2_sx1276_rftest ACK="one RF packet per boot"
+# RF test image: a separate, explicitly acknowledged path; RX-only/dry-run unchanged.
+RFT=heltec_v2_sx1276_rftest ACK="RF test image"
 rf_pkg() { mkpkg "$W/tools/local/$SHA-$RFT" "$SHA" "$RFT" local "${1:-none}"; }
 script fail "LOCAL_ENV RF test image without acknowledgement" LOCAL_ENV=$RFT bash "$H" plan HEAD
 rf_pkg; LOCAL_ENV=$RFT run fail "RF test package without acknowledgement"        "" verify "$SHA"
@@ -229,7 +229,7 @@ rf_pkg rf-uncapped; LOCAL_ENV=$RFT ORCON_RF_TEST_ACK="$ACK" run fail "uncapped R
 local_pkg; LOCAL_ENV=$DRY ORCON_RF_TEST_ACK="$ACK" run pass "acknowledgement does not change the dry-run path" "" verify "$SHA"
 rf_pkg; LOCAL_ENV=$RFT ORCON_RF_TEST_ACK="$ACK" PORT="$W/tty" HELTEC_MAC=02:00:00:00:00:08 run fail "RF flash: yes without the phrase" $'yes\n' flash "$SHA"
 rf_pkg; LOCAL_ENV=$RFT ORCON_RF_TEST_ACK="$ACK" PORT="$W/tty" HELTEC_MAC=02:00:00:00:00:08 run fail "RF flash: wrong phrase" $'yes\nyes\n' flash "$SHA"
-rf_pkg; LOCAL_ENV=$RFT ORCON_RF_TEST_ACK="$ACK" PORT="$W/tty" HELTEC_MAC=02:00:00:00:00:08 run pass "RF flash: yes + phrase, app0 only" $'yes\none RF packet per boot\n' flash "$SHA"
+rf_pkg; LOCAL_ENV=$RFT ORCON_RF_TEST_ACK="$ACK" PORT="$W/tty" HELTEC_MAC=02:00:00:00:00:08 run pass "RF flash: yes + phrase, app0 only" $'yes\nRF test image\n' flash "$SHA"
 assert "RF test flash writes app0 only" python3 -c '
 import sys
 lines = open(sys.argv[1]).read().splitlines()

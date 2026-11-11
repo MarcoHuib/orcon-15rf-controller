@@ -438,11 +438,17 @@ static void remoteBody(int code) {
     const orcon::State& os = orcon::state();
     const uint32_t now = millis();
     const bool isCmd = r.request.kind == (uint8_t)txpoc::FrameKind::Mode && r.request.input.request && r.request.ids.fan==orcon::ids().fan;
+#if ORCON_TX_RF_ENABLE
+    const uint32_t restoreDiag = radio::sx1276::restoreDiag();   // facts for diagnosing a failed RX restore
+#else
+    const uint32_t restoreDiag = 0;
+#endif
     Out o;
     o.add("{\"supported\":true,\"id\":%lu,\"key\":\"%s\",\"minutes\":0,"
           "\"accepted\":%s,\"sent\":%s,\"confirm\":\"%s\",\"age_s\":%lu,"
           "\"unit_mode\":\"%s\",\"unit_age_s\":%ld,"
-          "\"phase\":\"%s\",\"error\":\"%s\",\"rf_sent\":%s,\"simulated\":%s,\"unit_confirmed\":false,\"next_request\":%lu}",
+          "\"phase\":\"%s\",\"error\":\"%s\",\"rf_sent\":%s,\"simulated\":%s,\"unit_confirmed\":false,\"next_request\":%lu,"
+          "\"restore_diag\":\"%08lX\",\"tx_starts\":%lu}",
           (unsigned long)(isCmd ? r.request.input.request : 0),
           isCmd ? keyOfMode(r.request.input.mode) : "",
           isCmd ? "true" : "false", isCmd && r.rfSent ? "true" : "false",
@@ -451,7 +457,8 @@ static void remoteBody(int code) {
           orcon::modeName(os.mode),
           os.modeMs ? long((now - os.modeMs) / 1000) : -1L,
           isCmd ? txpoc::phaseName(s.phase) : "idle", isCmd ? txpoc::errorName(r.error) : "none",
-          isCmd && r.rfSent ? "true" : "false", SIMULATED ? "true" : "false", (unsigned long)s.nextRequest);
+          isCmd && r.rfSent ? "true" : "false", SIMULATED ? "true" : "false", (unsigned long)s.nextRequest,
+          (unsigned long)restoreDiag, (unsigned long)txpoc::rfTxStarts());
     reply(code, o);
 }
 static void handleRemoteState() { remoteBody(200); }
@@ -496,7 +503,7 @@ static void handleRemoteSend() {
     if(!(profile->unit==orcon::ids().fan)){fail(409,"profile-unit-mismatch");return;}
     if(profile->remote==orcon::ids().us){fail(403,"identity-conflict");return;}
 #if ORCON_TX_MAX_PER_BOOT
-    // One-shot test image: refuse cleanly once the RF backend has started its packet.
+    // RF test image: refuse cleanly once the RF backend has used its per-boot packets.
     if(txpoc::rfTxStarts()>=ORCON_TX_MAX_PER_BOOT){fail(409,"tx-limit-reached");return;}
 #endif
     txpoc::Admission a = txpoc::controller().submitCtl(modeOfKey(k), tail, orcon::ids(),

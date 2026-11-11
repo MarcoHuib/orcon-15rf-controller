@@ -44,6 +44,10 @@ RxDiagnostics rxDiagnostics() {
     return d;
 }
 }
+#if ORCON_TX_RF_ENABLE
+static uint32_t g_restoreDiag = 0;
+namespace radio { namespace sx1276 { uint32_t restoreDiag() { return g_restoreDiag; } } }
+#endif
 static bool g_wifiFake = true;
 static int g_restarts = 0, g_forgets = 0;
 namespace net { bool apMode() { return g_apModeFake; } bool maskIds() { return true; } const char* ipAddr() { return "192.0.2.5"; }
@@ -452,7 +456,10 @@ int main() {
     { const int before = txpoc::s_rf.sent[0]; g_ms += txpoc::RATE_CTL_MS; txpoc::g_rfStarts = ORCON_TX_MAX_PER_BOOT;
       CHECK(call("POST", "/api/remote/send", "{\"key\":\"1\"}") == 409 && err("tx-limit-reached") && txpoc::s_rf.sent[0] == before,
             "one-shot RF test image: after its packet every command is refused before admission, nothing prepared");
-      call("GET", "/api/setup/state"); CHECK(J["caps"]["tx_max_per_boot"] == 1, "state reports the per-boot cap to the page");
+      call("GET", "/api/setup/state"); CHECK(J["caps"]["tx_max_per_boot"] == ORCON_TX_MAX_PER_BOOT, "state reports the per-boot cap to the page");
+      g_restoreDiag = 0x04000004u; call("GET", "/api/remote/state");
+      CHECK(J["restore_diag"] == "04000004" && J["tx_starts"] == ORCON_TX_MAX_PER_BOOT, "remote state: failed-restore reason and packets started this boot");
+      g_restoreDiag = 0;
       txpoc::g_rfStarts = 0; }
 #endif
     // RX health gates admission.

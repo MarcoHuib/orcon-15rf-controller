@@ -158,8 +158,8 @@ if ($Firmware) {
         if ($isV2) {
             foreach ($forbidden in @('ArduinoOTA','auth_upload','Updater.cpp')) { if ($firmwareText.Contains($forbidden)) { $imageOk = $false } }
             if ($envName -eq 'heltec_v2_sx1276_rftest') {
-                # One-shot RF test image: the capped RF marker, never the RX-only/dry-run markers.
-                $imageOk = $imageOk -and $firmwareText.Contains('SX1276 direct RX + txpoc packet TX (ONE-SHOT RF TEST: max 1 packet per boot)') -and
+                # RF test image: the capped RF marker, never the RX-only/dry-run markers.
+                $imageOk = $imageOk -and ($firmwareText -match 'SX1276 direct RX \+ txpoc packet TX \(RF TEST: max \d+ packets per boot\)') -and
                     -not $firmwareText.Contains('SX1276 direct RX (TX disabled)') -and -not $firmwareText.Contains('tx-poc-dryrun')
             } else {
                 $imageOk = $imageOk -and $firmwareText.Contains('SX1276 direct RX (TX disabled)')

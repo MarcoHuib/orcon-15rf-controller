@@ -29,8 +29,8 @@ public:
     }
     bool start(uint32_t) override {
 #if ORCON_TX_MAX_PER_BOOT
-        // One-shot test image: every attempt is counted before the radio is touched, and
-        // the cap fails closed in the RX task, whatever the web layer decided.
+        // RF test image: every attempt is counted before the radio is touched, and the
+        // per-boot cap fails closed in the RX task, whatever the web layer decided.
         if (starts.load(std::memory_order_acquire) >= ORCON_TX_MAX_PER_BOOT) return false;
 #endif
         starts.fetch_add(1, std::memory_order_acq_rel);

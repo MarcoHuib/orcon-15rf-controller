@@ -16,6 +16,7 @@ namespace radio { namespace sx1276 {
 bool txBegin(const uint8_t* onair, size_t n);
 bool txDone();
 bool txRestoreRx();
+uint32_t restoreDiag(); // any task: why the last fast RX restore failed (0 = it succeeded)
 } }
 #endif
 #endif
