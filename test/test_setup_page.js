@@ -342,6 +342,11 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
             'POST /api/remote/send': () => { cs = { ...cs, id: 1, key: '3', accepted: true, sent: false, confirm: 'not_available', phase: 'dry-run-complete' }; return [202, cs]; },
         }, 'control');
         assert.match(p.$('notice').textContent, /DRY-RUN/); ok('webctl dry-run: prominent notice, keys still work');
+        { const q = await page({ 'GET /api/setup/state': () => [200, state({ ...CAPS_WC, simulated: false, tx_max_per_boot: 1 })], 'GET /api/remote/state': () => [200, { ...cs, simulated: false }],
+                                 'POST /api/remote/send': () => [409, { error: 'tx-limit-reached' }] }, 'control');
+          assert.match(q.$('notice').textContent, /RF-TESTFIRMWARE: maximaal één echte RF-uitzending per opstart/);
+          q.keys[5].click(); await flush(); assert.match(q.$('err').textContent, /Testlimiet bereikt/); }
+        ok('one-shot RF test image: warning on the dashboard, refusal after its packet explained');
         assert.equal(p.keys[2].style.visibility, 'hidden'); ok('webctl: timer button hidden (five functions only)');
         p.keys[5].click(); await flush();
         assert.equal(p.posts().length, 1); assert.deepEqual(p.posts()[0].body, { key: '3' });

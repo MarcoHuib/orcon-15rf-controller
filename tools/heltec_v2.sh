@@ -19,6 +19,11 @@ DEV_DIR="${DEV_DIR:-/dev}"
 ESPTOOL_SHA256="dc4ef26b659e1a8dcb019147c0ea6d94980b34de99fbe09121c7941c8b254531"
 LOCAL_ENV="${LOCAL_ENV:-}"     # empty permits ONLY the pinned historical rollback
 LOCAL_ENVS="heltec_v2_sx1276 heltec_v2_sx1276_tx_poc_dryrun"   # the only images that may be written
+# The one-shot RF test image is deliberately NOT in LOCAL_ENVS. package/verify/precheck/flash
+# accept it only with ORCON_RF_TEST_ACK set to this exact phrase, and flash asks for it again.
+RF_TEST_ENV="heltec_v2_sx1276_rftest"
+RF_TEST_ACK="one RF packet per boot"
+env_ok() { [[ " $LOCAL_ENVS " == *" $1 "* ]] || { [ "$1" = "$RF_TEST_ENV" ] && [ "${ORCON_RF_TEST_ACK:-}" = "$RF_TEST_ACK" ]; }; }
 # A local package needs these local checks PASS on the same clean commit (RESULTS.json).
 ROLLBACK_COMMIT="d5c39e1b4d1f0ed37defe69b51e3562c36058208"  # immutable local trust anchor
 # offset:image:slot size. NVS (0x9000-0xDFFF) is never written; the merged image is never used.
@@ -139,7 +144,13 @@ PY
 
 markers() {   # image contents per environment; network firmware update must be compiled out
     local f=$1 env=$2 s
-    grep -q -a "SX1276 direct RX (TX disabled)" "$f" || die "not the SX1276 RX-only backend"
+    if [ "$env" = "$RF_TEST_ENV" ]; then
+        env_ok "$env" || die "RF test image refused: ORCON_RF_TEST_ACK not given"
+        grep -q -a "SX1276 direct RX + txpoc packet TX (ONE-SHOT RF TEST: max 1 packet per boot)" "$f" \
+            || die "one-shot RF test marker missing (uncapped RF image?)"
+    else
+        grep -q -a "SX1276 direct RX (TX disabled)" "$f" || die "not the SX1276 RX-only backend"
+    fi
     for s in "Firmware update (OTA)" "ArduinoOTA" "auth_upload" "Updater.cpp"; do
         if grep -q -a "$s" "$f"; then die "image still contains '$s' (OTA/HTTP update)"; fi
     done
@@ -150,6 +161,8 @@ markers() {   # image contents per environment; network firmware update must be 
         heltec_v2_sx1276_tx_poc_dryrun)
             grep -q -a "tx-poc-dryrun" "$f" && grep -q -a "DRY-RUN ONLY / NO RF" "$f" \
                 || die "dry-run markers missing" ;;
+        "$RF_TEST_ENV")
+            if grep -q -a "tx-poc-dryrun" "$f"; then die "RF test image contains the dry-run backend"; fi ;;
         *) die "env $env may not be flashed" ;;
     esac
 }
@@ -298,6 +311,11 @@ flash() {
     echo "will write app0 only: esptool ${FLASH_ARGS[*]}"
     read -r -p "Write ${sha:0:7} (${LOCAL_ENV:-heltec_v2_sx1276}) on $PORT? Type yes: " ok
     [ "$ok" = "yes" ] || die "aborted by user"
+    if [ "$LOCAL_ENV" = "$RF_TEST_ENV" ]; then
+        echo "WARNING: one-shot RF TEST image: after boot the web page can put ONE real 868 MHz packet on air."
+        read -r -p "Type the RF test acknowledgement phrase: " ok
+        [ "$ok" = "$RF_TEST_ACK" ] || die "RF test image not confirmed"
+    fi
     files_ok "$snapshot" "$sha"
     # The frozen bytes must still be the ones the ORIGINAL evidence recorded, not just
     # self-consistent with a package manifest that could have changed alongside them.
@@ -319,7 +337,7 @@ flash() {
 # Reads files only; no board access. The package is verified completely before it is accepted.
 package() {
     local ev="${1:?usage: package <evidence-dir> <env>}" env="${2:?usage: package <evidence-dir> <env>}"
-    [[ " $LOCAL_ENVS " == *" $env "* ]] || die "env $env may not be flashed"
+    env_ok "$env" || die "env $env may not be flashed"
     ev="$(cd "$ev" && pwd)"; local src="$ev/artifacts/$env"
     [ -f "$ev/RESULTS.json" ] && [ -f "$src/firmware.bin" ] || die "no evidence/artifacts for $env in $ev"
     local sha; sha="$(fulsha "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$ev/RESULTS.json")")"
@@ -342,7 +360,7 @@ monitor() {
 
 # Tests source functions only; all hardware operations are replaced by failing/local stubs.
 [ "${HELTEC_V2_SOURCE_ONLY:-}" != 1 ] || return 0
-[ -z "$LOCAL_ENV" ] || [[ " $LOCAL_ENVS " == *" $LOCAL_ENV "* ]] || die "LOCAL_ENV=$LOCAL_ENV may not be flashed"
+[ -z "$LOCAL_ENV" ] || env_ok "$LOCAL_ENV" || die "LOCAL_ENV=$LOCAL_ENV may not be flashed"
 cmd="${1:-}"; shift || true
 case "$cmd" in
     ports)   ports ;;

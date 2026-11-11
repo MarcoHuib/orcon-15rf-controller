@@ -76,6 +76,8 @@ static Owner s_owner(s_ex, s_rf);
 Controller& controller() { return s_ctl; }
 bool rxReady() { return g_radioOk && s_rf.healthy; }
 bool ownerBusy() { return s_owner.step() != Step::Idle; }
+static uint32_t g_rfStarts = 0;                 // RF packets started this boot (set by the test)
+uint32_t rfTxStarts() { return g_rfStarts; }
 }
 #endif
 
@@ -446,6 +448,13 @@ int main() {
     loopTick(); g_ms += txpoc::RATE_CTL_MS;
     CHECK(call("POST", "/api/remote/send", "{\"key\":\"auto\"}") == 202 && J["key"] == "auto", "auto accepted");
     loopTick();
+#if ORCON_TX_MAX_PER_BOOT
+    { const int before = txpoc::s_rf.sent[0]; g_ms += txpoc::RATE_CTL_MS; txpoc::g_rfStarts = ORCON_TX_MAX_PER_BOOT;
+      CHECK(call("POST", "/api/remote/send", "{\"key\":\"1\"}") == 409 && err("tx-limit-reached") && txpoc::s_rf.sent[0] == before,
+            "one-shot RF test image: after its packet every command is refused before admission, nothing prepared");
+      call("GET", "/api/setup/state"); CHECK(J["caps"]["tx_max_per_boot"] == 1, "state reports the per-boot cap to the page");
+      txpoc::g_rfStarts = 0; }
+#endif
     // RX health gates admission.
     g_radioOk = false; g_ms += txpoc::RATE_CTL_MS;
     CHECK(call("POST", "/api/remote/send", "{\"key\":\"away\"}") == 503 && err("rf-unavailable"), "RX unhealthy: refused");

@@ -232,7 +232,9 @@ static uint32_t g_lastReceivedMs = 0;
 static uint32_t g_lastSeq = 0;                  // loop: sync number of the frame poll() returned
 static rxs::FrameQueue<16, SyncInfo> g_sq;      // RX task -> loop: syncs for the live RF console
 
-#if ORCON_TX_RF_ENABLE
+#if ORCON_TX_RF_ENABLE && ORCON_TX_MAX_PER_BOOT
+const char* name() { return "SX1276 direct RX + txpoc packet TX (ONE-SHOT RF TEST: max 1 packet per boot)"; }
+#elif ORCON_TX_RF_ENABLE
 const char* name() { return "SX1276 direct RX + txpoc packet TX"; }
 #else
 const char* name() { return "SX1276 direct RX (TX disabled)"; }

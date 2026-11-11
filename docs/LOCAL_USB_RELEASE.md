@@ -264,3 +264,33 @@ De keuze voor app-only, exacte bootselectie en grenzen volgt uit de lokale
 boot_app0-bytes en Espressifs primaire documentatie:
 [OTA bootselectie en rollback](https://docs.espressif.com/projects/esp-idf/en/v4.4.8/esp32/api-reference/system/ota.html)
 en [esptool, sectorwissen en imagechecks](https://docs.espressif.com/projects/esptool/en/release-v4/esp32/esptool/basic-commands.html).
+
+## Eenmalig RF-testimage (`heltec_v2_sx1276_rftest`)
+
+Een diagnostisch image voor één gecontroleerde fysieke uitzending; nooit een release.
+
+**Wat het image is**
+- De web-control-RF-build met `ORCON_TX_MAX_PER_BOOT=1`.
+- De RF-backend telt elke start voordat de radio wordt aangesproken, en weigert daarna elk volgend pakket in dezelfde boot.
+- De webroute antwoordt dan `409 tx-limit-reached`; de pagina toont een waarschuwing op het dashboard.
+
+**Gates die blijven gelden**
+- actief geverifieerd profiel;
+- dezelfde unit;
+- eigen identiteit, nooit gekloond;
+- fysieke afstandsbediening deze boot gehoord;
+- wachttijd na een druk op de afstandsbediening;
+- verse standmelding van de unit;
+- minimaal 2 s tussen commando's;
+- geen automatische herhaling.
+
+**Flashen**
+- De omgeving staat **niet** in `LOCAL_ENVS`. `package`, `verify`, `precheck` en `flash` accepteren hem alleen met `ORCON_RF_TEST_ACK="one RF packet per boot"`.
+- `flash` vraagt eerst `yes` en daarna die zin nogmaals.
+- `markers` eist de begrensde RF-marker en weigert een onbegrensd RF-image.
+- `check_elf_tx.py heltec_v2_sx1276_rftest` eist:
+  - `Sx1276Backend` als enige backend;
+  - `Sx1276Backend::start` → `radio::sx1276::txBegin` als enige niet-RadioLib-route naar een zendmethode.
+- De RX-only- en dry-run-paden zijn ongewijzigd.
+
+**Na de test:** flash het RX-only-image terug via de normale route. Een herstart geeft het image weer één pakket; daarom blijft het alleen tijdens de test op het board.

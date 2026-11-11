@@ -6,6 +6,8 @@ words that hold a function address (Xtensa long calls and function pointers), an
   - no function outside RadioLib reaches a RadioLib transmit method through that graph;
   - radio::sendFrame is not linked, or reaches no RadioLib code at all;
   - dry-run: txpoc::DryRunBackend is the ONLY txpoc Backend vtable and reaches no radio/SPI;
+  - one-shot RF test: only Sx1276Backend, and transmit is reached ONLY via
+    txpoc::Sx1276Backend::start -> radio::sx1276::txBegin;
     RX-only: no txpoc code linked.
 Limitation, printed in the report: register-indirect virtual calls (vtable slot loads) are
 not resolved; the vtables holding transmit methods and the functions that load them are listed.
@@ -97,7 +99,10 @@ def analyse(elf, env, bindir):
             reverse.setdefault(callee, set()).add(caller)
     reaching = closure(tx, reverse) - set(tx)
     outside = sorted(n for n in reaching if not RADIOLIB.match(n))
-    problems = [f'non-RadioLib function reaches transmit: {n}' for n in outside]
+    # The one-shot RF test image has exactly one approved path to the air; every other env none.
+    RF_PATH = {'radio::sx1276::txBegin(unsigned char const*, unsigned int)', 'txpoc::Sx1276Backend::start(unsigned int)'}
+    allowed = RF_PATH if env == 'heltec_v2_sx1276_rftest' else set()
+    problems = [f'non-RadioLib function reaches transmit: {n}' for n in outside if n not in allowed]
     send = [n for n in names if n.startswith('radio::sendFrame(')]
     if send:
         leak = sorted(n for n in closure(send, edges) if RADIOLIB.match(n))
@@ -120,6 +125,11 @@ def analyse(elf, env, bindir):
             problems.append('DryRunBackend not linked')
         leak = sorted(n for n in closure(dry, edges) if RADIO_OR_SPI.search(n))
         problems += [f'DryRunBackend reaches radio/SPI: {n}' for n in leak]
+    elif env == 'heltec_v2_sx1276_rftest':
+        if backends != ['vtable for txpoc::Sx1276Backend']:
+            problems.append(f'RF test image must link only Sx1276Backend: {backends}')
+        if set(outside) != RF_PATH:
+            problems.append(f'RF test transmit path is not exactly {sorted(RF_PATH)}: {outside}')
     else:
         problems.append(f'env {env} is not a Heltec V2 image')
 

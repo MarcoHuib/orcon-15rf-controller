@@ -220,12 +220,13 @@ static void handleState() {
     Out o;
     o.add("{\"fw\":\"%s\",\"rx_only\":%s,\"caps\":{\"rx_supported\":%s,\"tx_supported\":%s,"
           "\"read_supported\":%s,\"pair_supported\":%s,\"control_supported\":%s,\"simulated\":%s,"
-          "\"timer_supported\":%s,\"profile_control_supported\":%s,\"settings_pages\":%s},"
+          "\"timer_supported\":%s,\"profile_control_supported\":%s,\"settings_pages\":%s,\"tx_max_per_boot\":%d},"
           "\"rf\":\"%s\",\"token\":\"%s\",\"mask_ids\":%s,\"active\":\"%s\"",
           FW_VERSION, RX_ONLY ? "true" : "false", CAN_RX ? "true" : "false", CAN_TX ? "true" : "false",
           CAN_RX ? "true" : "false", CAN_PAIR ? "true" : "false", CAN_TX ? "true" : "false",
           SIMULATED ? "true" : "false", ORCON_TX_POC ? "false" : "true", ORCON_WEB_CONTROL ? "true" : "false",
           ORCON_TX_POC ? "false" : "true",                         // /wifi and /dashboard exist (net.cpp)
+          ORCON_TX_MAX_PER_BOOT,
           rfState(), hostOk() ? g_token : "", net::maskIds() ? "true" : "false",
           g_read.st == St::Active ? "read" : pairActive() ? "pair" : "none");
     char id[16] = "";
@@ -494,6 +495,10 @@ static void handleRemoteSend() {
     if(!tail){fail(409,"profile-protocol-unsupported");return;}
     if(!(profile->unit==orcon::ids().fan)){fail(409,"profile-unit-mismatch");return;}
     if(profile->remote==orcon::ids().us){fail(403,"identity-conflict");return;}
+#if ORCON_TX_MAX_PER_BOOT
+    // One-shot test image: refuse cleanly once the RF backend has started its packet.
+    if(txpoc::rfTxStarts()>=ORCON_TX_MAX_PER_BOOT){fail(409,"tx-limit-reached");return;}
+#endif
     txpoc::Admission a = txpoc::controller().submitCtl(modeOfKey(k), tail, orcon::ids(),
                              true, txpoc::rxReady(), identityClear, millis(), d["request"].as<uint32_t>());
     if (a == txpoc::Admission::Duplicate) { remoteBody(200); return; }
