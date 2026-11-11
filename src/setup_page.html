@@ -222,7 +222,7 @@ b.style.visibility=(i===2&&ct&&c.timer_supported===false)?'hidden':'';
 b.setAttribute('aria-pressed',String(pr&&sel.has(k)));
 });
 $('rnote').textContent=pr?(pready?'Kies Auto en 1: ze worden samen verzonden':'Virtuele afstandsbediening'):rd?'Alleen ter weergave · knoppen niet klikbaar':live||busy?'Klik op een knop om te verzenden':'Bedienen niet beschikbaar';
-if(pr)drawPair(c);if(rd)drawRead(c,ra,rdone);if(ct){drawDash(c);drawProfiles();drawCtl()}if(page==='profiles')drawList();if(page==='welcome')$('simSub').textContent='Gebruik Orcon zonder fysieke afstandsbediening (virtuele bediening).'+(c.pair_supported===false?' Niet beschikbaar met deze firmware.':'');if(page==='done')$('finName').textContent=fin;
+if(pr)drawPair(c);if(rd)drawRead(c,ra,rdone);if(ct){drawDash(c);drawProfiles();drawCtl()}if(page==='profiles')drawList();if(page==='welcome')$('simSub').textContent='Gebruik Orcon zonder fysieke afstandsbediening (virtuele bediening).'+(c.pair_supported?' Experimenteel: maakt nog geen profiel aan.':' Niet beschikbaar met deze firmware.');if(page==='done')$('finName').textContent=fin;
 }
 function drawPair(c){
 const s=P?(c.simulated&&P.status==='paired'?'dry_run_complete':P.status):'idle',stage=!c.pair_supported?-1:{ready:1,bind_sent:2,rf_confirmed:2,ack_sent:2,tx_failed:2,paired:3}[s]||0,wait=s==='bind_sent'||s==='rf_confirmed'||s==='ack_sent';

@@ -98,6 +98,9 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.equal(p.$('conn').textContent, 'Verbonden · alleen ontvangen'); assert.ok(p.$('conn').classList.contains('ok'));
         ok('header shows the controller connection (RX-only)');
         assert.match(p.$('simSub').textContent, /Niet beschikbaar met deze firmware/); ok('simulation marked unavailable on RX-only');
+        { const q = await page({ 'GET /api/setup/state': () => [200, state(CAPS_TX, { profiles: PF([], 0) })] }, 'welcome');
+          assert.match(q.$('simSub').textContent, /Experimenteel: maakt nog geen profiel aan/); assert.doesNotMatch(q.$('simSub').textContent, /Niet beschikbaar/); }
+        ok('simulation where pairing exists: marked experimental, says it creates no profile');
         p.dom.all.find(e => e.dataset.open === 'pair').click(); await p.refresh();
         assert.equal(p.$('pairA').disabled, true); assert.match(p.$('notice').textContent, /Koppelen is met deze firmware niet beschikbaar/);
         p.$('pairA').click(); await flush(); assert.equal(p.posts().length, 0);
