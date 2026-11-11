@@ -139,7 +139,7 @@ let savedSid=0,autoSid=0,autoN=0,autoAt=0,menu=0,pname='',fin='';let S=null,R=nu
 // Follow only a session this page started or found running: an old result is never shown as current.
 const own=(x,id)=>x&&id&&x.sid===id?x:null;
 const esc=s=>String(s).replace(/[&<>"]/g,c=>'&#'+c.charCodeAt(0)+';');
-const say=e=>ERR[e]||'Fout: '+e;
+const say=e=>ERR[e]||(/^http-5/.test(e)?'De controller gaf een tijdelijke fout ('+e.slice(5)+').':'Fout: '+e);
 const mid=id=>!id||!S||!S.mask_ids?id||'':id.slice(0,5)+'••'+id.slice(-2);
 const cmdName=(c,m)=>c==='22F1'?MB[m]||c:c==='22F3'?'Timer':'commando '+c;
 const li=(cls,sym,name,st)=>'<li class="item '+cls+'"><span class="sym">'+sym+'</span><b>'+name+'</b><span class="st">'+st+'</span></li>';

@@ -415,7 +415,7 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.equal(r.n(),1);assert.equal(r.p.location.hash,'#read');assert.match(r.p.$('err').textContent,/Geen verbinding.*automatisch opnieuw/);
         assert.equal(r.p.$('saveProfile').disabled,false);assert.equal(r.p.$('saveName').value,'Zolder');
         await r.p.refresh();assert.equal(r.n(),1);ok('save failure while offline: explained, retry announced, button stays, no immediate hammering');
-        clock+=2500;await r.p.refresh();assert.equal(r.n(),2);assert.match(r.p.$('err').textContent,/automatisch opnieuw/);
+        clock+=2500;await r.p.refresh();assert.equal(r.n(),2);assert.match(r.p.$('err').textContent,/tijdelijke fout \(500\)\. Opslaan wordt automatisch opnieuw/);
         clock+=2500;await r.p.refresh();assert.equal(r.n(),3);assert.equal(r.p.location.hash,'#done');assert.equal(r.p.$('finName').textContent,'Zolder');
         ok('temporary failures retried automatically; third try saves and shows completion');
         r=await run(['throw','throw','throw']);clock+=2500;await r.p.refresh();clock+=2500;await r.p.refresh();clock+=2500;await r.p.refresh();
