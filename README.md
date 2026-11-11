@@ -120,14 +120,16 @@ Defined in `platformio.ini`:
    ```
 3. On first boot with no Wi-Fi set, it starts a setup portal (`Orcon15RF-Setup` /
    `orconsetup` → http://192.168.4.1). Enter your Wi-Fi (and optional MQTT host).
-4. Open the device's web UI at its IP. **Pair**: power-cycle your HRC, then tap
-   *Pair with my Orcon* within 3 minutes.
+4. Open the device's web UI at its IP: `/` is the setup wizard (pair, read a physical
+   remote step by step, daily control), `/dashboard` the full control page. **Pair**:
+   power-cycle your HRC, then pair within 3 minutes. See
+   [docs/SETUP_WIZARD.md](docs/SETUP_WIZARD.md) for the wizard API and its limits.
 
 Wiring for each board's radio is in `src/config.h` (per-board pin blocks).
 
 ## Controls & MQTT
 
-The web UI keeps daily controls up front (modes, timed boost, live metrics,
+The dashboard (`/dashboard`) keeps daily controls up front (modes, timed boost, live metrics,
 bypass, AC mode, pairing) and tucks diagnostics behind a ⚙ Settings toggle.
 
 | Topic | Dir | Payload |

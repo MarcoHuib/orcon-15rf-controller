@@ -26,6 +26,10 @@ public:
     void noteSync(int16_t rssi, uint32_t ms);
     // Next complete, checksum-clean frame from the buffered bytes, if any.
     bool next(Item& out);
+    // Drop all buffered bytes and partial sync state. Used after an SX1276 TX burst:
+    // bytes received while the radio transmitted are echo/noise and must never be
+    // decoded. Sync counters keep counting (sequence numbers stay monotonic).
+    void reset() { base_ += len_; len_ = 0; progress_ = 0; prev_ = 0; pre_ = 0; }
     size_t  room() const { return sizeof(buf_) - len_; }
     size_t  buffered() const { return len_; }
     uint8_t lastPre() const { return ring_[(syncs - 1) % RING].pre; }   // byte before the last 00
@@ -41,11 +45,11 @@ private:
     Sync     ring_[RING];        // the last RING syncs, to tag frames
 };
 
-template <uint32_t N>
+template <uint32_t N, class T = Item>
 class FrameQueue {
     static_assert(N && (N & (N - 1)) == 0, "N must be a power of two");
 public:
-    bool push(const Item& it) {                       // producer only
+    bool push(const T& it) {                          // producer only
         uint32_t h = head_.load(std::memory_order_relaxed);
         uint32_t t = tail_.load(std::memory_order_acquire);
         if (h - t >= N) { dropped.fetch_add(1, std::memory_order_relaxed); return false; }
@@ -55,7 +59,7 @@ public:
             highWater.store(h + 1 - t, std::memory_order_relaxed);
         return true;
     }
-    bool pop(Item& it) {                              // consumer only
+    bool pop(T& it) {                                 // consumer only
         uint32_t t = tail_.load(std::memory_order_relaxed);
         uint32_t h = head_.load(std::memory_order_acquire);
         if (t == h) return false;
@@ -68,7 +72,7 @@ public:
     }
     std::atomic<uint32_t> dropped{0}, highWater{0};
 private:
-    Item slot_[N];
+    T slot_[N];
     std::atomic<uint32_t> head_{0}, tail_{0};
 };
 

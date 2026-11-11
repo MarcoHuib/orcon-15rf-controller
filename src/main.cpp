@@ -10,11 +10,17 @@
 //   net            WiFi / web / MQTT / OLED
 #include <Arduino.h>
 #include "config.h"
+#if ORCON_TX_POC
+#include "tx_poc_runtime.h"
+#endif
 #include "ramses_radio.h"
 #include "orcon.h"
 #include "net.h"
 #include "display.h"
 #include "orcon_log.h"
+#if !ORCON_TX_POC || ORCON_WEB_CONTROL
+#include "setup_web.h"
+#endif
 
 #if defined(PINTEST)
 // ---- GPIO mapper: drives each CC1101 GPIO HIGH (others LOW) for 2.5s in turn.
@@ -64,9 +70,21 @@ void setup() {
 void loop() {
     const uint32_t loopStart = micros();
     // 1) drain any received RAMSES frames into the state model
+#if ORCON_TX_POC
+    txpoc::controller().consumeResult(millis());
+#if ORCON_WEB_CONTROL
+    setupweb::consumeTxResults(millis());
+#endif
+#endif
     ramses::Frame f;
     while (radio::poll(f)) {
         if (orcon::onFrame(f)) net::notifyStateChanged();
+#if !ORCON_TX_POC || ORCON_WEB_CONTROL
+        setupweb::onFrame(f, radio::lastSeq(), (int16_t)radio::lastRssi());   // same frame, same order
+#endif
+#if ORCON_TX_POC
+        txpoc::controller().onFrame(f, radio::lastReceivedMs(), millis(), orcon::ids());
+#endif
 #if DEBUG_RX_HEX && defined(RADIO_SX1276)
         char s[200]; rlog::format(f, s, sizeof(s));   // full payload (31DA is 30 bytes)
         Serial.printf("[rx %lu %lu %ddBm] %s\n", (unsigned long)radio::lastSeq(), (unsigned long)millis(),
@@ -74,6 +92,12 @@ void loop() {
 #endif
     }
 
+#if ORCON_TX_POC
+    txpoc::controller().tick(millis()); // expire only after timestamped RX queue processing
+#endif
+#if !ORCON_TX_POC || ORCON_WEB_CONTROL
+    setupweb::tick(millis());           // wizard timeouts: here, never inside a GET handler
+#endif
 #if defined(RADIO_SX1276)
     // Serial RX counters for USB-only measurements (same fields as /api/state).
     static uint32_t lastStat = 0;

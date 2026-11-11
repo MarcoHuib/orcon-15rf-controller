@@ -1,6 +1,9 @@
 // ramses_radio.cpp — see ramses_radio.h
 #include "ramses_radio.h"
 #include "config.h"
+#if ORCON_TX_POC
+#include "tx_poc_runtime.h"
+#endif
 #include <Arduino.h>
 #include <RadioLib.h>
 #if defined(USE_CC1101_TX) || defined(RADIO_CC1101_ASYNC)
@@ -10,6 +13,12 @@
 #include <HardwareSerial.h>
 #include <esp_task_wdt.h>
 #include "rx_stream.h"
+#endif
+
+// SX1276 packet-mode TX (defined below the RX back-end block): the RX task asks this
+// while draining the UART so our own transmission is never fed into the decoder.
+#if defined(RADIO_SX1276) && ORCON_TX_POC && ORCON_TX_RF_ENABLE
+namespace radio { namespace sx1276 { bool txActive(); } }
 #endif
 
 namespace radio {
@@ -217,9 +226,17 @@ static volatile uint32_t g_lastUartMs = 0, g_lastSyncMs = 0;
 static volatile uint32_t g_pendMax = 0, g_taskMaxUs = 0, g_stackFree = 0;
 static volatile uint8_t  g_op = 0, g_lna = 0, g_rxcfg = 0, g_rxbw = 0;
 static volatile int16_t  g_rssiNow = 0;
+#if ORCON_TX_POC
+static uint32_t g_lastReceivedMs = 0;
+#endif
 static uint32_t g_lastSeq = 0;                  // loop: sync number of the frame poll() returned
+static rxs::FrameQueue<16, SyncInfo> g_sq;      // RX task -> loop: syncs for the live RF console
 
+#if ORCON_TX_RF_ENABLE
+const char* name() { return "SX1276 direct RX + txpoc packet TX"; }
+#else
 const char* name() { return "SX1276 direct RX (TX disabled)"; }
+#endif
 
 static int16_t configure() {
     int16_t st = g_radio.beginFSK(RF_FREQ_MHZ, RF_BITRATE_KBPS, RF_DEVIATION_KHZ,
@@ -262,7 +279,11 @@ static void rxTask(void*) {
             g_rec.record(now, ok);
             g_rxReady = ok;
         }
-        if (g_rxReady) {
+        if (g_rxReady
+#if ORCON_TX_RF_ENABLE
+            && !radio::sx1276::txActive()   // while we transmit, nothing here is decoded
+#endif
+        ) {
             uint32_t pend = (uint32_t)rxUart.available();
             if (pend > g_pendMax) g_pendMax = pend;
             if (pend) g_lastUartMs = now;
@@ -273,6 +294,8 @@ static void rxTask(void*) {
                     int16_t rssi = (int16_t)g_radio.getRSSI(false, true);
                     g_dec.noteSync(rssi, now);
                     g_lastSyncMs = now;
+                    SyncInfo si; si.seq = g_dec.syncs; si.ms = now; si.rssi = rssi; si.pre = g_dec.lastPre();
+                    g_sq.push(si);                  // never blocks: full = dropped + counted
 #if DEBUG_RX_HEX
                     // one line per sync: no [rx] line with the same number = garbled frame
                     Serial.printf("[sync %lu %lu %ddBm pre=%02X]\n", (unsigned long)g_dec.syncs,
@@ -286,11 +309,25 @@ static void rxTask(void*) {
         if (now - lastCheck >= 1000) {
             lastCheck = now;
             snapshot();
-            if (g_rxReady && (g_op & 0x07) != 0x05) {   // radio reset / brown-out / left RX
+            if (g_rxReady && (g_op & 0x07) != 0x05
+#if ORCON_TX_RF_ENABLE
+                && !txpoc::ownerBusy()     // mid-TX the radio is intentionally out of RX
+#endif
+            ) {   // radio reset / brown-out / left RX
                 g_rxReady = false; ++g_rxLost;
                 Serial.printf("[radio] SX1276 not in RX (op=%02X): restarting\n", g_op);
             }
         }
+#if ORCON_TX_POC
+        // Dry-run model only. No radio, SPI, DIO, UART or decoder state changes.
+        // With RF enabled, "healthy" means the RX pipeline is up: the radio may be
+        // out of RX on purpose while the owner transmits.
+        txpoc::serviceOwner(now, g_rxReady && ((g_op & 0x07) == 0x05
+#if ORCON_TX_RF_ENABLE
+            || txpoc::ownerBusy()
+#endif
+        ));
+#endif
         uint32_t us = micros() - t0;
         if (us > g_taskMaxUs) g_taskMaxUs = us;
         vTaskDelay(pdMS_TO_TICKS(5));
@@ -326,12 +363,105 @@ bool poll(ramses::Frame& out) {                 // loop side: frames the RX task
     out = it.f;
     g_rssi = it.rssi;                           // RSSI of this frame's own sync
     g_lastSeq = it.seq;
+#if ORCON_TX_POC
+    g_lastReceivedMs = it.ms;
+#endif
     return true;
 }
 
 uint32_t lastSeq() { return g_lastSeq; }
+bool pollSync(SyncInfo& out) { return g_sq.pop(out); }
+uint32_t syncInfoDrops() { return g_sq.dropped.load(); }
+#if ORCON_TX_POC
+uint32_t lastReceivedMs() { return g_lastReceivedMs; }
+#endif
 
 #endif // RADIO_SX1276
+
+// ===========================================================================
+//  SX1276 packet-mode TX — the ONLY transmission path on the Heltec V2, and
+//  only with the RF capability explicitly compiled in (ORCON_TX_RF_ENABLE).
+//  Runs exclusively in the RX-task owner context (txpoc::Owner); the main loop
+//  never touches the radio. The legacy radio::sendFrame above keeps refusing
+//  on every V2 build, so no arbitrary/legacy payload can reach the air.
+//
+//  Software payload matches CC1101: eight UART training bytes, sync, Manchester,
+//  checksum, stop and four idle pad bits = 53 bytes / 424 bits. Two hardware
+//  training bytes precede it: nominal total 440 bits / 11.46 ms at 38.4 kbit/s.
+//  No hardware sync/CRC/encoding. Power is explicitly set to 10 dBm.
+//  The two-second admission floor is a software rate limit, not RF compliance
+//  evidence: actual power, ramp, duration and RX return still require measurement.
+// ===========================================================================
+#if defined(RADIO_SX1276) && ORCON_TX_POC && ORCON_TX_RF_ENABLE
+namespace sx1276 {
+
+static bool g_txActive = false, g_savedRx = false;
+// Registers changed by packet TX / RadioLib 7.8.1. FSK preamble lives at 25/26,
+// NOT the LoRa 20/21 aliases (those are FSK receiver timeout registers).
+static const uint8_t TX_REGS[] = { 0x09, 0x0A, 0x4D, 0x25, 0x26, 0x27,
+                                  0x30, 0x31, 0x32, 0x35, 0x40, 0x41 };
+static uint8_t g_saved[sizeof(TX_REGS)];
+bool txActive() { return g_txActive; }
+
+bool txBegin(const uint8_t* onair, size_t n) {
+    // No FIFO refill ISR is installed. RadioLib starts long packets with only
+    // 31 bytes loaded; accepting 105-byte binding offers would underrun on air.
+    if (!onair || n == 0 || n > 64 || g_txActive) return false;
+    g_txActive = true;  // exclude normal UART decoding until restore, also on failure
+    for (size_t i = 0; i < sizeof(TX_REGS); ++i) g_saved[i] = g_mod.SPIreadRegister(TX_REGS[i]);
+    g_savedRx = true;
+    if (g_radio.standby() != RADIOLIB_ERR_NONE ||
+        g_radio.packetMode() != RADIOLIB_ERR_NONE ||
+        g_radio.fixedPacketLengthMode((uint8_t)n) != RADIOLIB_ERR_NONE ||
+        g_radio.setEncoding(RADIOLIB_ENCODING_NRZ) != RADIOLIB_ERR_NONE ||
+        g_radio.setCRC(false) != RADIOLIB_ERR_NONE ||
+        g_radio.setDataShaping(RADIOLIB_SHAPING_0_5) != RADIOLIB_ERR_NONE ||
+        g_radio.setOutputPower(10) != RADIOLIB_ERR_NONE) return false;
+    // Raw buffer already contains all training, UART sync, Manchester, checksum
+    // and stop bits. Use two explicit hardware training bytes; no hardware sync,
+    // length, address or CRC bytes. Actual preamble/ramp must be measured on air.
+    g_mod.SPIwriteRegister(RADIOLIB_SX127X_REG_SYNC_CONFIG, 0x00);
+    g_mod.SPIwriteRegister(RADIOLIB_SX127X_REG_PREAMBLE_MSB_FSK, 0x00);
+    g_mod.SPIwriteRegister(RADIOLIB_SX127X_REG_PREAMBLE_LSB_FSK, 0x02);
+    g_mod.SPIwriteRegister(RADIOLIB_SX127X_REG_PACKET_CONFIG_1, 0x00);
+    // Fail closed on register write failure before entering TX.
+    if (g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_SYNC_CONFIG) != 0 ||
+        g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_PREAMBLE_MSB_FSK) != 0 ||
+        g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_PREAMBLE_LSB_FSK) != 2 ||
+        g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_PACKET_CONFIG_1) != 0 ||
+        g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_PACKET_CONFIG_2) != 0x40 ||
+        g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_PAYLOAD_LENGTH_FSK) != n) return false;
+    return g_radio.startTransmit(onair, n) == RADIOLIB_ERR_NONE;
+}
+
+bool txDone() {
+    const uint8_t irq = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_IRQ_FLAGS_2);
+    return g_txActive && irq != 0xFF && (irq & RADIOLIB_SX127X_FLAG_PACKET_SENT) != 0;
+}
+
+bool txRestoreRx() {
+    // Fast restore only. A full beginFSK/reset/calibration is exclusively the
+    // existing bounded recovery's job, never repeated in the TX owner.
+    bool ok = g_radio.standby() == RADIOLIB_ERR_NONE;
+    if (g_savedRx) {
+        for (size_t i = 0; i < sizeof(TX_REGS); ++i) {
+            g_mod.SPIwriteRegister(TX_REGS[i], g_saved[i]);
+            if (g_mod.SPIreadRegister(TX_REGS[i]) != g_saved[i]) ok = false;
+        }
+    }
+    g_mod.SPIwriteRegister(RADIOLIB_SX127X_REG_IRQ_FLAGS_2, RADIOLIB_SX127X_FLAG_FIFO_OVERRUN);
+    if (g_radio.receiveDirect() != RADIOLIB_ERR_NONE) ok = false;
+    g_op = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_OP_MODE);
+    if ((g_op & 0x87) != 0x05) ok = false;
+    while (rxUart.available()) rxUart.read();
+    g_dec.reset();  // discard partial frame / local echo, retain queued pre-TX frames
+    g_rxReady = ok;
+    g_savedRx = g_txActive = false;
+    return ok;
+}
+
+} // namespace sx1276
+#endif // RADIO_SX1276 && ORCON_TX_POC && ORCON_TX_RF_ENABLE
 
 RxDiagnostics rxDiagnostics() {
     RxDiagnostics d;
@@ -364,6 +494,8 @@ RxDiagnostics rxDiagnostics() {
 float lastRssi() { return g_rssi; }
 #if !defined(RADIO_SX1276)
 uint32_t lastSeq() { return 0; }
+bool pollSync(SyncInfo&) { return false; }
+uint32_t syncInfoDrops() { return 0; }
 #endif
 
 } // namespace radio

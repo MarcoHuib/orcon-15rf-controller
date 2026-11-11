@@ -24,6 +24,8 @@
 #endif
 #endif
 
+#include "tx_poc_caps.h"
+
 #ifndef FW_VERSION
 #define FW_VERSION "dev"     // CI sets the git commit (platformio build flag)
 #endif
@@ -153,7 +155,11 @@
 #define WIFI_AP_NAME     "Orcon15RF-Setup"
 #define WIFI_AP_PASS     "orconsetup"  // >= 8 chars
 
+#if ORCON_TX_POC
+#define MQTT_ENABLED     0          // no broker, discovery or command route in phase 1
+#else
 #define MQTT_ENABLED     1
+#endif
 #if RX_ONLY
 #define MQTT_HOST        ""             // RX-only: off until a broker is set explicitly
 #else

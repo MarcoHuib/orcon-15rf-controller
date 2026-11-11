@@ -113,27 +113,20 @@ Gecontroleerd en in orde:
 
 ## Flashen (macOS, zonder PlatformIO)
 
-```
-tools/heltec_v2.sh precheck <commit>   # alleen lezen
-tools/heltec_v2.sh flash    <commit>   # precheck, dan "yes", dan schrijven
-```
-
-`precheck` stopt bij elke afwijking, ontbrekende waarde of fout. Er wordt niets geschreven.
-
-- **Artifact:** SHA256SUMS, `BUILD_INFO` (commit en env), commit-stempel en RX-only-strings in `firmware.bin`, image-header Chip ID 0 (ESP32) met geldige hash, 8 MB in bootloader- en app-header, CI-status.
-- **Bord (alleen lezen):** `Chip is ESP32-D0WDQ6`, het MAC-adres gelijk aan `HELTEC_MAC` of `.flashtools/board.mac`, en exact `Detected flash size: 8MB`. Alle check-runs van de commit moeten `success` zijn.
-- **Partitietabel:** de tabel van het bord (0x8000, 0xC00) moet byte-identiek zijn aan de nieuwe (NVS op 0x9000).
-- **Schrijven:** daarna worden de 4 images op hun eigen offsets geschreven, zodat NVS (WiFi/MQTT/ID's) behouden blijft. Het merged image op 0x0 zou NVS wissen.
-
-esptool 4.8.1 draait uit de PyPI-sdist (SHA-256 gepind) met hash-gepinde wheels in
-`.flashtools/`. Er wordt niets systeembreed geïnstalleerd.
+De actieve procedure gebruikt uitsluitend lokale pakketten en onafhankelijke
+SHA-256-pins voor het bewaarde RX-only-rollbackimage. Zie
+[LOCAL_USB_RELEASE.md](LOCAL_USB_RELEASE.md). Er is geen download- of CI-statuspad.
+`verify` en `plan` zijn offline; `precheck` opent de seriële poort en reset het
+bord naar de ROM-loader en vereist daarom vooraf afzonderlijke toestemming.
+Alleen app0 op `0x10000` wordt geschreven, na vergelijking van de volledige
+bootloader, partitietabel en bootselectie. NVS wordt niet beschreven.
 
 ## Hardwaretestprocedure
 
 Voorwaarde: geen ander programma (Opera/esptool-js, serial monitor) houdt
 `/dev/cu.usbserial-0001` open.
 
-1. **Flashen:** `tools/heltec_v2.sh flash <commit>`.
+1. **Flashen:** `LOCAL_ENV=heltec_v2_sx1276 tools/heltec_v2.sh flash <commit>`.
 2. **Opstarten:** `tools/heltec_v2.sh monitor 40 boot.log reset`. Verwacht:
    - `fw=<volledige commit>`;
    - `[radio] SX1276 direct RX (TX disabled) up on 868.300 MHz`;
@@ -155,7 +148,7 @@ Voorwaarde: geen ander programma (Opera/esptool-js, serial monitor) houdt
    - b. Alleen bij sterke signalen met fouten (`rssi` > −50 dBm): LNA/AGC-experiment.
 7. **Oude builds:** publieke CI-artifacts met hardwaregegevens zijn ingetrokken voor de privacy-cleanup.
    Lokale oude images zijn uitsluitend voor archivering; gebruik voor een volgende build
-   een schone commit waarvan alle CI-jobs groen zijn.
+   een schone commit met volledig geslaagde lokale tests en builds.
 
 ## Meetresultaten
 
@@ -234,7 +227,7 @@ gedaan en wordt niet herhaald in de passieve duurmeting.
 ## Oorspronkelijk scenario 24–72 uur (WiFi + MQTT): referentie, niet uitvoeren
 
 **Vooraf (stop als één punt niet klopt)**
-- Firmware = een commit waarvan **alle** CI-jobs groen zijn: V2-build, host-tests (gewoon, ASan/UBSan, TSan), V3/CC1101-, V3/SX1262- en 4848-build. Flashen alleen na expliciet akkoord, via `tools/heltec_v2.sh flash`.
+- Firmware = een commit met lokale testbewijzen: V2-builds, gewone hostsuites, UBSan, web- en flashtests en de V3/CC1101-, V3/SX1262- en 4848-build. ASan/TSan worden alleen als PASS vermeld als ze betrouwbaar uitgevoerd zijn. Flashen alleen na expliciet akkoord, via `tools/heltec_v2.sh flash`.
 - WiFi (STA) en MQTT zijn ingesteld. Unit 29:000202 is gekozen via `/api/ids`. Het MAC-adres van het bord staat in `.flashtools/board.mac`.
 - Productietopic `orcon15rf/state` en de HA-entiteiten van het productiebord zijn vastgelegd. Na de test moeten ze ongewijzigd zijn.
 

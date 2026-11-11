@@ -62,6 +62,16 @@ RxDiagnostics rxDiagnostics();
 float lastRssi();
 // Sync number of the frame poll() returned last (SX1276; 0 elsewhere), pairs [rx] with [sync] lines.
 uint32_t lastSeq();
+// SX1276 PoC: owner-observed sync time, not main-loop dequeue time.
+// This is not an ISR/air timestamp; hardware timing remains unvalidated.
+uint32_t lastReceivedMs();
+
+// One sync the SX1276 RX task saw, for the live RF console (main loop drains it). Other
+// radios report none. The RX task only pushes into a 16-slot lock-free queue; when the
+// loop falls behind the note is dropped and counted, the RX task never waits.
+struct SyncInfo { uint32_t seq = 0, ms = 0; int16_t rssi = 0; uint8_t pre = 0; };
+bool pollSync(SyncInfo& out);
+uint32_t syncInfoDrops();
 
 // Human-readable back-end name ("SX1262" / "CC1101").
 const char* name();
