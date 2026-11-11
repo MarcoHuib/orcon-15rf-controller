@@ -137,6 +137,14 @@ na een fout pas na 3 s. Er is geen WebSocket.
   - Op http gebruikt de pagina een tijdelijk tekstveld met `execCommand('copy')`.
   - Lukt dat niet, dan zegt de console dat.
 
+### Pairing-capture (`GET /api/setup/capture`)
+Alleen lezen, dezelfde Host-controle als de console. Houdt de laatste 8 volledige
+`1FC9`- en `10E0`-frames vast (alle payloadbytes, volledige adressen, `len`, RSSI,
+volgnummer), in RAM en niet in flash. De console toont zes bytes en daarna `… (N B)`.
+Gevuld vanuit `onFrame` in de hoofdlus, na de RX-wachtrij, dus de ontvangst wacht er
+nooit op. De ID's zijn ongemaskeerd, net als in `/api/log`; sla een capture alleen lokaal
+op in `captures/`, dat in `.gitignore` staat.
+
 ### Koppelen (alleen TX-builds)
 | Endpoint | Body | Succes | Fouten |
 |---|---|---|---|

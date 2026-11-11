@@ -53,3 +53,6 @@ _backups/
 .env
 .env.*
 *credentials*
+
+# Local pairing captures (real device IDs): never commit
+captures/

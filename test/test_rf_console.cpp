@@ -66,7 +66,9 @@ int main() {
     CHECK(!strstr(t, "123456") && !strstr(t, "654321"));
     f.has_addr[1] = false; f.has_addr[2] = true; f.addr[2] = f.addr[0]; f.cmd = 0x31DA; f.len = 30;   // broadcast, long payload
     frameText(f, 7, -77, t, sizeof(t));
-    CHECK(strstr(t, "29:****56>--") && strstr(t, "\xE2\x80\xA6"));
+    CHECK(strstr(t, "29:****56>--") && strstr(t, "\xE2\x80\xA6 (30 B)"));                     // full length shown
+    f.len = 64; frameText(f, 4294967295u, -120, t, sizeof(t));
+    CHECK(strstr(t, "\xE2\x80\xA6 (64 B)") != nullptr);                                         // worst case still fits
     printf("rf console: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

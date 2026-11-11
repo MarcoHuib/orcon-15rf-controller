@@ -584,6 +584,31 @@ int main() {
 #endif
     }
 
+    // ---- pairing capture: complete 1FC9/10E0 frames (synthetic IDs only) -----------------------
+    {
+        call("GET", "/api/setup/capture"); const unsigned before = J["total"].as<unsigned>();
+        Frame offer = fr(MsgType::I, REM, REM2, 0x1FC9, {});
+        offer.len = 30; for (uint8_t i = 0; i < 30; ++i) offer.payload[i] = uint8_t(0xA0 + i);
+        rx(offer); rx(fr(MsgType::W, UNIT, REM, 0x1FC9, {0x00, 0x31, 0xD9, 0x01, 0x02, 0x03}));
+        rx(fr(MsgType::I, REM, UNIT, 0x1FC9, {0x00})); rx(press(0x04));
+        Frame big = fr(MsgType::I, REM, REM2, 0x10E0, {}); big.len = 64; big.has_addr[2] = true; big.addr[2] = REM;
+        for (uint8_t i = 0; i < 64; ++i) big.payload[i] = i; rx(big); loopTick();
+        CHECK(call("GET", "/api/setup/capture") == 200 && J["total"].as<unsigned>() == before + 4, "capture: only 1FC9/10E0 frames counted");
+        JsonArray fs = J["frames"].as<JsonArray>(); const size_t n = fs.size();
+        CHECK(n >= 4 && fs[n - 4]["type"] == "I" && fs[n - 4]["cmd"] == "1FC9" && fs[n - 4]["len"] == 30 &&
+              fs[n - 4]["pl"] == "A0A1A2A3A4A5A6A7A8A9AAABACADAEAFB0B1B2B3B4B5B6B7B8B9BABBBCBD" &&
+              fs[n - 4]["addr"][0] == "29:000101" && fs[n - 4]["addr"][1] == "29:000303" && fs[n - 4]["addr"][2].isNull(),
+              "capture: bind offer with every payload byte and full addresses (console stays masked)");
+        CHECK(fs[n - 3]["type"] == "W" && fs[n - 3]["pl"] == "0031D9010203" && fs[n - 2]["pl"] == "00", "capture: unit reply and closing ack kept in order");
+        CHECK(fs[n - 1]["len"] == 64 && std::string(fs[n - 1]["pl"].as<const char*>()).size() == 128, "capture: 64-byte payload complete");
+        for (int i = 0; i < 9; ++i) rx(fr(MsgType::I, REM, UNIT, 0x1FC9, {uint8_t(i)}));
+        loopTick(); call("GET", "/api/setup/capture");
+        CHECK(J["frames"].size() == 8 && J["frames"][7]["pl"] == "08" && J["frames"][0]["pl"] == "01" && J["total"].as<unsigned>() == before + 13,
+              "capture: bounded ring of 8, oldest dropped, total still counted");
+        srv.req.clear(); srv.host = "attacker.example"; srv.routes["GET /api/setup/capture"]();
+        CHECK(srv.code == 403, "capture: foreign Host refused (DNS rebinding)");
+    }
+
     // ---- live RF console ------------------------------------------------------------------------
     {
         uint32_t cur = 0; console(&cur);                                  // skip everything so far
