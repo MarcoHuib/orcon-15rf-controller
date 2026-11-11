@@ -132,7 +132,7 @@ done
 L="$W/local"; mkdir -p "$L"
 cat > "$W/local.sh" <<EOF
 set -euo pipefail
-$(sed -n '/^die()/p; /^LOCAL_REQUIRED=/p; /^local_ok()/,/^}/p; /^markers()/,/^}/p' "$REPO/tools/heltec_v2.sh")
+$(sed -n '/^die()/p; /^LOCAL_REQUIRED=/p; /^LOCAL_ENVS=/p; /^RF_TEST_ENV=/p; /^RF_TEST_ACK=/p; /^env_ok()/p; /^local_ok()/,/^}/p; /^markers()/,/^}/p' "$REPO/tools/heltec_v2.sh")
 \${WHAT:-local_ok} "\$@"
 EOF
 mkpkg() {   # mkpkg <name> <mutation>: evidence dir + package dir, then one mutation
