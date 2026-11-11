@@ -144,7 +144,7 @@ void restoreProfileSelection() {
 }
 static void quoted(Out& o,const char* s) {
     o.add("\"");
-    for(;*s;++s){if(*s=='"'||*s=='\\')o.add("\\%c",*s);else o.add("%c",*s);}
+    for(;*s;++s){const unsigned char c=*s;if(c=='"'||c=='\\')o.add("\\%c",c);else if(c<0x20)o.add("\\u%04x",c);else o.add("%c",c);}
     o.add("\"");
 }
 static void profileFields(Out& o) {
@@ -187,6 +187,17 @@ static void handleProfileSave() {
         profileBody(201);
     }
 }
+#if !ORCON_TX_POC
+// Systeem/WiFi page actions (builds with the settings pages only): the same POST guard
+// as every write, an empty body, and the reply goes out before the controller reboots.
+static void handleSystem(bool forgetWifi) {
+    JsonDocument d;
+    if(!guard(d,nullptr,0))return;
+    if(profileBusy()){fail(409,"session-busy");return;}
+    if(forgetWifi)net::forgetWifi();else net::restartSoon();
+    g_srv->send(200,"application/json","{\"ok\":true,\"restarting\":true}");
+}
+#endif
 static void handleProfileEdit(const char* action) {
     static const char* const K[]={"id","name"};JsonDocument d;
     if(!guard(d,K,!strcmp(action,"rename")?2:1))return;
@@ -209,11 +220,12 @@ static void handleState() {
     Out o;
     o.add("{\"fw\":\"%s\",\"rx_only\":%s,\"caps\":{\"rx_supported\":%s,\"tx_supported\":%s,"
           "\"read_supported\":%s,\"pair_supported\":%s,\"control_supported\":%s,\"simulated\":%s,"
-          "\"timer_supported\":%s,\"profile_control_supported\":%s},"
+          "\"timer_supported\":%s,\"profile_control_supported\":%s,\"settings_pages\":%s},"
           "\"rf\":\"%s\",\"token\":\"%s\",\"mask_ids\":%s,\"active\":\"%s\"",
           FW_VERSION, RX_ONLY ? "true" : "false", CAN_RX ? "true" : "false", CAN_TX ? "true" : "false",
           CAN_RX ? "true" : "false", CAN_PAIR ? "true" : "false", CAN_TX ? "true" : "false",
           SIMULATED ? "true" : "false", ORCON_TX_POC ? "false" : "true", ORCON_WEB_CONTROL ? "true" : "false",
+          ORCON_TX_POC ? "false" : "true",                         // /wifi and /dashboard exist (net.cpp)
           rfState(), hostOk() ? g_token : "", net::maskIds() ? "true" : "false",
           g_read.st == St::Active ? "read" : pairActive() ? "pair" : "none");
     char id[16] = "";
@@ -234,7 +246,9 @@ static void handleState() {
               (unsigned long)((now - dev[i].lastMs) / 1000), dev[i].rssi, dev[i].lastCmd, (unsigned long)dev[i].count);
         first = false;
     }
-    o.add("],\"profiles\":");profileFields(o);o.add("}");
+    o.add("],\"wifi\":{\"connected\":%s,\"ap\":%s,\"ap_name\":\"%s\",\"ip\":",net::wifiConnected()?"true":"false",net::apMode()?"true":"false",WIFI_AP_NAME);
+    quoted(o,net::ipAddr());o.add(",\"ssid\":");quoted(o,net::wifiConnected()?net::ssidName():"");
+    o.add("},\"profiles\":");profileFields(o);o.add("}");
     reply(200, o);
 }
 
@@ -662,6 +676,10 @@ void begin(WebServer& s) {
     s.collectHeaders(headers, sizeof(headers) / sizeof(headers[0]));
     s.on("/", HTTP_GET, handlePage);
     s.on("/api/setup/state",       HTTP_GET,  handleState);
+#if !ORCON_TX_POC
+    s.on("/api/setup/restart",     HTTP_POST, [](){handleSystem(false);});
+    s.on("/api/setup/wifi/forget", HTTP_POST, [](){handleSystem(true);});
+#endif
     s.on("/api/profiles", HTTP_GET, handleProfiles);
     s.on("/api/profiles/save", HTTP_POST, handleProfileSave);
     s.on("/api/profiles/select", HTTP_POST, [](){handleProfileEdit("select");});

@@ -44,7 +44,11 @@ RxDiagnostics rxDiagnostics() {
     return d;
 }
 }
-namespace net { bool apMode() { return g_apModeFake; } bool maskIds() { return true; } const char* ipAddr() { return "192.0.2.5"; } }
+static bool g_wifiFake = true;
+static int g_restarts = 0, g_forgets = 0;
+namespace net { bool apMode() { return g_apModeFake; } bool maskIds() { return true; } const char* ipAddr() { return "192.0.2.5"; }
+                bool wifiConnected() { return g_wifiFake && !g_apModeFake; } const char* ssidName() { return "Thuis \"5G\"\x01"; }
+                void restartSoon() { ++g_restarts; } void forgetWifi() { ++g_forgets; } }
 
 #if ORCON_TX_POC
 // Test-side stand-in for tx_poc_runtime.cpp: the real Controller/Owner with a fake RF
@@ -202,6 +206,24 @@ int main() {
     rx(fr(MsgType::I, UNIT, UNIT, 0x31D9, {0x00, 0x00, 0x01}));
     call("GET", "/api/setup/state");
     CHECK(J["remotes"].size() == 1 && J["remotes"][0]["id"] == "29:000101", "remote discovered from its 22F1, unit not listed as remote");
+    CHECK(J["wifi"]["connected"] == true && J["wifi"]["ssid"] == "Thuis \"5G\"\x01" && J["caps"]["settings_pages"] == !ORCON_TX_POC,
+          "state: WiFi network (JSON-escaped) and whether the classic settings pages exist in this build");
+    g_apModeFake = true; call("GET", "/api/setup/state");
+    CHECK(J["wifi"]["connected"] == false && J["wifi"]["ssid"] == "", "setup AP: reported as not connected, no network name");
+    CHECK(J["wifi"]["ap"] == true && J["wifi"]["ap_name"] == WIFI_AP_NAME && J["wifi"]["ip"] == "192.0.2.5", "setup AP: AP flag, AP name and address reported");
+    g_apModeFake = false;
+#if ORCON_TX_POC
+    CHECK(!srv.routes.count("POST /api/setup/restart") && !srv.routes.count("POST /api/setup/wifi/forget"),
+          "TX-PoC builds have no settings pages: no restart / forget-WiFi route");
+#else
+    for (const char* path : {"/api/setup/restart", "/api/setup/wifi/forget"}) {
+        CHECK(call("POST", path, "{}", "wrong") == 403 && err("bad-token") && !g_restarts && !g_forgets, "system action without token refused");
+        CHECK(call("POST", path, "{}", TOKEN, "text/plain") == 403 && !g_restarts && !g_forgets, "system action needs JSON (CSRF guard)");
+        CHECK(call("POST", path, "{\"now\":1}") == 400 && err("unknown-field") && !g_restarts && !g_forgets, "system action takes no fields");
+    }
+    CHECK(call("POST", "/api/setup/restart") == 200 && J["restarting"] == true && g_restarts == 1 && g_forgets == 0, "restart scheduled after the reply");
+    CHECK(call("POST", "/api/setup/wifi/forget") == 200 && g_forgets == 1 && g_restarts == 1, "forget WiFi: only the WiFi credentials, then the setup AP");
+#endif
 
     // ---- POST guard and validation ---------------------------------------------------------------
     CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\"}", nullptr) == 403 && err("bad-token"), "missing token: 403");

@@ -1,7 +1,8 @@
 # Installatiewizard en setup-API
 
-`/` is de installatiewizard: koppelen, een fysieke afstandsbediening uitlezen en dagelijks
-bedienen. De bestaande bedieningspagina staat op `/dashboard`. Alle andere pagina's en API's
+`/` is de dagelijkse interface: dashboard met virtuele afstandsbediening en vier kaarten
+(actief profiel, WiFi, Siri, Systeem), profielbeheer en de installatiewizard (koppelen =
+uitlezen, simulatie = de bestaande koppelprocedure). De klassieke pagina staat op `/dashboard`. Alle andere pagina's en API's
 zijn ongewijzigd; hun "terug"-links wijzen nu naar `/dashboard`.
 
 | Bestand | Rol |
@@ -65,8 +66,21 @@ Zonder `gzip` in `Accept-Encoding` volgt `406`: de pagina staat alleen gecomprim
  "pair_supported":false,"control_supported":false},"rf":"receiving|recovering|failed|unsupported",
  "token":"<32 hex | leeg>","mask_ids":true,"active":"none|read|pair",
  "unit":{"known":true,"id":"29:000202","mode":"low","age_s":12},
- "remotes":[{"id":"29:000101","age_s":3,"rssi":-61,"cmd":"22F1","n":4}]}
+ "remotes":[{"id":"29:000101","age_s":3,"rssi":-61,"cmd":"22F1","n":4}],
+ "wifi":{"connected":true,"ap":false,"ap_name":"Orcon15RF-Setup","ip":"<adres>",
+         "ssid":"<netwerk, JSON-geëscaped; leeg als niet verbonden>"},
+ "profiles":{"storage_ok":true,"active":2,"limit":4,"items":[…]}}
 ```
+`caps.settings_pages` geeft aan of de klassieke instellings-API's (`/api/state`, `/api/netcfg`,
+`/api/scan`, `/api/wifi`, `/api/oled`) en `/dashboard` in deze build bestaan (niet in
+TX-PoC/web-control-builds); de WiFi- en Systeemkaart zijn anders uitgeschakeld.
+
+### `POST /api/setup/restart` en `POST /api/setup/wifi/forget`
+Alleen in builds met `settings_pages`. Body `{}`, dezelfde POST-bewaking als hierboven;
+`409 session-busy` tijdens uitlezen of koppelen. Antwoord `{"ok":true,"restarting":true}`,
+daarna herstart de controller na ongeveer 1,2 s. `wifi/forget` wist alleen SSID en wachtwoord
+(NVS `orcon`); profielen, MQTT, OLED en ID's blijven. Zonder SSID start de controller het
+accesspoint `Orcon15RF-Setup` (standaard op 192.168.4.1) om opnieuw in te stellen.
 `remotes` is alleen discovery: apparaten die in de laatste 30 min een `22F1`/`22F3` stuurden
 (uit `rlog`). Er wordt nooit iets automatisch gekozen. De pagina maskeert ID's als
 `mask_ids` aan staat.
@@ -191,20 +205,61 @@ Een verzonden aanbod kan niet worden ingetrokken. Na `cancel` loopt het venster 
 
 ## Pagina
 
-- Drie schermen plus start:
-  - koppelen;
-  - uitlezen (kies eerst je afstandsbediening uit de gehoorde lijst, daarna zes stappen
-    grijs → oranje → groen);
-  - bedienen (permanent bereikbaar).
-- Navigatie via `#pair`, `#read` en `#control`, dus de terugknop van de browser werkt.
+| Hash | Scherm | Terug naar |
+|---|---|---|
+| (leeg) | start: geen profielen → `#welcome`; geldig actief profiel → `#control`; anders `#profiles` | – |
+| `#control` | dashboard: afstandsbediening + kaarten + status | – |
+| `#profiles` | lijst, badge *Actief*, ⋯-menu (hernoemen, verwijderen met bevestiging), *+ Nieuw profiel* | dashboard |
+| `#new` | profielnaam (niet leeg, uniek, ≤ 48 UTF-8-bytes, geen stuurtekens) | profielen |
+| `#welcome` | *Afstandsbediening koppelen* (= `#read`) of *Simulatie instellen* (= `#pair`) | naam (behouden) of dashboard; geen terugknop zonder profielen |
+| `#read`, `#pair` | de bestaande procedures, ongewijzigd | welkom (lopende sessie wordt geannuleerd) |
+| `#done` | *Koppeling voltooid* + profielnaam + *Actief*, knop *Naar bediening* | – |
+| `#wifi` | actief netwerk + status + IP-adres; *Nieuw WiFi-netwerk instellen*; *WiFi-verbinding verwijderen* (met bevestiging) | dashboard |
+| `#wifinew` | scannen, lijst, SSID (ook verborgen), wachtwoord (leeg = huidig behouden, tonen/verbergen); opslaan herstart | WiFi |
+| `#system` | Firmware, Herstarten (met bevestiging), Apparaatinformatie, OLED-scherm, Integraties, Legacy dashboard (`/dashboard`) | dashboard |
+| `#firmware` | geïnstalleerde commit; geen updatecontrole en geen installatieknop (updates via de USB-procedure) | Systeem |
+| `#info` | netwerk, IP, uptime, laagste vrije heap, RF-ontvanger, frames, OLED, MQTT (uit `/api/state`) | Systeem |
+| `#oled` | stand Altijd aan / Automatisch (30 s) / Uit en *Scherm nu aan of uit* via `/api/oled`; PRG-knop toelichting | Systeem |
+| `#integr` | MQTT aan/uit + broker via `/api/wifi` met alleen de MQTT-velden; Siri-toelichting | Systeem |
+
+- Een op `#new` gekozen naam wordt na de zes knoppen automatisch opgeslagen
+  (`/api/profiles/save` slaat op én activeert atomair). Pas als het antwoord dit profiel
+  als actief toont, verschijnt `#done`. Annuleren of een fout slaat niets op; het oude
+  actieve profiel blijft.
+- Een tijdelijke fout bij dat opslaan (geen verbinding, `session-busy`,
+  `profile-write-failed`, HTTP 5xx) wordt bij een volgende poll opnieuw geprobeerd, maximaal
+  3 pogingen per uitleessessie. De uitleessessie blijft afgerond op de controller, dus
+  opnieuw opslaan met dezelfde `sid` is veilig. Daarna, of bij een blijvende fout, meldt de
+  pagina dat *Profiel opslaan* (met de naam al ingevuld) het opnieuw probeert.
+- Profielen zijn per fysieke afstandsbediening. Hoort de uitgelezen afstandsbediening al bij
+  een ander profiel, dan weigert de pagina het opslaan in plaats van dat profiel te hernoemen.
+- Een profiel kiezen (`/api/profiles/select`) brengt je terug naar het dashboard; nieuwe
+  bedieningsacties gebruiken direct dat profiel (unit en familiebyte, `setup_web.cpp`).
+- Het laatste profiel verwijderen opent `#welcome`; het actieve verwijderen laat de gebruiker
+  opnieuw kiezen. WiFi- en controllerinstellingen staan in een andere NVS-namespace.
+- *Simulatie instellen* maakt (nog) geen profiel: de koppelprocedure is op RX-only en RF-builds
+  geblokkeerd en levert geen knopmapping op. De kaart zegt dat: "Niet beschikbaar met deze
+  firmware", of "Experimenteel: maakt nog geen profiel aan" waar koppelen bestaat. Siri is
+  een uitgeschakelde placeholder.
+- Een kaart openen vervangt het dashboard; de afstandsbediening is alleen op `#control`
+  zichtbaar. Daaronder staat de technische status (statuskaart met unitmelding en de chips
+  Geaccepteerd/Verzonden/Terugmelding) standaard ingeklapt.
+- WiFi- en MQTT-wijzigingen gaan via de bestaande `/api/wifi`, die altijd herstart. De
+  WiFi-pagina stuurt alleen `ssid`/`pass` (MQTT blijft), de integratiepagina alleen
+  `mqtt_on`/`mqtt` (WiFi blijft). Een leeg wachtwoord behoudt het opgeslagen wachtwoord, ook
+  bij een ander netwerk; open netwerken zonder wachtwoord zijn daardoor niet in te stellen
+  zolang er een wachtwoord is opgeslagen. MQTT uitschakelen wist het brokeradres (bestaand
+  gedrag) en vraagt eerst bevestiging; ongewijzigd opslaan wordt geweigerd.
+- MQTT in deze firmware: statuspublicatie met Home Assistant-auto-discovery
+  (`homeassistant/…/config`, ook door Domoticz gelezen) en het `domoticz/out`-kanaal; alleen
+  niet-RX-only-builds nemen commando's aan via `…/cmd`. Het is een algemene integratie en
+  geen Siri-functie, daarom staat het onder Systeem → Integraties. Siri vraagt een brug
+  (bijvoorbeeld Home Assistant met HomeKit Bridge, of Homebridge) en is niet gebouwd.
+- De klassieke `/api/wifi`, `/api/oled` en `/api/scan` hebben geen token-bewaking (zie
+  *Beveiliging van POST*); de twee nieuwe acties wel.
 - Polling: 1 s tijdens uitlezen en bij een openstaande bevestiging, 2 s tijdens koppelen,
-  anders 2,5–10 s. De polling pauzeert als het tabblad verborgen is.
-- Groen en "Gekoppeld" verschijnen alleen op basis van een serverantwoord. Een oude,
-  afgeronde sessie wordt niet als het huidige resultaat getoond.
-- Knoppen zonder capability zijn uitgeschakeld en de handlers controleren de capability zelf
-  ook.
-- Een fout van een actie blijft staan tot de volgende actie; een verbindingsfout verdwijnt
-  bij de volgende geslaagde poll.
+  anders 2,5–10 s; gepauzeerd als het tabblad verborgen is.
+- Groen, *Actief* en "Gekoppeld" verschijnen alleen op basis van een serverantwoord.
 
 ## Gemeten groottes (lokaal, 2026-11-10)
 

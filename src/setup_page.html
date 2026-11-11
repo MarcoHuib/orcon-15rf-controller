@@ -9,7 +9,7 @@
 :root{font:16px system-ui,-apple-system,Segoe UI,Arial,sans-serif;color:#25223a;background:#f5f4f9}
 *{box-sizing:border-box}
 body{margin:0;padding:28px 16px;background:radial-gradient(ellipse at 50% 5%,#fff,#f4f2fa 75%)}
-input,select{font:inherit;color:inherit;border:1px solid #d9cfe4;border-radius:9px;padding:9px 10px;max-width:100%;background:#fff}label{display:block;font-size:13px;margin:8px 0 5px}#saveName,#profileSel,#editProfileName{width:100%}
+input,select{font:inherit;color:inherit;border:1px solid #d9cfe4;border-radius:9px;padding:9px 10px;max-width:100%;background:#fff}label{display:block;font-size:13px;margin:8px 0 5px}#saveName{width:100%}
 button{font:inherit;color:inherit;cursor:pointer}button:focus-visible,a:focus-visible{outline:3px solid #8942be;outline-offset:3px}
 [hidden]{display:none!important}
 .app{max-width:1080px;margin:auto;background:#fff;border:1px solid #e9e5f0;border-radius:24px;box-shadow:0 15px 55px #39304818;overflow:hidden}
@@ -31,7 +31,7 @@ h1{font-size:clamp(28px,3.8vw,43px);letter-spacing:-1.6px;line-height:1.16;margi
 .logo{position:absolute;bottom:17%;font-weight:800;color:#9d969f}
 .rnote{padding:10px 15px;border-radius:12px;background:#f2eef9;color:#625875;font-size:13px;text-align:center}
 .mins{display:flex;gap:8px}.mins button,.sec{border:1px solid #d9cfe4;background:#fff;color:#692588;font-weight:650;border-radius:10px;padding:10px 16px}.sec{margin-top:10px}
-.choices{display:grid;gap:16px}.choice{border:1px solid #e6e0ed;border-radius:19px;padding:22px;display:grid;grid-template-columns:58px 1fr;gap:18px;align-items:center;text-align:left;background:#fff;box-shadow:0 3px 9px #2c254411}
+.choice{border:1px solid #e6e0ed;border-radius:19px;padding:22px;display:grid;grid-template-columns:58px 1fr;gap:18px;align-items:center;text-align:left;background:#fff;box-shadow:0 3px 9px #2c254411}
 .choice:hover{border-color:#af78c4}.choice i{display:grid;place-items:center;background:#f2eaf8;border-radius:15px;color:#7921a1;font:normal 28px/58px system-ui;height:58px}.choice b{display:block;font-size:20px;margin-bottom:4px}.choice small{font-size:14px;color:#6d6880}
 .panel{border:1px solid #e5dfef;border-radius:19px;padding:24px;box-shadow:0 3px 10px #382b4910}
 .step{display:flex;gap:16px;padding:14px 12px;border-radius:12px}.step p{font-size:13px}.num{flex:none;width:32px;height:32px;display:grid;place-items:center;border:1px solid #d8d0e5;border-radius:50%;color:#867b94;font-weight:700;font-size:13px}.step.on{background:#f5edf9}.step.on .num{background:#8527a6;color:#fff}.step.fin .num{background:#e0f5e5;color:#19823d;border-color:#b0e2bd}
@@ -50,17 +50,19 @@ h1{font-size:clamp(28px,3.8vw,43px);letter-spacing:-1.6px;line-height:1.16;margi
 .cbar span{color:#8b90a0;font-size:12px;margin-left:auto}.cleg{padding:0 12px 6px;font-size:11px;color:#80869a;line-height:1.5}
 .term{height:260px;overflow:auto;padding:6px 12px 12px;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word;-webkit-overflow-scrolling:touch;border-top:1px solid #24252d}
 .term b{font-weight:600;display:inline-block;min-width:4.6em}.kRAW{color:#8d93a3}.kRX{color:#82b9ff}.kOK{color:#72d98e}.kFILTER{color:#e4c272}.kINFO{color:#c9cdd6}.kWARN{color:#f3a35b}.kERR{color:#ff7676}
-#back{margin-top:28px}.info{color:#80778b;font-size:12px;text-align:center;margin-top:24px}
+main{position:relative}.bk{position:absolute;left:36px;top:26px;border:1px solid #e3d6ee;background:#fff;color:#6c2390;border-radius:10px;padding:7px 12px;font-weight:650;font-size:14px}.lay.solo{grid-template-columns:minmax(0,660px);justify-content:center}.lay.solo .rc{display:none}.cards{display:grid;gap:14px}.card{grid-template-columns:58px 1fr 22px;width:100%;text-decoration:none;color:inherit}.card.on{background:#f7eefc;border-color:#b06bc9}.card.on i{background:#fff}.card.off{opacity:.6;pointer-events:none;box-shadow:none}.choice svg,.inp svg,.prow svg{width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.chev{color:#6d6880}.wel{display:grid;grid-template-columns:1fr 1fr;gap:18px}.wel .choice{grid-template-columns:1fr;justify-items:center;text-align:center}.choice i{width:58px}.lay>*{min-width:0}#ctlP{margin-top:14px}.prow{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid #eeebf1;border-radius:14px;background:#faf9fc}.prow.on{background:#f7eefc;border-color:#b06bc9}.prow i{flex:none;width:42px;height:42px;border-radius:12px;background:#f2eaf8;color:#7921a1;display:grid;place-items:center}.prow.on i{background:#fff}.pick{flex:1;display:flex;align-items:center;gap:14px;border:0;background:none;text-align:left;padding:0}.pick b{flex:1}.badge{background:#e4f6e8;color:#1b6e35;border-radius:20px;padding:4px 12px;font-size:13px;font-weight:650}.dots{border:0;background:none;font-size:22px;line-height:1;color:#6d4a80;padding:4px 8px;border-radius:8px}.pmenu{display:flex;gap:8px;justify-content:flex-end}.pmenu .sec{margin:0}.add{background:#f2e6f9;color:#6c2390}.inp{display:flex;align-items:center;gap:10px;border:1px solid #b06bc9;border-radius:12px;padding:4px 12px;background:#fff;color:#7921a1}.inp input{border:0;flex:1;outline:0;padding:9px 0}.tick{width:64px;height:64px;margin:0 auto 14px;border-radius:50%;border:2px solid #8fd6a1;background:#e9f8ed;color:#1f8a43;display:grid;place-items:center;font-size:30px}.prow.fin{padding:16px}.prow small{display:block;color:#6d6880;font-size:13px}.info{color:#80778b;font-size:12px;text-align:center;margin-top:24px}@media(max-width:790px){.bk{left:12px;top:12px}.wel{grid-template-columns:1fr}}
+.tech{width:100%}.tech>summary{cursor:pointer;list-style:none;text-align:center;font-size:13px;font-weight:650;color:#6c2390;padding:6px}.tech>summary::-webkit-details-marker{display:none}.tech[open]>summary span:first-child,.tech:not([open])>summary span+span{display:none}.tech #ctlP{margin-top:8px}.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px 18px;margin:0;font-size:14px}.kv dt{color:#6d6880}.kv dd{margin:0;text-align:right;font-weight:650;overflow-wrap:anywhere}.row{display:flex;gap:8px}.row select{flex:1;min-width:0}.row .sec{margin:0}.panel input:not([type=checkbox]){width:100%}.chk{display:flex;gap:8px;align-items:center;font-size:14px;margin-top:12px}.card:disabled{opacity:.6;cursor:default}.item.sel{border-color:#b06bc9;background:#f7eefc}.item.sel .sym{background:#7e209f;border-color:#7e209f;color:#fff}
 @media(max-width:790px){body{padding:0}.app{border:0;border-radius:0;box-shadow:none}.top{padding:10px 16px}.brand b{font-size:23px}main{padding:24px 16px}.head{margin-bottom:22px}.lay{grid-template-columns:1fr;gap:22px}.remote{width:min(300px,100%)}.choice{padding:16px}.choice b{font-size:17px}.panel{padding:16px}}
-@media(max-width:370px){.key{width:46px;height:46px}.chips{grid-template-columns:1fr}}
+@media(max-width:370px){.key{width:46px;height:46px}}@media(max-width:420px){.chips{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <div class="app">
-<header class="top"><div class="brand"><b>ORCON</b>15RF · Installatiewizard</div><div><span class="tag" id="conn" role="status">Verbinden…</span><a class="tag" href="/dashboard">Dashboard</a></div></header>
+<header class="top"><div class="brand"><b>ORCON</b>15RF</div><div><span class="tag" id="conn" role="status">Verbinden…</span><a class="tag" href="/dashboard">Klassiek dashboard</a></div></header>
 <main>
-<div class="head"><h1 id="title">Orcon installatiewizard</h1><p id="sub"></p></div>
-<div class="lay">
+<button class="bk" id="back" hidden>← Terug</button>
+<div class="head"><div class="tick" id="tick" hidden aria-hidden="true">✓</div><h1 id="title">Orcon 15RF</h1><p id="sub"></p></div>
+<div class="lay" id="lay">
 <div class="rc">
 <div class="remote" role="group" aria-label="Orcon 15RF afstandsbediening">
 <div><div class="keys"><button class="key" data-key="away" aria-label="Woning / afwezig">⌂</button><button class="key" data-key="auto" aria-label="Auto" style="font-size:16px;font-weight:750">auto</button><button class="key" data-key="timer" aria-label="Timer" style="font-size:34px">◷</button></div></div>
@@ -69,15 +71,38 @@ h1{font-size:clamp(28px,3.8vw,43px);letter-spacing:-1.6px;line-height:1.16;margi
 </div>
 <div class="rnote" id="rnote"></div>
 <div class="mins" id="mins" hidden role="group" aria-label="Timerduur"><button data-min="15">15 min</button><button data-min="30">30 min</button><button data-min="60">60 min</button></div>
+<details class="tech" id="tech" hidden><summary><span>Technische status tonen</span><span>Technische status verbergen</span></summary>
+<section class="panel" id="ctlP" hidden aria-label="Ventilatie bedienen">
+<p class="msg" id="profileNote" role="status"></p><h2>Status</h2><p id="unit"></p>
+<div class="chips"><div class="chip" id="c0"><b>Geaccepteerd</b><span>–</span></div><div class="chip" id="c1"><b>Verzonden</b><span>–</span></div><div class="chip" id="c2"><b>Terugmelding unit</b><span>–</span></div></div>
+<p class="msg" id="ctlM" role="status"></p>
+</section>
+</details>
 </div>
 <div>
 <div class="note" id="notice" hidden></div>
 <div class="note err" id="err" role="alert" hidden></div>
-<div class="choices" id="choices">
-<button class="choice" data-open="pair"><i aria-hidden="true">⛓</i><span><b>Afstandsbediening koppelen</b><small>Koppel deze controller met de combinatie Auto + 1.</small></span></button>
-<button class="choice" data-open="read"><i aria-hidden="true">◎</i><span><b>Afstandsbediening uitlezen</b><small>Druk stap voor stap de knoppen in op je echte afstandsbediening.</small></span></button>
-<button class="choice" data-open="control"><i aria-hidden="true">≋</i><span><b>Ventilatie bedienen</b><small>De virtuele afstandsbediening voor dagelijks gebruik.</small></span></button>
+<div class="cards" id="dash" hidden>
+<button class="choice card" id="cProf" data-open="profiles"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg></i><span><b id="profName"></b><small id="profSub"></small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
+<button class="choice card" id="cWifi" data-open="wifi"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/></svg></i><span><b>WiFi</b><small id="wifiSub"></small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
+<div class="choice card off" aria-disabled="true"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg></i><span><b>Siri</b><small>Bedien Orcon met Siri · binnenkort beschikbaar</small></span></div>
+<button class="choice card" id="cSys" data-open="system"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></svg></i><span><b>Systeem</b><small id="sysSub"></small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
 </div>
+<div class="wel" id="wel" hidden>
+<button class="choice" data-open="read"><i aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="18" rx="3"/><path d="M11 7h.01M13 7h.01M11 10h.01M13 10h.01M11 13h.01M13 13h.01"/></svg></i><span><b>Afstandsbediening koppelen</b><small>Koppel je bestaande Orcon afstandsbediening.</small></span></button>
+<button class="choice" data-open="pair"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/></svg></i><span><b>Simulatie instellen</b><small id="simSub"></small></span></button>
+</div>
+<section id="profP" hidden aria-label="Profielen"><div class="list" id="plist"></div><p class="msg" id="profM" role="status"></p><button class="act add" id="pNew">+ Nieuw profiel</button></section>
+<section id="newP" hidden aria-label="Nieuw profiel"><label for="newName">Profielnaam</label><div class="inp"><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg><input id="newName" maxlength="48" autocomplete="off" placeholder="Woonkamer"></div><p class="msg warn" id="newM" role="alert"></p><button class="act" id="newNext">Volgende</button></section>
+<section id="finP" hidden aria-label="Voltooid"><div class="prow fin"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg></i><span class="pick"><span><b id="finName"></b><small>Profiel aangemaakt</small></span></span><span class="badge">✓ Actief</span></div><button class="act" id="finGo">Naar bediening</button></section>
+<section id="wifiP" hidden aria-label="WiFi"><div class="cards"><div class="choice card on"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M12 19.5h.01"/></svg></i><span><b id="wName"></b><small id="wSub"></small></span></div><button class="choice card" data-open="wifinew"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></i><span><b>Nieuw WiFi-netwerk instellen</b><small>Netwerken scannen of een verborgen netwerk invoeren</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button><button class="choice card" id="wForget"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></i><span><b>WiFi-verbinding verwijderen</b><small id="wfSub"></small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button></div></section>
+<section id="wnewP" hidden aria-label="Nieuw WiFi-netwerk"><div class="panel"><label for="wSel">Beschikbare netwerken</label><div class="row"><select id="wSel"><option value="">Nog niet gescand</option></select><button class="sec" id="wScan" type="button">Scannen</button></div><label for="wSsid">Netwerknaam (SSID), ook voor een verborgen netwerk</label><input id="wSsid" maxlength="32" autocomplete="off" placeholder="Kies hierboven of typ de naam"><label for="wPass">Wachtwoord</label><input id="wPass" type="password" maxlength="63" autocomplete="new-password" placeholder="Leeg = huidig wachtwoord behouden"><label class="chk"><input type="checkbox" id="wShow"> Wachtwoord tonen</label><button class="act" id="wSave">Opslaan en herstarten</button></div></section>
+<section id="sysP" hidden aria-label="Systeem"><div class="cards"><button class="choice card" data-open="firmware"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></svg></i><span><b>Firmware</b><small id="fwSub"></small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button><button class="choice card" id="sRestart"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v9M6.3 6.3a8 8 0 1 0 11.4 0"/></svg></i><span><b>Herstarten</b><small>Profielen en instellingen blijven behouden</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button><button class="choice card" data-open="info"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v6M12 7.5h.01"/></svg></i><span><b>Apparaatinformatie</b><small>Netwerk, geheugen en radio-ontvanger</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button><button class="choice card" data-open="oled"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 5h18v11H3zM8 20h8M12 16v4"/></svg></i><span><b>OLED-scherm</b><small id="oledSub"></small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button><button class="choice card" data-open="integr"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 15l6-6M10 6l1-1a4 4 0 0 1 6 6l-1 1M14 18l-1 1a4 4 0 0 1-6-6l1-1"/></svg></i><span><b>Integraties</b><small id="intSub"></small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button><a class="choice card" href="/dashboard"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></svg></i><span><b>Legacy dashboard</b><small>Klassieke pagina’s: RF-log, debug en diagnose (Engelstalig)</small></span><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></a></div></section>
+<section id="fwP" hidden aria-label="Firmware"><div class="panel"><dl class="kv" id="fwKv"></dl></div><p class="msg">Er is geen online updatecontrole, dus een nieuwere versie kan niet betrouwbaar worden vastgesteld. Firmware wordt bijgewerkt via de gecontroleerde USB-procedure; deze pagina installeert niets.</p></section>
+<section id="infoP" hidden aria-label="Apparaatinformatie"><div class="panel"><dl class="kv" id="infoKv"></dl></div></section>
+<section id="oledP" hidden aria-label="OLED-scherm"><div class="list" id="oMode" role="radiogroup" aria-label="Schermstand"></div><button class="sec" id="oWake" type="button">Scherm nu aan of uit</button><p class="msg" id="oledM" role="status"></p><p class="msg">De PRG-knop op de Heltec toont het scherm opnieuw (30 seconden in de standen Automatisch en Uit). WiFi en radio-ontvangst blijven altijd actief.</p></section>
+<section id="intP" hidden aria-label="Integraties"><div class="panel"><h2>MQTT</h2><p class="msg">Publiceert de status via een MQTT-broker, met auto-discovery voor Home Assistant en Domoticz. Op RX-only-firmware worden geen commando’s via MQTT aangenomen.</p><p class="msg" id="mqStat" role="status"></p><label class="chk"><input type="checkbox" id="mqOn"> MQTT inschakelen</label><label for="mqHost">Broker (hostnaam of IPv4-adres, zonder poort)</label><input id="mqHost" maxlength="63" autocomplete="off" placeholder="192.0.2.2"><button class="act" id="mqSave">Opslaan en herstarten</button></div><p class="msg">Siri is nog niet beschikbaar. Siri praat niet rechtstreeks met MQTT; daarvoor is een brug nodig, zoals Home Assistant met HomeKit Bridge of Homebridge.</p></section>
+<p class="msg okt" id="setM" role="status"></p>
 <section class="panel" id="pairP" hidden aria-label="Koppelen">
 <div class="step" id="ps0"><span class="num">1</span><div><b>Zet de unit in koppelmodus</b><p>Stroom eraf en weer aan: het koppelvenster is ongeveer 3 minuten open.</p></div></div>
 <div class="step" id="ps1"><span class="num">2</span><div><b>Voer de codecombinatie uit</b><p>Selecteer Auto en 1; ze worden als één combinatie verzonden.</p></div></div>
@@ -104,15 +129,7 @@ h1{font-size:clamp(28px,3.8vw,43px);letter-spacing:-1.6px;line-height:1.16;margi
 <section class="okbox" id="doneP" hidden><h2>Alle zes knoppen ontvangen</h2><p id="doneT"></p><ol class="list" id="results"></ol><label for="saveName">Profielnaam</label><input id="saveName" maxlength="48" placeholder="Ventilatie woonkamer" autocomplete="off">
 <button class="act" id="saveProfile">Profiel opslaan</button><p id="profileSaveM" class="msg" role="status"></p>
 <button class="sec" id="again">Opnieuw uitlezen</button></section>
-<section class="panel" id="ctlP" hidden aria-label="Ventilatie bedienen">
-<label for="profileSel">Profiel</label><select id="profileSel" aria-label="Actief ventilatieprofiel"></select>
-<button class="sec" id="renameProfile">Hernoemen</button><button class="sec" id="deleteProfile">Verwijderen</button>
-<div id="profileEdit" hidden><label for="editProfileName">Nieuwe profielnaam</label><input id="editProfileName" maxlength="48" autocomplete="off"><button class="sec" id="renameProfileSave">Naam opslaan</button></div>
-<p class="msg" id="profileNote" role="status"></p><h2>Status</h2><p id="unit"></p>
-<div class="chips"><div class="chip" id="c0"><b>Geaccepteerd</b><span>–</span></div><div class="chip" id="c1"><b>Verzonden</b><span>–</span></div><div class="chip" id="c2"><b>Terugmelding unit</b><span>–</span></div></div>
-<p class="msg" id="ctlM" role="status"></p>
-</section>
-<button class="sec" id="back" hidden>← Terug</button>
+
 </div>
 </div>
 <p class="info">HTML, CSS en JavaScript uit flash · alleen verzoeken naar deze controller.</p>
@@ -126,12 +143,18 @@ const K=['away','auto','timer','1','2','3'],NM=['Woning','Auto','Timer','Stand 1
 const MODE={away:'Afwezig',auto:'Auto',low:'Stand 1',medium:'Stand 2',high:'Stand 3',boost:'Boost'},MK={away:'away',auto:'auto',low:'1',medium:'2',high:'3'};
 const MB=['Woning','Stand 1','Stand 2','Stand 3','Auto','auto2','boost','uit'];
 const NOTX='de zender is uitgeschakeld (alleen ontvangen). Er wordt niets verzonden.';
-const ERR={offline:'Geen verbinding met de controller.','tx-unavailable':'Deze firmware kan niet zenden. Er is niets verzonden.','session-busy':'Er loopt al een andere sessie of transactie; wacht even of annuleer eerst.','no-such-session':'Deze sessie bestaat niet meer.','remote-not-heard':'Deze afstandsbediening is niet recent gehoord.','rf-unavailable':'De radio-ontvanger is niet actief.','bad-token':'Sessie verlopen: herlaad de pagina.','too-fast':'Wacht even tussen twee commando’s.','unit-not-selected':'Nog geen ventilatie-unit gekozen (eerst koppelen).','tx-failed':'Verzenden mislukt: er is geen pakket verzonden.','unsupported-combination':'Koppelen vereist precies Auto + 1.','already-sent':'Het koppelverzoek is al verzonden.','identity-conflict':'De eigen zender-ID wordt op de lucht gehoord; verzenden geblokkeerd.','unit-state-unknown':'De unit meldt zijn stand niet (recent genoeg); even wachten.','unit-already-in-mode':'De unit staat al in deze stand: er is niets verzonden.','remote-active':'De fysieke afstandsbediening is net actief; even wachten.','identity-unverified':'Druk eerst op de fysieke afstandsbediening om de zenderidentiteit te controleren.','stale-request':'Een andere bediening heeft de sessie bijgewerkt; kies de stand opnieuw.','request-conflict':'Dit verzoeknummer is al voor een ander commando gebruikt.','bad-profile-name':'Gebruik een naam van maximaal 48 UTF-8-bytes, zonder spaties aan begin of einde.','profile-incomplete':'Lees eerst alle zes knoppen volledig uit.','profile-limit':'Er zijn al vier profielen. Verwijder eerst een profiel.','profile-not-found':'Dit profiel bestaat niet meer.','profile-storage-unavailable':'Profielopslag is niet beschikbaar; bestaande gegevens blijven behouden.','profile-write-failed':'Opslaan is mislukt; probeer opnieuw.','profile-protocol-unsupported':'Dit profiel mist een volledig ondersteunde knopmapping; er wordt niets verzonden.','profile-backend-unavailable':'Profielbediening vereist de web-control-firmware.','profile-required':'Kies eerst een opgeslagen profiel; zonder profiel wordt niets verzonden.','profile-unit-mismatch':'Het profiel hoort niet bij de gekozen unit; er is niets verzonden.','profile-name-taken':'Er is al een profiel met deze naam.','profile-not-activated':'Profiel opgeslagen, maar niet actief gemaakt. Kies het bij Ventilatie bedienen.'};
-let savedSid=0;let S=null,R=null,P=null,C=null,page='home',pick='',T=0,busy=false,rsid=0,psid=0,on=0,eo=0;const sel=new Set();
+const HOUSE='<svg viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9H4z"/></svg>';
+// Screen titles; read/pair keep their own step-dependent texts in draw().
+const TT={home:['Orcon 15RF','Laden…'],control:['Orcon 15RF','Bedien je ventilatiesysteem en beheer je instellingen.'],welcome:['Welkom bij Orcon 15RF','Kies hoe je wilt beginnen.'],profiles:['Profielen','Beheer je profielen of voeg een nieuw profiel toe.'],new:['Nieuw profiel','Geef je profiel een naam.'],done:['Koppeling voltooid','Je afstandsbediening is uitgelezen en als profiel opgeslagen.'],wifi:['WiFi','Beheer de netwerkverbinding van de controller.'],wifinew:['Nieuw WiFi-netwerk','Kies een netwerk en voer het wachtwoord in.'],system:['Systeem','Beheer, updates en apparaatinformatie.'],firmware:['Firmware','Geïnstalleerde versie en updates.'],info:['Apparaatinformatie','Actuele gegevens van deze controller.'],oled:['OLED-scherm','Weergave op het scherm van de Heltec.'],integr:['Integraties','Koppelingen met andere systemen.']};
+// Settings screens (only where the classic settings APIs exist) and the back target of every sub-screen.
+const SETP=['wifi','wifinew','system','firmware','info','oled','integr'],SEC={wifi:'wifiP',wifinew:'wnewP',system:'sysP',firmware:'fwP',info:'infoP',oled:'oledP',integr:'intP'},BK={profiles:'control',new:'profiles',wifi:'control',wifinew:'wifi',system:'control',firmware:'system',info:'system',oled:'system',integr:'system'};
+const OM={on:'Altijd aan',auto:'Automatisch: uit na 30 seconden',off:'Uit'};
+const ERR={offline:'Geen verbinding met de controller.','tx-unavailable':'Deze firmware kan niet zenden. Er is niets verzonden.','session-busy':'Er loopt al een andere sessie of transactie; wacht even of annuleer eerst.','no-such-session':'Deze sessie bestaat niet meer.','remote-not-heard':'Deze afstandsbediening is niet recent gehoord.','rf-unavailable':'De radio-ontvanger is niet actief.','bad-token':'Sessie verlopen: herlaad de pagina.','too-fast':'Wacht even tussen twee commando’s.','unit-not-selected':'Nog geen ventilatie-unit gekozen (eerst koppelen).','tx-failed':'Verzenden mislukt: er is geen pakket verzonden.','unsupported-combination':'Koppelen vereist precies Auto + 1.','already-sent':'Het koppelverzoek is al verzonden.','identity-conflict':'De eigen zender-ID wordt op de lucht gehoord; verzenden geblokkeerd.','unit-state-unknown':'De unit meldt zijn stand niet (recent genoeg); even wachten.','unit-already-in-mode':'De unit staat al in deze stand: er is niets verzonden.','remote-active':'De fysieke afstandsbediening is net actief; even wachten.','identity-unverified':'Druk eerst op de fysieke afstandsbediening om de zenderidentiteit te controleren.','stale-request':'Een andere bediening heeft de sessie bijgewerkt; kies de stand opnieuw.','request-conflict':'Dit verzoeknummer is al voor een ander commando gebruikt.','bad-profile-name':'Gebruik een naam van maximaal 48 UTF-8-bytes, zonder spaties aan begin of einde.','profile-incomplete':'Lees eerst alle zes knoppen volledig uit.','profile-limit':'Er zijn al vier profielen. Verwijder eerst een profiel.','profile-not-found':'Dit profiel bestaat niet meer.','profile-storage-unavailable':'Profielopslag is niet beschikbaar; bestaande gegevens blijven behouden.','profile-write-failed':'Opslaan is mislukt; probeer opnieuw.','profile-protocol-unsupported':'Dit profiel mist een volledig ondersteunde knopmapping; er wordt niets verzonden.','profile-backend-unavailable':'Profielbediening vereist de web-control-firmware.','profile-required':'Kies eerst een opgeslagen profiel; zonder profiel wordt niets verzonden.','profile-unit-mismatch':'Het profiel hoort niet bij de gekozen unit; er is niets verzonden.','profile-name-taken':'Er is al een profiel met deze naam.','profile-not-activated':'Profiel opgeslagen, maar niet actief gemaakt. Kies het onder Profielen.','MQTT on needs a broker host or IPv4 (no scheme/port)':'Ongeldige broker: gebruik een hostnaam of IPv4-adres, zonder http:// en zonder poort.','nothing to save':'Er is niets gewijzigd.'};
+let N=null,X=null,mqInit=0,savedSid=0,autoSid=0,autoN=0,autoAt=0,menu=0,pname='',fin='';let S=null,R=null,P=null,C=null,page='home',pick='',T=0,busy=false,rsid=0,psid=0,on=0,eo=0;const sel=new Set();
 // Follow only a session this page started or found running: an old result is never shown as current.
 const own=(x,id)=>x&&id&&x.sid===id?x:null;
 const esc=s=>String(s).replace(/[&<>"]/g,c=>'&#'+c.charCodeAt(0)+';');
-const say=e=>ERR[e]||'Fout: '+e;
+const say=e=>ERR[e]||(/^http-5/.test(e)?'De controller gaf een tijdelijke fout ('+e.slice(5)+').':'Fout: '+e);
 const mid=id=>!id||!S||!S.mask_ids?id||'':id.slice(0,5)+'••'+id.slice(-2);
 const cmdName=(c,m)=>c==='22F1'?MB[m]||c:c==='22F3'?'Timer':'commando '+c;
 const li=(cls,sym,name,st)=>'<li class="item '+cls+'"><span class="sym">'+sym+'</span><b>'+name+'</b><span class="st">'+st+'</span></li>';
@@ -139,7 +162,7 @@ async function api(u,b){
 let r,j={};
 try{r=await fetch(u,b===undefined?{cache:'no-store'}:{method:'POST',headers:{'Content-Type':'application/json','X-Orcon-Token':S?S.token:''},body:JSON.stringify(b)})}catch(e){on=0;conn();throw'offline'}
 try{j=await r.json()}catch(e){}
-on=1;conn();if(!r.ok)throw j.error||'http-'+r.status;return j;
+on=1;conn();if(!r.ok)throw j.error||j.err||'http-'+r.status;return j;
 }
 function conn(){const c=$('conn'),ok=on;c.textContent=ok?(S&&S.caps&&S.caps.control_supported?S.caps.simulated?'Verbonden · dry-run':'Verbonden · webbediening':S&&S.rx_only?'Verbonden · alleen ontvangen':'Verbonden'):'Geen verbinding';c.className='tag '+(ok?'ok':'bad')}
 // Poll errors clear themselves on the next good poll; an action's error stays until the next action.
@@ -171,6 +194,9 @@ cCur=j.next-1;if(j.more)d=150;
 }catch(e){cAdd('ERR',e&&e.name==='AbortError'?'API-time-out: geen antwoord binnen 4 s':typeof e==='string'?'API-fout: '+e:'API-fout: geen verbinding',Date.now());d=3000}
 cDraw();if($('con').open&&!cPause&&page==='read')cT=setTimeout(cPoll,d);
 }
+const prof=()=>S&&S.profiles||{items:[],active:0,storage_ok:true,limit:4};
+const start=()=>{const f=prof();return!f.storage_ok?'control':!f.items.length?'welcome':f.items.some(x=>x.id===f.active)?'control':'profiles'};
+const backTo=()=>page==='welcome'?(pname?'new':prof().items.length?'control':''):page==='read'||page==='pair'?'welcome':BK[page]||'';
 async function poll(){
 clearTimeout(T);let d=10000;
 if(!document.hidden)try{
@@ -178,18 +204,27 @@ if(!S||!(page==='read'&&R&&R.status==='active'))S=await api('/api/setup/state');
 if(page==='read'){R=await api('/api/setup/read/state');if(R.status==='active')rsid=R.sid;R=own(R,rsid);d=R&&R.status==='active'?1000:2500}
 else if(page==='pair'&&S.caps.pair_supported){P=await api('/api/setup/pair/state');if(PA.includes(P.status))psid=P.sid;P=own(P,psid);d=P&&P.status!=='ready'&&PA.includes(P.status)?2000:5000}
 else if(page==='control'&&S.caps.control_supported){C=await api('/api/remote/state');d=C.confirm==='pending'?1000:2500}
+else if(SETP.includes(page)&&S.caps.settings_pages!==false){X=await api('/api/state');if(!N&&(page==='wifi'||page==='integr'))N=await api('/api/netcfg');d=page==='info'?3000:5000}
 if(eo)err('');
 }catch(e){err(say(e),1)}
+if(page==='home'&&S){go(start());return}
+if(SETP.includes(page)&&S&&S.caps.settings_pages===false){go('control');return}
 draw();T=setTimeout(poll,d);
+// A name chosen on "Nieuw profiel" is saved as soon as the six buttons are in. A temporary failure retries on a later
+// poll (3 tries per session; the read session stays done, so a retry is safe); otherwise the save button stays available.
+if(page==='read'&&!busy&&R&&R.status==='done'&&pname&&savedSid!==R.sid&&(autoSid!==R.sid||autoAt&&Date.now()>=autoAt)){if(autoSid!==R.sid)autoN=0;autoSid=R.sid;autoAt=0;autoN++;$('saveName').value=pname;
+const sid=R.sid;save(pname)?.then(e=>{if(!e)return;const t=(['offline','session-busy','profile-write-failed'].includes(e)||/^http-5/.test(e))&&autoN<3;if(t)autoAt=Date.now()+2000;
+err(say(e)+(t?' Opslaan wordt automatisch opnieuw geprobeerd.':savedSid===sid?'':' Klik op Profiel opslaan om het opnieuw te proberen.'))})}
 }
-async function act(fn){if(busy)return;busy=true;draw();try{await fn();err('')}catch(e){err(say(e))}busy=false;poll()}
-function go(p){if(p!=='read')cStop();page=p;sel.clear();pick='';R=P=C=null;rsid=psid=0;$('mins').hidden=true;err('');const h=p==='home'?'':p;if(location.hash.slice(1)!==h)location.hash=h;draw();poll();if(p==='read')cPoll()}
+async function act(fn){if(busy)return;busy=true;draw();let x;try{await fn();err('')}catch(e){x=e;err(say(e))}busy=false;poll();return x}
+function go(p){if(p==='home'&&S)p=start();if(SETP.includes(p)&&S&&S.caps.settings_pages===false)p='control';N=null;mqInit=0;$('setM').textContent='';if(p==='wifinew'){$('wSsid').value=$('wPass').value='';$('wShow').checked=false;$('wPass').type='password'}if(p==='done'&&!fin)p='control';if(p==='new'){$('newName').value=pname;$('newM').textContent=''}if(p!=='read')cStop();page=p;menu=0;sel.clear();pick='';R=P=C=null;rsid=psid=0;$('mins').hidden=true;err('');const h=p==='home'?'':p;if(location.hash.slice(1)!==h)location.hash=h;draw();poll();if(p==='read')cPoll()}
 function draw(){
-const c=S?S.caps:{},home=page==='home',pr=page==='pair',rd=page==='read',ct=page==='control';
+const c=S?S.caps:{},home=page==='home',pr=page==='pair',rd=page==='read',ct=page==='control',tt=TT[page];
 const ra=!!(rd&&R&&R.status==='active'),rdone=!!(rd&&R&&R.status==='done'),pready=!!(pr&&P&&P.status==='ready');
-$('choices').hidden=!home;$('pairP').hidden=!pr;$('readP').hidden=!rd||rdone;$('doneP').hidden=!rdone;$('ctlP').hidden=!ct;$('back').hidden=home;
-$('title').textContent=home?'Orcon installatiewizard':pr?'Afstandsbediening koppelen':rd?(rdone?'Uitlezen voltooid':'Afstandsbediening uitlezen'):'Ventilatie bedienen';
-$('sub').textContent=home?'Kies wat je wilt doen.':pr?'Koppel deze controller met je ventilatie-unit.':rd?(ra?'Druk de oranje gemarkeerde knop op je fysieke afstandsbediening in.':rdone?'Alle knoppen zijn herkend.':'Kies eerst je eigen afstandsbediening.'):'Bedien je ventilatie-unit met de virtuele afstandsbediening.';
+$('lay').classList.toggle('solo',!(ct||rd||pr));$('dash').hidden=$('ctlP').hidden=!ct;$('wel').hidden=page!=='welcome';$('profP').hidden=page!=='profiles';$('newP').hidden=page!=='new';$('finP').hidden=$('tick').hidden=page!=='done';
+$('tech').hidden=!ct;for(const k in SEC)$(SEC[k]).hidden=page!==k;$('pairP').hidden=!pr;$('readP').hidden=!rd||rdone;$('doneP').hidden=!rdone;$('back').hidden=!backTo();
+$('title').textContent=tt?tt[0]:pr?'Simulatie instellen':rdone?'Uitlezen voltooid':'Afstandsbediening koppelen';
+$('sub').textContent=tt?tt[1]:pr?'Koppel deze controller als virtuele afstandsbediening met je ventilatie-unit.':ra?'Druk de oranje gemarkeerde knop op je fysieke afstandsbediening in.':rdone?'Alle knoppen zijn herkend.':'Kies eerst je eigen afstandsbediening.';
 const no=!S?'':pr&&!c.pair_supported?'Koppelen is met deze firmware niet beschikbaar. Echte RF-pairing wacht op een volledige protocolcapture.':ct&&!c.control_supported?'Bedienen is met deze firmware niet mogelijk: '+NOTX:rd&&!c.read_supported?'Uitlezen is met deze radio niet mogelijk.':'';
 const sim=(ct&&c.control_supported||pr&&c.pair_supported)&&c.simulated;
 $('notice').textContent=sim?'DRY-RUN: commando’s doorlopen de hele keten, maar er wordt niets over RF verzonden.':no;$('notice').hidden=!(sim||no);if(S)conn();
@@ -203,8 +238,8 @@ b.classList.toggle('cur',!!(ra&&i===R.step));
 b.style.visibility=(i===2&&ct&&c.timer_supported===false)?'hidden':'';
 b.setAttribute('aria-pressed',String(pr&&sel.has(k)));
 });
-$('rnote').textContent=home?'Voorbeeld van de Orcon-afstandsbediening':pr?(pready?'Kies Auto en 1: ze worden samen verzonden':'Virtuele afstandsbediening'):rd?'Alleen ter weergave · knoppen niet klikbaar':live||busy?'Klik op een knop om te verzenden':'Bedienen niet beschikbaar';
-if(pr)drawPair(c);if(rd)drawRead(c,ra,rdone);if(ct){drawProfiles();drawCtl()}
+$('rnote').textContent=pr?(pready?'Kies Auto en 1: ze worden samen verzonden':'Virtuele afstandsbediening'):rd?'Alleen ter weergave · knoppen niet klikbaar':live||busy?'Klik op een knop om te verzenden':'Bedienen niet beschikbaar';
+if(pr)drawPair(c);if(rd)drawRead(c,ra,rdone);if(ct){drawDash(c);drawProfiles();drawCtl()}if(page==='profiles')drawList();if(page==='welcome')$('simSub').textContent='Gebruik Orcon zonder fysieke afstandsbediening (virtuele bediening).'+(c.pair_supported?' Experimenteel: maakt nog geen profiel aan.':' Niet beschikbaar met deze firmware.');if(page==='done')$('finName').textContent=fin;if(SETP.includes(page))drawSet(c);
 }
 function drawPair(c){
 const s=P?(c.simulated&&P.status==='paired'?'dry_run_complete':P.status):'idle',stage=!c.pair_supported?-1:{ready:1,bind_sent:2,rf_confirmed:2,ack_sent:2,tx_failed:2,paired:3}[s]||0,wait=s==='bind_sent'||s==='rf_confirmed'||s==='ack_sent';
@@ -245,12 +280,41 @@ if(R.rf!=='receiving'||w==='wrong-button'||w==='unknown-command')m.className='ms
 if(R.others)t+=' '+R.others+'× signaal van een ander apparaat genegeerd.';
 m.textContent=t;
 }
+function drawDash(c){
+const f=prof(),p=f.items.find(x=>x.id===f.active),w=S&&S.wifi,sp=c.settings_pages!==false;
+$('profName').textContent=!f.storage_ok?'Profielopslag niet beschikbaar':p?p.name:'Geen profiel geselecteerd';
+$('profSub').textContent=p?'Actief profiel':f.items.length?'Kies een profiel':'Maak een profiel aan';$('cProf').classList.toggle('on',!!p);
+$('wifiSub').textContent=!w?'':w.connected?'Verbonden met '+w.ssid:'Niet verbonden';
+$('sysSub').textContent=sp?'Firmware, herstarten en informatie':'Niet beschikbaar in deze firmware';
+for(const i of['cWifi','cSys']){$(i).classList.toggle('off',!sp);$(i).disabled=!sp}
+}
+const dur=ms=>{const s=Math.floor(ms/1000),d=Math.floor(s/86400),h=Math.floor(s%86400/3600);return(d?d+' d ':'')+(d||h?h+' u ':'')+Math.floor(s%3600/60)+' min'};
+const u8=t=>encodeURIComponent(t).replace(/%[0-9A-F]{2}/g,'x').length;
+function drawSet(c){
+const w=S&&S.wifi||{},n=N||{},x=X||{},fw=S?S.fw:'',ap=w.ap_name||'het accesspoint',q=v=>X?v():'…';
+const kv=(id,r)=>{$(id).innerHTML=r.map(([k,v])=>'<dt>'+esc(k)+'</dt><dd>'+esc(v)+'</dd>').join('')};
+if(page==='wifi'){$('wName').textContent=w.connected?w.ssid:n.ssid||(N?'Geen netwerk ingesteld':'…');
+$('wSub').textContent=w.connected?'Verbonden · IP-adres '+w.ip:w.ap?'Niet verbonden · accesspoint '+ap+' actief (IP-adres '+w.ip+')':'Niet verbonden';
+$('wForget').disabled=busy||!n.ssid;$('wfSub').textContent=!N?'…':n.ssid?'Daarna start het accesspoint '+ap+' om opnieuw in te stellen':'Er is geen netwerk opgeslagen'}
+if(page==='wifinew')$('wSave').disabled=$('wScan').disabled=busy;
+if(page==='system'){$('fwSub').textContent='Versie '+fw.slice(0,7);$('oledSub').textContent=q(()=>x.oled_available?OM[x.oled_mode]||x.oled_mode:'Geen scherm gevonden');$('intSub').textContent=q(()=>'MQTT '+(x.mqtt_on?'aan · '+(x.mqtt_connected?'verbonden':'niet verbonden'):'uit'));$('sRestart').disabled=busy}
+if(page==='firmware')kv('fwKv',[['Geïnstalleerde versie',fw.slice(0,7)],['Volledige commit',fw],['Type',S&&S.rx_only?'RX-only: alleen ontvangen':c.simulated?'Web-control dry-run':c.tx_supported?'Met zender':'–'],['Nieuwere versie','Niet vast te stellen']]);
+if(page==='info')kv('infoKv',[['Firmware',fw.slice(0,7)],['Netwerk',w.connected?w.ssid:w.ap?'Accesspoint '+ap:'Niet verbonden'],['IP-adres',w.ip||'–'],['Actief sinds',q(()=>dur(x.uptime_ms))],['Vrij geheugen (laagste)',q(()=>Math.round(x.heap_min/1024)+' KB')],['RF-ontvanger',!S?'…':S.rf==='receiving'?'Ontvangt':S.rf],['Ontvangen frames',q(()=>String(x.rf_frames))],['OLED-scherm',q(()=>x.oled_available?(x.oled_on?'Aan':'Uit')+' · '+(OM[x.oled_mode]||x.oled_mode):'Niet gevonden')],['MQTT',q(()=>x.mqtt_on?x.mqtt_connected?'Verbonden':'Niet verbonden':'Uit')]]);
+if(page==='oled'){const ok=!!(X&&x.oled_available);
+$('oMode').innerHTML=['on','auto','off'].map(m=>{const a=x.oled_mode===m;return '<button class="item'+(a?' sel':'')+'" role="radio" aria-checked="'+a+'" data-om="'+m+'"'+(ok&&!busy?'':' disabled')+'><span class="sym">'+(a?'✓':'·')+'</span><b>'+OM[m]+'</b><span class="st"></span></button>'}).join('');
+$('oWake').disabled=!ok||busy;$('oledM').textContent=!X?'':!ok?'Geen OLED-scherm gevonden.':'Het scherm is nu '+(x.oled_on?'aan':'uit')+'.'}
+if(page==='integr'){$('mqStat').textContent=!X?'':'Status: '+(x.mqtt_on?'aan, broker '+(n.mqtt||'?')+' · '+(x.mqtt_connected?'verbonden':'niet verbonden'):'uit');
+if(N&&!mqInit){$('mqOn').checked=!!n.mqtt_on;$('mqHost').value=n.mqtt||'';mqInit=1}$('mqSave').disabled=busy||!N}
+}
 function drawProfiles(){
-const f=S&&S.profiles||{items:[],active:0,storage_ok:true,limit:4},p=f.items.find(x=>x.id===f.active);
-$('profileSel').innerHTML='<option value="0">Bestaande unit (geen profiel)</option>'+f.items.map(x=>'<option value="'+x.id+'">'+esc(x.name)+'</option>').join('');
-$('profileSel').value=String(f.active);$('profileSel').disabled=busy||!f.storage_ok;
-$('renameProfile').disabled=$('deleteProfile').disabled=busy||!p||!f.storage_ok;
-$('profileNote').textContent=!f.storage_ok?'Profielopslag niet beschikbaar; bestaande gegevens blijven behouden.':p?'Actief profiel: '+p.name+'. '+(S.caps.profile_control_supported===false&&S.caps.control_supported?'Profielbediening vereist de web-control-firmware.':p.control_mapping?'Vijf standen herkend. Opgeslagen profiel; RF-koppeling van deze controller is afzonderlijk nodig.':'Profiel opgeslagen; geen volledig ondersteunde TX-mapping. Timer wordt niet nagezonden.'):(S&&S.caps.profile_control_supported&&S.caps.control_supported?'Kies een profiel om te bedienen. ':'')+f.items.length+' van '+f.limit+' profielen opgeslagen. Opslaan of selecteren zendt niets uit.';
+const f=prof(),p=f.items.find(x=>x.id===f.active);
+$('profileNote').textContent=!f.storage_ok?'Profielopslag niet beschikbaar; bestaande gegevens blijven behouden.':p?(S.caps.profile_control_supported===false&&S.caps.control_supported?'Profielbediening vereist de web-control-firmware.':p.control_mapping?'Vijf standen herkend. RF-koppeling van deze controller is afzonderlijk nodig.':'Geen volledig ondersteunde TX-mapping. Timer wordt niet nagezonden.'):(S&&S.caps.profile_control_supported&&S.caps.control_supported?'Kies een profiel om te bedienen. ':'')+'Opslaan of selecteren zendt niets uit.';
+}
+function drawList(){
+const f=prof(),ok=f.storage_ok&&!busy;
+$('plist').innerHTML=f.items.map(x=>{const a=x.id===f.active,n=esc(x.name);return '<div class="prow'+(a?' on':'')+'"><button class="pick" data-sel="'+x.id+'"'+(ok?'':' disabled')+'><i aria-hidden="true">'+HOUSE+'</i><b>'+n+'</b>'+(a?'<span class="badge">Actief</span>':'')+'</button><button class="dots" data-menu="'+x.id+'" aria-label="Opties voor '+n+'" aria-expanded="'+(menu===x.id)+'"'+(ok?'':' disabled')+'>⋯</button></div>'+(menu===x.id?'<div class="pmenu"><button class="sec" data-ren="'+x.id+'">Hernoemen</button><button class="sec" data-del="'+x.id+'">Verwijderen</button></div>':'')}).join('')||'<p>Nog geen profielen.</p>';
+$('profM').textContent=!f.storage_ok?'Profielopslag niet beschikbaar; bestaande gegevens blijven behouden.':f.items.length&&!f.items.some(x=>x.id===f.active)?'Geen actief profiel: kies een profiel.':f.items.length+' van '+f.limit+' profielen. Selecteren zendt niets uit.';
+$('pNew').disabled=!ok||f.items.length>=f.limit;
 }
 function drawCtl(){
 const u=S&&S.unit,x=C&&C.id?C:null,cf=x?x.confirm:'';
@@ -296,22 +360,54 @@ $('remotes').addEventListener('click',e=>{const b=e.target.closest('[data-id]');
 $('readS').addEventListener('click',()=>act(async()=>{R=await api('/api/setup/read/start',{remote:pick});rsid=R.sid}));
 $('readX').addEventListener('click',()=>act(async()=>{R=await api('/api/setup/read/cancel',{sid:R.sid})}));
 $('again').addEventListener('click',()=>{R=null;rsid=0;pick='';draw();poll()});
-$('saveProfile').addEventListener('click',()=>{if(!R||R.status!=='done'||savedSid===R.sid)return;const name=$('saveName').value||'',sid=R.sid,remote=R.remote;act(async()=>{
-const f=await api('/api/profiles/save',{sid,name});S.profiles=f;savedSid=sid;
+function save(name){
+if(!R||R.status!=='done'||savedSid===R.sid)return;const sid=R.sid,remote=R.remote,o=prof().items.find(x=>x.remote===remote&&x.name!==name);
+// One profile per physical remote: never silently rename another profile.
+if(o){err('Deze afstandsbediening is al opgeslagen als profiel “'+o.name+'”. Kies dat profiel of verwijder het eerst.');return}
+return act(async()=>{const f=await api('/api/profiles/save',{sid,name});S.profiles=f;savedSid=sid;
 // Move on only when the server reports this remote's profile as the active one.
 const sp=f.items.find(x=>x.remote===remote);if(!sp||f.active!==sp.id)throw'profile-not-activated';
-go('control')})});
-$('profileSel').addEventListener('change',()=>{const id=Number($('profileSel').value);act(async()=>{S.profiles=await api('/api/profiles/select',{id});C=null;$('profileEdit').hidden=true})});
-$('renameProfile').addEventListener('click',()=>{const f=S&&S.profiles,p=f&&f.items.find(x=>x.id===f.active);if(p){$('editProfileName').value=p.name;$('profileEdit').hidden=false}});
-$('renameProfileSave').addEventListener('click',()=>{const id=S&&S.profiles&&S.profiles.active,name=$('editProfileName').value||'';if(id)act(async()=>{S.profiles=await api('/api/profiles/rename',{id,name});$('profileEdit').hidden=true})});
-$('deleteProfile').addEventListener('click',()=>{const id=S&&S.profiles&&S.profiles.active;if(id)act(async()=>{S.profiles=await api('/api/profiles/delete',{id});C=null;$('profileEdit').hidden=true})});
+fin=sp.name;pname='';go('done')})}
+$('saveProfile').addEventListener('click',()=>save($('saveName').value||''));
+$('finGo').addEventListener('click',()=>go('control'));
+$('pNew').addEventListener('click',()=>{pname='';go('new')});
+$('newNext').addEventListener('click',()=>{const n=$('newName').value.trim(),m=$('newM');
+const e=!n?'Vul een profielnaam in.':encodeURIComponent(n).replace(/%[0-9A-F]{2}/g,'x').length>48?'De naam is te lang (maximaal 48 bytes).':/[\x00-\x1f\x7f]/.test(n)?'De naam bevat ongeldige tekens.':prof().items.some(x=>x.name===n)?'Er is al een profiel met deze naam.':'';
+m.textContent=e;if(!e){pname=n;go('welcome')}});
+$('plist').addEventListener('click',e=>{const b=e.target.closest('button');if(!b||busy)return;const d=b.dataset,x=prof().items.find(i=>i.id===+(d.sel||d.menu||d.ren||d.del));if(!x)return;
+if(d.menu){menu=menu===x.id?0:x.id;draw()}
+else if(d.sel)act(async()=>{S.profiles=await api('/api/profiles/select',{id:x.id});C=null;go('control')});
+else if(d.ren){const n=prompt('Nieuwe naam voor '+x.name,x.name);if(n!==null&&n.trim()!==x.name)act(async()=>{S.profiles=await api('/api/profiles/rename',{id:x.id,name:n.trim()});menu=0})}
+else if(d.del&&confirm('Weet je zeker dat je het profiel '+x.name+' wilt verwijderen?'))act(async()=>{S.profiles=await api('/api/profiles/delete',{id:x.id});menu=0;C=null;if(!S.profiles.items.length)go('welcome')})});
 
-$('back').addEventListener('click',()=>{
+$('wSel').addEventListener('change',()=>{$('wSsid').value=$('wSel').value});
+$('wShow').addEventListener('change',()=>{$('wPass').type=$('wShow').checked?'text':'password'});
+$('wScan').addEventListener('click',()=>act(async()=>{const l=(await api('/api/scan')).sort((a,b)=>b.rssi-a.rssi),seen=new Set(),o=l.filter(x=>x.ssid&&!seen.has(x.ssid)&&seen.add(x.ssid));
+$('wSel').innerHTML='<option value="">'+(o.length?'Kies een netwerk ('+o.length+' gevonden)':'Geen netwerken gevonden')+'</option>'+o.map(x=>'<option value="'+esc(x.ssid)+'">'+esc(x.ssid)+' · '+x.rssi+' dBm · '+(x.lock?'beveiligd':'open')+'</option>').join('')}));
+$('wSave').addEventListener('click',()=>{const s=$('wSsid').value.trim(),p=$('wPass').value;
+const e=!s?'Kies of typ een netwerknaam.':u8(s)>32?'De netwerknaam is te lang (maximaal 32 bytes).':p&&(p.length<8||u8(p)>63)?'Een WiFi-wachtwoord heeft 8 tot 63 tekens.':'';
+if(e){err(e);return}
+// The classic /api/wifi: an empty password keeps the stored one; MQTT is left untouched (no mqtt fields).
+act(async()=>{await api('/api/wifi',{ssid:s,pass:p});$('setM').textContent='Opgeslagen. De controller herstart en verbindt met “'+s+'”. Lukt dat niet binnen 15 seconden, dan start het accesspoint '+((S.wifi||{}).ap_name||'')+' zodat je het opnieuw kunt instellen.'})});
+$('wForget').addEventListener('click',()=>{const ap=(S.wifi||{}).ap_name||'het accesspoint';
+if(confirm('WiFi-verbinding verwijderen? De controller vergeet dit netwerk, herstart en start het accesspoint '+ap+'. Profielen en andere instellingen blijven behouden.'))
+act(async()=>{await api('/api/setup/wifi/forget',{});$('setM').textContent='WiFi-verbinding verwijderd. De controller herstart nu. Verbind daarna met het WiFi-netwerk '+ap+' en open http://192.168.4.1 om een nieuw netwerk in te stellen.'})});
+$('sRestart').addEventListener('click',()=>{if(confirm('De controller herstarten? Profielen en instellingen blijven behouden.'))act(async()=>{await api('/api/setup/restart',{});$('setM').textContent='De controller herstart. Deze pagina maakt daarna vanzelf weer verbinding.'})});
+$('oMode').addEventListener('click',e=>{const b=e.target.closest('[data-om]');if(b&&!b.disabled&&!busy)act(async()=>{await api('/api/oled',{mode:b.dataset.om});X=await api('/api/state')})});
+$('oWake').addEventListener('click',()=>act(async()=>{await api('/api/oled',{toggle:1});X=await api('/api/state')}));
+$('mqSave').addEventListener('click',()=>{const on=$('mqOn').checked,h=$('mqHost').value.trim(),was=!!(N&&N.mqtt_on);
+if(on&&!h){err('Vul een broker in om MQTT in te schakelen.');return}
+if(on===was&&(!on||h===N.mqtt)){err('Er is niets gewijzigd.');return}
+if(!on&&!confirm('MQTT uitschakelen? Het brokeradres wordt gewist en de controller herstart.'))return;
+// Only the MQTT fields: the classic /api/wifi then keeps the WiFi credentials.
+act(async()=>{await api('/api/wifi',on?{mqtt_on:true,mqtt:h}:{mqtt_on:false});$('setM').textContent='Opgeslagen. De controller herstart'+(on?' en verbindt met broker '+h:'; MQTT staat uit')+'.'})});
+$('back').addEventListener('click',()=>{const to=backTo();if(!to)return;
 if(page==='read'&&R&&R.status==='active')api('/api/setup/read/cancel',{sid:R.sid}).catch(()=>{});
 if(page==='pair'&&P&&PA.includes(P.status))api('/api/setup/pair/cancel',{sid:P.sid}).catch(()=>{});
-go('home');
+if(page==='new')pname='';
+go(to);
 });
-const route=()=>{const h=location.hash.slice(1);return['pair','read','control'].includes(h)?h:'home'};
+const route=()=>{const h=location.hash.slice(1);return['pair','read','control','welcome','profiles','new','done',...SETP].includes(h)?h:'home'};
 addEventListener('hashchange',()=>{if(route()!==page)go(route())});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){poll();cPoll()}});
 go(route());
