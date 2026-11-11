@@ -41,6 +41,9 @@ function load() {
 
 // Browser dialogs: answers set per test, every question recorded.
 const dlg = { asked: [], confirm: true, prompt: null };
+// Page clock: tests move it forward explicitly (automatic save retries wait for it).
+let clock = 1e12;
+class PageDate extends Date { static now() { return clock; } }
 // routes: { 'GET /api/x': () => [status, body] | throws }
 async function page(routes, hash = '') {
     const dom = load(), calls = [], win = {};
@@ -60,7 +63,7 @@ async function page(routes, hash = '') {
         return { ok: status < 300, status, json: async () => body };
     };
     const ctx = { document, location, fetch, setTimeout: () => 0, clearTimeout() {}, addEventListener: (t, f) => { win[t] = f; },
-                  console, Promise, Set, String, JSON, Math, Object, Array,
+                  console, Promise, Set, String, JSON, Math, Object, Array, Date: PageDate,
                   confirm: m => { dlg.asked.push(m); return dlg.confirm; }, prompt: m => { dlg.asked.push(m); return dlg.prompt; } };
     vm.runInNewContext(script, ctx);
     await flush();
@@ -390,6 +393,34 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.deepEqual(saves,[{sid:50,name:'Slaapkamer'}]);assert.equal(p.location.hash,'#done');assert.equal(p.$('finName').textContent,'Slaapkamer');
         ok('six buttons in -> saved once under the chosen name, active, completion screen');
         await p.refresh();assert.equal(saves.length,1);ok('no second automatic save');
+    }
+    {   // automatic save: temporary failures retry on a later poll (max 3 tries); permanent ones leave the button
+        const run=async answers=>{let rs=read(0,'idle',0),f=PF([PI(2,'Washok','29:000101')],2),tries=0;
+            const p=await page({
+                'GET /api/setup/state':()=>[200,state(CAPS_RX,{profiles:f,remotes:[{id:'29:000303',age_s:2,rssi:-50,cmd:'22F1',n:2}]})],
+                'GET /api/setup/read/state':()=>[200,rs],
+                'POST /api/setup/read/start':()=>{rs=read(70,'done',6,{remote:'29:000303'});return [201,rs];},
+                'POST /api/profiles/save':c=>{const a=answers[tries++];if(a==='throw')throw new Error('net');if(a)return a;
+                    f={...f,active:3,items:[...f.items,PI(3,c.body.name,rs.remote)]};return [201,f];},
+            },'profiles');
+            p.$('pNew').click();await flush();p.$('newName').value='Zolder';p.$('newNext').click();await flush();
+            p.dom.all.find(e=>e.dataset.open==='read').click();await flush();
+            p.$('remotes').click({target:{closest:()=>({dataset:{id:'29:000303'}})}});await flush();await p.refresh();
+            return {p,n:()=>tries,f:()=>f};};
+        let r=await run(['throw',[500,{}]]);
+        assert.equal(r.n(),1);assert.equal(r.p.location.hash,'#read');assert.match(r.p.$('err').textContent,/Geen verbinding.*automatisch opnieuw/);
+        assert.equal(r.p.$('saveProfile').disabled,false);assert.equal(r.p.$('saveName').value,'Zolder');
+        await r.p.refresh();assert.equal(r.n(),1);ok('save failure while offline: explained, retry announced, button stays, no immediate hammering');
+        clock+=2500;await r.p.refresh();assert.equal(r.n(),2);assert.match(r.p.$('err').textContent,/automatisch opnieuw/);
+        clock+=2500;await r.p.refresh();assert.equal(r.n(),3);assert.equal(r.p.location.hash,'#done');assert.equal(r.p.$('finName').textContent,'Zolder');
+        ok('temporary failures retried automatically; third try saves and shows completion');
+        r=await run(['throw','throw','throw']);clock+=2500;await r.p.refresh();clock+=2500;await r.p.refresh();clock+=2500;await r.p.refresh();
+        assert.equal(r.n(),3);assert.match(r.p.$('err').textContent,/Klik op Profiel opslaan/);assert.equal(r.f().active,2);
+        r.p.$('saveProfile').click();await flush();assert.equal(r.n(),4);assert.equal(r.p.location.hash,'#done');
+        ok('after three failed tries: no more automatic retries, clear hint, manual save works');
+        r=await run([[409,{error:'profile-limit'}]]);clock+=2500;await r.p.refresh();
+        assert.equal(r.n(),1);assert.match(r.p.$('err').textContent,/vier profielen.*Klik op Profiel opslaan/);assert.equal(r.f().active,2);
+        ok('permanent failure (profile limit): not retried, old active profile kept');
     }
     {   // a remote that already belongs to another profile is never silently renamed
         let rs=read(0,'idle',0),f=PF([PI(2,'Washok','29:000101')],2);
