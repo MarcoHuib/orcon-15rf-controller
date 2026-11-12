@@ -28,7 +28,10 @@
 #include <mbedtls/sha256.h>
 
 // Arduino core hook: with rollback enabled, WE confirm a new image (tick), not initArduino().
-bool verifyRollbackLater() { return true; }
+// C linkage is required: the core's weak default is a C symbol. A C++ definition does not
+// override it, and the core would then confirm every new image at boot (no trial boot, no
+// rollback). Evidence row rollback-hook-<env> checks the linked ELF.
+extern "C" bool verifyRollbackLater() { return true; }
 
 namespace ota {
 

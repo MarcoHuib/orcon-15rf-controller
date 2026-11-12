@@ -135,7 +135,7 @@ problems = []
 if r.get("commit") != sha: problems.append(f"evidence commit {r.get('commit')} != {sha}")
 if r.get("dirty") != "": problems.append("evidence from a dirty tree")
 problems += [f"{n}: {v}" for n, v in rows.items() if v != "PASS"]
-for n in required + [f"firmware-{env}", f"image-{env}", f"partitions-{env}", f"elf-{env}"]:
+for n in required + [f"firmware-{env}", f"image-{env}", f"partitions-{env}", f"elf-{env}", f"rollback-hook-{env}"]:
     if rows.get(n) != "PASS": problems.append(f"{n} not PASS")
 recorded = {f["name"]: f["sha256"] for f in json.load(open(f"{ev}/artifacts/{env}/BUILD_INFO.json"))["files"]}
 for n in ("bootloader.bin", "partitions.bin", "boot_app0.bin", "firmware.bin"):

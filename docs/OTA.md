@@ -11,6 +11,7 @@
 - **Automatic rollback.** If the new image is not healthy within 300 s, or resets before it confirms (crash, watchdog, power loss), the bootloader returns to the previous image.
   - At 300 s the image marks itself invalid (`esp_ota_mark_app_invalid_rollback_and_reboot`). That call refuses when otadata holds no usable previous entry. The image then restarts anyway, and the bootloader marks the unconfirmed image `ABORTED` and starts the other slot. A trial boot therefore never stays running unhealthy.
   - After the USB bootstrap, otadata is the pinned `boot_app0.bin`. Its entry 0 (seq 1, app0) is valid, so the first OTA can roll back to app0 through either path.
+- **The trial boot depends on one linker detail.** `verifyRollbackLater()` must be defined `extern "C"`. Otherwise the Arduino core's weak default stays linked, and `initArduino()` confirms every new image at boot, so there is no trial boot and no rollback. The evidence row `rollback-hook-<env>` checks the linked ELF. `orcon.py` treats an image that is already valid when first seen as a failure (`NO TRIAL BOOT`).
 - **Rollback test.** `POST /api/ota/hold` works only during a trial boot. It stops that boot from confirming itself, so the 300 s path runs on real hardware. It can only make an update fail; it never installs anything.
 - **Data that survives.** NVS (WiFi, profiles, identities, OLED, MQTT) is never written by an update.
 

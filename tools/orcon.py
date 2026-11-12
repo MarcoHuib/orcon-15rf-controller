@@ -192,7 +192,7 @@ def watch_confirmation(get, commit, old_fw, clock, sleep, limit=420, boot_grace=
     """The new image must boot (fw == commit) and confirm itself (running_state valid).
     The old firmware again after the new one ran, or never leaving it, means a rollback.
     on_trial is called once, as soon as the new image is seen in its trial boot."""
-    start, seen_new, last = clock(), False, None
+    start, seen_new, seen_trial, last = clock(), False, False, None
     while clock() - start < limit:
         sleep(5)
         try: st, o = get()
@@ -201,8 +201,14 @@ def watch_confirmation(get, commit, old_fw, clock, sleep, limit=420, boot_grace=
         last = o
         if o.get('fw') == commit:
             seen_new = True
-            if on_trial and o.get('running_state') == 'pending-verify': on_trial(); on_trial = None
-            if o.get('running_state') == 'valid': return f"CONFIRMED: {commit[:7]} runs from {o['running']} and passed its health check"
+            if o.get('running_state') == 'pending-verify':
+                seen_trial = True
+                if on_trial: on_trial(); on_trial = None
+            if o.get('running_state') == 'valid':
+                # The image confirms itself only after >= 60 s of trial boot; valid without one means
+                # the bootloader rollback was bypassed (e.g. the core confirmed it at boot).
+                if not seen_trial: return f'NO TRIAL BOOT: {commit[:7]} was already confirmed when first seen; rollback protection is not active'
+                return f"CONFIRMED: {commit[:7]} runs from {o['running']} and passed its health check"
         elif o.get('fw') == old_fw and (seen_new or clock() - start > boot_grace):
             return f"ROLLED BACK: the board runs {old_fw[:7]} from {o.get('running')} again; see orcon.py status"
     return f'NO CONFIRMATION within {limit} s; last state: {last}'

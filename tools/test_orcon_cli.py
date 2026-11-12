@@ -72,6 +72,7 @@ check(run([OLD, urllib.error.URLError('down'), NEW_P, NEW_V]).startswith('CONFIR
 check(run([NEW_P, NEW_P, OLD]).startswith('ROLLED BACK'), 'new image ran, then the old one again: rollback reported')
 check(run([OLD] * 30).startswith('ROLLED BACK'), 'new image never came up: reported as rollback after the grace time')
 check(run([NEW_P] * 200).startswith('NO CONFIRMATION'), 'stuck in trial: no false success')
+check(run([OLD, NEW_V]).startswith('NO TRIAL BOOT'), 'valid on first sight (core confirmed it at boot): not reported as success')
 calls = []
 check(run([OLD, NEW_P, NEW_P, NEW_P, OLD], on_trial=lambda: calls.append(1)).startswith('ROLLED BACK') and calls == [1],
       'rollback test: hold sent exactly once in the trial boot, then the old image is reported')

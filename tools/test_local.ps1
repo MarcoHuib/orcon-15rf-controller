@@ -152,6 +152,9 @@ if ($Firmware) {
             Copy-Item -LiteralPath (Join-Path $root ('.pio/build/' + $envName + '/firmware.elf')) -Destination $elf
             $bin = Join-Path $core 'packages/toolchain-xtensa-esp32/bin'
             $null = Invoke-Check ('elf-' + $envName) 'python3' @('-B','tools/check_elf_tx.py',$elf,$envName,$bin)
+            # Signed OTA: the app's strong verifyRollbackLater must replace the core's weak one, or
+            # initArduino() confirms every new image at boot (no trial boot, no rollback).
+            $null = Invoke-Check ('rollback-hook-' + $envName) 'python3' @('-B','tools/check_rollback_hook.py',(Join-Path $bin 'xtensa-esp32-elf-nm'),$elf)
             if ($envName -eq 'heltec_v2_sx1276_tx_poc_dryrun') { $null = Invoke-Check 'elf-selftest' 'python3' @('-B','tools/test_elf_tx.py',$elf,$bin) }
         }
         $firmwareText = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes((Join-Path $dest 'firmware.bin')))
