@@ -51,6 +51,7 @@ struct Crumb { uint32_t magic, boots, lastUptimeS; };
 static RTC_NOINIT_ATTR Crumb g_crumb;
 static uint32_t g_prevUptimeS = 0;
 static bool g_prevKnown = false, g_pending = false;
+static bool g_hold = false;   // rollback test: this trial boot refuses to confirm itself (RAM only)
 
 static const char* variantOfThisBuild() {
 #if ORCON_TX_MAX_PER_BOOT
@@ -117,11 +118,22 @@ static void handleInfo() {
     snprintf(b, sizeof(b),
              "{\"signed_ota\":\"%s\",\"fw\":\"%s\",\"variant\":\"%s\",\"running\":\"%s\",\"running_state\":\"%s\","
              "\"boot\":\"%s\",\"next\":\"%s\",\"next_state\":\"%s\",\"slot_size\":%lu,\"session\":\"%s\",\"last_error\":\"%s\","
-             "\"nonce_active\":%s}",
+             "\"nonce_active\":%s,\"hold\":%s}",
              otap::SIGNED_OTA_MARKER, FW_VERSION, variantOfThisBuild(), run ? run->label : "?", stateName(run),
              boot ? boot->label : "?", next ? next->label : "?", stateName(next), (unsigned long)(next ? next->size : 0),
              g_st == St::Idle ? "idle" : g_st == St::Ready ? "ready" : g_st == St::Writing ? "writing" : g_st == St::Done ? "done" : "failed",
-             g_err, g_nonce[0] && millis() - g_nonceMs < NONCE_TTL_MS ? "true" : "false");
+             g_err, g_nonce[0] && millis() - g_nonceMs < NONCE_TTL_MS ? "true" : "false", g_hold ? "true" : "false");
+    reply(200, b);
+}
+
+// ---- POST /api/ota/hold: rollback test. Only during a trial boot, and it can only make the
+// update FAIL (the previous image returns after ROLLBACK_AFTER_MS), never install anything.
+static void handleHold() {
+    if (!hostOk()) { fail(403, "forbidden-request"); return; }
+    if (!g_pending) { fail(409, "not-a-trial-boot"); return; }
+    g_hold = true;
+    note(rfcon::WARN, "rollbacktest: bevestiging tegengehouden; vorige firmware terug na %lu s", (unsigned long)(ROLLBACK_AFTER_MS / 1000));
+    char b[64]; snprintf(b, sizeof(b), "{\"ok\":true,\"rollback_in_s\":%ld}", long(ROLLBACK_AFTER_MS / 1000) - long(millis() / 1000));
     reply(200, b);
 }
 
@@ -279,6 +291,7 @@ void begin(WebServer& s) {
     s.on("/api/ota/nonce",  HTTP_POST, handleNonce);
     s.on("/api/ota/begin",  HTTP_POST, handleBegin);
     s.on("/api/ota/upload", HTTP_POST, handleUploadDone, handleUploadData);
+    s.on("/api/ota/hold",   HTTP_POST, handleHold);
     s.on("/api/diag",       HTTP_GET,  handleDiag);
 }
 
@@ -288,13 +301,18 @@ void tick(uint32_t now) {
     if (!g_pending) return;
     // Healthy = this image runs, joined the network (so a later OTA can still reach it) and
     // the receiver is up. Only then is it confirmed; otherwise the previous image returns.
-    const bool healthy = now >= CONFIRM_AFTER_MS && net::wifiConnected() && radio::rxDiagnostics().rxState == 0;
+    const bool healthy = !g_hold && now >= CONFIRM_AFTER_MS && net::wifiConnected() && radio::rxDiagnostics().rxState == 0;
     if (healthy) {
         if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) { g_pending = false; note(rfcon::INFO, "nieuwe firmware bevestigd (gezond na %lu s)", (unsigned long)(now / 1000)); }
     } else if (now >= ROLLBACK_AFTER_MS) {
         note(rfcon::ERR, "nieuwe firmware niet gezond binnen %lu s: terug naar de vorige", (unsigned long)(ROLLBACK_AFTER_MS / 1000));
         delay(200);
-        esp_ota_mark_app_invalid_rollback_and_reboot();
+        const esp_err_t e = esp_ota_mark_app_invalid_rollback_and_reboot();   // returns only on failure
+        // No usable previous otadata entry: restart anyway. The bootloader then marks this
+        // PENDING_VERIFY image ABORTED and starts another bootable slot.
+        Serial.printf("[ota] rollback via otadata failed (0x%x): restart, bootloader aborts this image\n", (unsigned)e);
+        delay(100);
+        esp_restart();
     }
 }
 

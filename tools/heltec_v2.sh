@@ -6,8 +6,11 @@
 # ports : list device names only (no serial access)
 # LOCAL_ENV=<env> precheck|flash <commit> : HARDWARE ACCESS, separate consent required
 # flash rollback : same hardware gates, local RX-only firmware
+# LOCAL_ENV=heltec_v2_sx1276 recover check|write <commit> : HARDWARE ACCESS, OTA-aware USB recovery
+#   (after WiFi OTA): exact bootloader/table, otadata and BOTH slots identified; write = app0 +
+#   the pinned app0 selection in otadata, each with readback. Separate consent required.
 # monitor <secs> [log] [reset] : HARDWARE ACCESS, separate consent required
-# Only app0 is written. Bootloader, partition table, otadata, NVS and app1 stay intact.
+# flash writes only app0 (recover: app0 + otadata). Bootloader, partition table, NVS and app1 stay intact.
 # There is NO automatic/power-fail rollback. Interrupted app0 writes may require ROM USB repair.
 # esptool/dependencies must already be installed locally; this script never downloads tools.
 set -euo pipefail
@@ -18,6 +21,7 @@ PORT="${PORT:-}"               # empty: the single USB serial port found in $DEV
 DEV_DIR="${DEV_DIR:-/dev}"
 ESPTOOL_SHA256="dc4ef26b659e1a8dcb019147c0ea6d94980b34de99fbe09121c7941c8b254531"
 LOCAL_ENV="${LOCAL_ENV:-}"     # empty permits ONLY the pinned historical rollback
+ORCON_INSTALLED="${ORCON_INSTALLED:-$HOME/.orcon/installed.txt}"   # images tools/orcon.py installed over WiFi
 LOCAL_ENVS="heltec_v2_sx1276 heltec_v2_sx1276_tx_poc_dryrun"   # the only images that may be written
 # The RF test image (capped packets per boot) is deliberately NOT in LOCAL_ENVS. package/verify/
 # precheck/flash accept it only with ORCON_RF_TEST_ACK set to this exact phrase; flash asks again.
@@ -210,9 +214,8 @@ verify() {
 }
 
 # Read-only device checks. Any deviation, missing value or esptool error stops here.
-precheck() {
-    local sha; sha="$(target "${1:-}")"
-    verify "$sha"; local d; d="$(dist "$sha")"
+board_checks() {   # <package dir>: chip, pinned MAC, 8 MB, no flash encryption/secure boot. Sets BOARD_ID.
+    local d=$1
     PORT="$(pick_port)"; echo "port: $PORT"
     local img info
     for img in bootloader.bin firmware.bin; do
@@ -243,6 +246,14 @@ def word(text, address):
 assert bin((word(sys.argv[1], '0x3ff5a000') >> 20) & 0x7f).count('1') % 2 == 0, 'flash encryption enabled'
 assert word(sys.argv[2], '0x3ff5a018') & 0x30 == 0, 'secure boot enabled'
 SECURITY
+    BOARD_ID="$id"
+}
+
+precheck() {
+    local sha; sha="$(target "${1:-}")"
+    verify "$sha"; local d; d="$(dist "$sha")"
+    board_checks "$d"
+    local id="$BOARD_ID" mac; mac="$(expected_mac)"
     # A temporary readback directory, never mutable files inside the release package.
     # On any failure the readbacks are kept as evidence, never deleted.
     local curdir; curdir="$(mktemp -d)"
@@ -287,6 +298,74 @@ SECURITY
     rm -rf "$curdir"; trap - EXIT
     echo "PRECHECK OK ${sha:0:7}: ESP32-D0WDQ6 $mac, 8MB, exact bootloader/table/app0 selection, app1 empty, pinned RX-only or the exact known board state; NVS untouched"
 
+}
+
+# OTA-aware USB recovery. After a WiFi OTA, otadata selects app1 and app1 holds an image, so the
+# pristine-state precheck refuses the board by design. recover reads the state the way the
+# bootloader does and identifies BOTH slots by image hash (check_slots.py); unknown content is
+# NO-GO and nothing is written. write: app0 <- the verified RX-only package, then otadata <- the
+# pinned app0 selection, each verified by readback before the next step. Write order is safe
+# against interruption: during the app0 write otadata still selects the old, known slot (or,
+# if that was app0, the bootloader falls back to the known app1 image); during the otadata
+# write both entries may be blank, and the bootloader then starts app0 = the image just verified.
+recover() {
+    local mode=${1:-} sha; sha="$(target "${2:-}")"
+    [ "$mode" = check ] || [ "$mode" = write ] || die "usage: LOCAL_ENV=heltec_v2_sx1276 recover check|write <commit>"
+    [ "$LOCAL_ENV" = heltec_v2_sx1276 ] || die "recovery writes only a local RX-only package (LOCAL_ENV=heltec_v2_sx1276)"
+    verify "$sha"; local d; d="$(dist "$sha")"
+    board_checks "$d"
+    local w; w="$(mktemp -d)"
+    # shellcheck disable=SC2064 # expand now: w is a local of this function
+    trap "keep '$w' recover-failed" EXIT
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x8000 0xc00 "$w/partitions.bin" >/dev/null \
+        || die "reading the board partition table failed"
+    "$TOOLS/venv/bin/python" -I "$REPO/tools/check_parts.py" "$w/partitions.bin" || die "board partition layout unexpected"
+    cmp -s "$w/partitions.bin" "$d/partitions.bin" || die "board partition table differs (NVS could move)"
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x1000 \
+        "$(wc -c < "$d/bootloader.bin" | tr -d ' ')" "$w/bootloader.bin" >/dev/null || die "reading the board bootloader failed"
+    cmp -s "$w/bootloader.bin" "$d/bootloader.bin" || die "board bootloader differs; recovery refused"
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0xe000 0x2000 "$w/otadata.bin" >/dev/null \
+        || die "reading otadata failed"
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x10000 0x330000 "$w/app0.bin" >/dev/null \
+        || die "reading the entire app0 slot failed"
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x340000 0x330000 "$w/app1.bin" >/dev/null \
+        || die "reading the entire app1 slot failed"
+    local f
+    { for f in "$TOOLS"/local/*/firmware.bin "$TOOLS/fw/$ROLLBACK_COMMIT/firmware.bin"; do
+          [ -f "$f" ] && echo "$(shasum -a 256 < "$f" | cut -d' ' -f1) package $(basename "$(dirname "$f")")"
+      done
+      [ ! -f "$ORCON_INSTALLED" ] || cat "$ORCON_INSTALLED"; } > "$w/known.txt"
+    "$TOOLS/venv/bin/python" -I "$REPO/tools/check_slots.py" check "$w/partitions.bin" "$w/otadata.bin" \
+        "$w/app0.bin" "$w/app1.bin" "$w/known.txt" "$(sed -n 's/^MAC: //p' <<<"$BOARD_ID")" "$TOOLS/board.mac" \
+        || die "board state not positively identified; nothing written"
+    if [ "$mode" = check ]; then
+        rm -rf "$w"; trap - EXIT
+        echo "RECOVERY CHECK OK ${sha:0:7}: exact bootloader/table, otadata and both slots identified; nothing written"
+        return
+    fi
+    cp "$d/"{bootloader.bin,partitions.bin,boot_app0.bin,firmware.bin,BUILD_INFO.txt} "$w/"
+    sed '/  heltec-v2-rx-only-merged.bin$/d' "$d/SHA256SUMS.txt" > "$w/SHA256SUMS.txt"
+    flash_args "$w" "$PORT"
+    echo "will write: app0 <- ${sha:0:7} RX-only, then otadata 0xe000 <- pinned boot_app0.bin (app0 selection)"
+    read -r -p "Recover ${sha:0:7} on $PORT? Type recover: " ok
+    [ "$ok" = recover ] || die "aborted by user"
+    files_ok "$w" "$sha"
+    local_ok "$w" "$sha" || die "snapshot differs from the validated evidence"
+    esptool "${FLASH_ARGS[@]}" || die "app0 write failed; otadata untouched (old selection still boots)"
+    local size; size="$(wc -c < "$w/firmware.bin" | tr -d ' ')"
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x10000 "$size" "$w/readback.bin" >/dev/null \
+        || die "app0 readback failed; otadata untouched"
+    cmp -s "$w/readback.bin" "$w/firmware.bin" || die "app0 readback mismatch; otadata untouched"
+    echo "APP0 READBACK SHA256 $(shasum -a 256 "$w/readback.bin" | cut -d' ' -f1)"
+    esptool --chip esp32 --port "$PORT" --after no_reset write_flash 0xe000 "$w/boot_app0.bin" \
+        || die "otadata write failed; no reset (app0 is verified, bootloader falls back to it)"
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0xe000 0x2000 "$w/otadata-readback.bin" >/dev/null \
+        || die "otadata readback failed; no reset"
+    cmp -s "$w/otadata-readback.bin" "$w/boot_app0.bin" || die "otadata readback mismatch; no reset"
+    echo "OTADATA READBACK OK (app0 selected)"
+    esptool --chip esp32 --port "$PORT" --after hard_reset read_mac
+    rm -rf "$w"; trap - EXIT
+    echo "RECOVERED ${sha:0:7}: app0 RX-only and app0 selection verified; NVS/bootloader/table/app1 untouched"
 }
 
 # Offline: full verification, then the exact command flash would run. Never opens a port.
@@ -370,5 +449,6 @@ case "$cmd" in
     precheck) precheck "$@" ;;
     flash)   flash "$@" ;;
     monitor) monitor "$@" ;;
-    *) sed -n '2,19p' "$0"; exit 2 ;;
+    recover) recover "$@" ;;
+    *) sed -n '2,22p' "$0"; exit 2 ;;
 esac

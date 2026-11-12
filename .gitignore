@@ -56,3 +56,5 @@ _backups/
 
 # Local pairing captures (real device IDs): never commit
 captures/
+__pycache__/
+*.pyc

@@ -9,6 +9,9 @@
   - WiFi is connected;
   - the receiver is up.
 - **Automatic rollback.** If the new image is not healthy within 300 s, or resets before it confirms (crash, watchdog, power loss), the bootloader returns to the previous image.
+  - At 300 s the image marks itself invalid (`esp_ota_mark_app_invalid_rollback_and_reboot`). That call refuses when otadata holds no usable previous entry. The image then restarts anyway, and the bootloader marks the unconfirmed image `ABORTED` and starts the other slot. A trial boot therefore never stays running unhealthy.
+  - After the USB bootstrap, otadata is the pinned `boot_app0.bin`. Its entry 0 (seq 1, app0) is valid, so the first OTA can roll back to app0 through either path.
+- **Rollback test.** `POST /api/ota/hold` works only during a trial boot. It stops that boot from confirming itself, so the 300 s path runs on real hardware. It can only make an update fail; it never installs anything.
 - **Data that survives.** NVS (WiFi, profiles, identities, OLED, MQTT) is never written by an update.
 
 ## What the device accepts (`src/ota_signed.cpp`, rules in `src/ota_policy.cpp`)
@@ -54,7 +57,10 @@
 - `ota-install --worktree <release worktree> --env <env> --yes [--rf-ack "RF test image"]`:
   1. runs the same `tools/heltec_v2.sh verify` as the USB path (evidence, hashes, markers);
   2. signs a manifest for this board and uploads it;
-  3. watches the trial boot and prints `CONFIRMED` or `ROLLED BACK`.
+  3. watches the trial boot and prints `CONFIRMED` or `ROLLED BACK`;
+  4. appends the image hash to `~/.orcon/installed.txt` (0600), which `heltec_v2.sh recover` uses to identify slots.
+- `ota-install ... --test-rollback`: the same upload, then `POST /api/ota/hold` in the trial boot. It passes only if the previous image returns.
+- **Host.** Signed-OTA builds answer on `orcon15rf.local` (mDNS). An IP address in `~/.orcon/config.json` also works.
 
 ## USB is still needed once
 The firmware on the board (`ae36e42`) has no signed OTA receiver. A single USB flash of an image that contains it, using the existing app0-only procedure, is required. After that, these steps run over WiFi:
@@ -67,5 +73,37 @@ The firmware on the board (`ae36e42`) has no signed OTA receiver. A single USB f
 - **Two cases still need USB:**
   - a new image that is healthy by the check above but whose OTA receiver is broken;
   - a broken bootloader.
-- **The USB precheck refuses a board after its first OTA, by design.** It expects otadata to select app0 and app1 to be empty or the known state. An OTA-aware USB recovery mode is not built yet.
+- **The USB precheck refuses a board after its first OTA, by design.** It expects otadata to select app0 and app1 to be empty or the known state. Use the OTA-aware recovery instead (next section).
+
+## USB recovery after OTA: `heltec_v2.sh recover`
+`LOCAL_ENV=heltec_v2_sx1276 tools/heltec_v2.sh recover check|write <commit>`, from the release worktree. It needs separate consent (it opens the port and resets the board).
+
+**Both modes check, read-only:**
+- chip, MAC pin, 8 MB, no flash encryption or secure boot;
+- the exact bootloader and partition table.
+
+**`tools/check_slots.py` then decodes the state the way the bootloader does:**
+- both otadata entries (sequence, state, CRC) and the slot they select;
+- each slot identified by the SHA-256 of exactly its image bytes. The length comes from the ESP image header.
+
+**A slot must be one of:**
+- erased;
+- the pinned known app1 board state;
+- a local package image;
+- an image listed in `~/.orcon/installed.txt`.
+
+Anything else is NO-GO and nothing is written. So is a selected slot without a known image.
+
+**`write`, after typing `recover`:**
+1. app0 gets the verified RX-only package, with readback;
+2. only then is otadata set to the pinned `boot_app0.bin` (app0 selected), with readback;
+3. reset.
+
+Bootloader, partition table, NVS and app1 are not written.
+
+**The write order survives interruption:**
+- during the app0 write, otadata still selects the old, known slot (or the bootloader falls back to the known image in app1);
+- during the otadata write, the bootloader falls back to app0, which has already been verified.
+
+**When recovery refuses:** a slot left half-written by an aborted upload is unknown content, and `recover` refuses it. The board itself still runs (the boot slot did not change), so repeat the OTA over WiFi first.
 - **What rollback falls back to.** Rollback returns to whatever image ran before, including an approved RF test image if that was the previous one.

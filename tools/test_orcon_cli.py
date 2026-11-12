@@ -72,4 +72,17 @@ check(run([OLD, urllib.error.URLError('down'), NEW_P, NEW_V]).startswith('CONFIR
 check(run([NEW_P, NEW_P, OLD]).startswith('ROLLED BACK'), 'new image ran, then the old one again: rollback reported')
 check(run([OLD] * 30).startswith('ROLLED BACK'), 'new image never came up: reported as rollback after the grace time')
 check(run([NEW_P] * 200).startswith('NO CONFIRMATION'), 'stuck in trial: no false success')
+calls = []
+check(run([OLD, NEW_P, NEW_P, NEW_P, OLD], on_trial=lambda: calls.append(1)).startswith('ROLLED BACK') and calls == [1],
+      'rollback test: hold sent exactly once in the trial boot, then the old image is reported')
+calls.clear(); run([OLD, NEW_V], on_trial=lambda: calls.append(1))
+check(calls == [], 'rollback test: no hold for an image that is already confirmed')
+# Install record for heltec_v2.sh recover: "<sha256 of the image> <label>", private file, appended
+with tempfile.TemporaryDirectory() as d:
+    fw = Path(d) / 'fw.bin'; fw.write_bytes(b'\xe9image'); rec = Path(d) / 'o' / 'installed.txt'
+    orcon.record_install(rec, fw, 'abc1234-heltec_v2_sx1276 ota t1'); orcon.record_install(rec, fw, 'again')
+    lines = rec.read_text().splitlines()
+    check(len(lines) == 2 and lines[0] == hashlib.sha256(b'\xe9image').hexdigest() + ' abc1234-heltec_v2_sx1276 ota t1',
+          'install record: one line per install, hash of the exact image')
+    check(rec.stat().st_mode & 0o077 == 0 and rec.parent.stat().st_mode & 0o077 == 0, 'install record: private (0600 in 0700)')
 print(f'orcon cli: {ok} checks, {fail} failures'); sys.exit(1 if fail else 0)

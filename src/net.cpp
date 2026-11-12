@@ -19,6 +19,9 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#if ORCON_SIGNED_OTA
+#include <ESPmDNS.h>   // orcon15rf.local for tools/orcon.py (ArduinoOTA starts mDNS on other builds)
+#endif
 #if !RX_ONLY
 #include <ArduinoOTA.h>
 #include <Update.h>
@@ -908,6 +911,9 @@ void begin() {
     oledInit();
     wifiConnect();
 
+#if ORCON_SIGNED_OTA
+    if (!g_apMode) MDNS.begin("orcon15rf");
+#endif
 #if !RX_ONLY   // RX-only: no network firmware update (would allow a TX-capable image)
     if (!g_apMode) {                    // OTA only makes sense on the home network
         ArduinoOTA.setHostname("orcon15rf");

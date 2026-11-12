@@ -8,6 +8,8 @@
                                         verify the local package with tools/heltec_v2.sh, sign a
                                         manifest for THIS board with ~/.orcon/ota-signing-key.pem,
                                         upload, then confirm the new image (or report the rollback)
+       ota-install ... --test-rollback  rollback test: the trial boot is told not to confirm itself
+                                        (POST /api/ota/hold); PASS only if the previous image returns
   orcon.py keygen                       create the signing key (once) and src/ota_pubkey.h
 
 Host: --host, $ORCON_HOST, ~/.orcon/config.json {"host": ...}, else orcon15rf.local.
@@ -20,6 +22,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 KEY = Path.home() / '.orcon' / 'ota-signing-key.pem'
+# Every image written over WiFi ("<sha256> <label>"): tools/heltec_v2.sh recover identifies slots with it.
+INSTALLED = Path.home() / '.orcon' / 'installed.txt'
 RF_ACK = 'RF test image'                      # same phrase as tools/heltec_v2.sh
 ENV_VARIANT = {'heltec_v2_sx1276': ('rx-only', False), 'heltec_v2_sx1276_rftest': ('rf-test', True)}
 
@@ -99,8 +103,8 @@ class Collector:
 def cmd_logs(args):
     h = host(args)
     d = private_dir(REPO / 'captures' / 'sessions' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
-    con, gaps = (d / 'console.jsonl').open('a'), (d / 'gaps.jsonl').open('a')
-    for f in (con, gaps): os.chmod(f.name, 0o600)
+    con, gaps, diag = ((d / n).open('a') for n in ('console.jsonl', 'gaps.jsonl', 'diag.jsonl'))
+    for f in (con, gaps, diag): os.chmod(f.name, 0o600)
     col, end, last_cap, last_diag, down = Collector(), time.time() + args.minutes * 60, -1, 0, False
     print(f'collecting from {h} into {d} for {args.minutes} min (Ctrl-C stops)')
     try:
@@ -118,8 +122,8 @@ def cmd_logs(args):
                     if cap.get('total', -1) != last_cap:
                         last_cap = cap.get('total', -1); write_private(d / f'capture-{last_cap}.json', json.dumps(cap, indent=1))
                     _, dg = http(h, '/api/diag', timeout=5)
-                    with (d / 'diag.jsonl').open('a') as f: f.write(json.dumps({'host_t': now, **dg}) + '\n')
-                con.flush(); gaps.flush()
+                    diag.write(json.dumps({'host_t': now, **dg}) + '\n')
+                con.flush(); gaps.flush(); diag.flush()
                 time.sleep(0.15 if c.get('more') else 1.0)
             except (urllib.error.URLError, OSError, ValueError) as e:
                 if not down: gaps.write(json.dumps({'t': now, 'kind': 'link', 'detail': f'board unreachable: {e}'}) + '\n'); print('board unreachable; retrying')
@@ -167,15 +171,27 @@ def cmd_ota_install(args):
             f'Content-Type: application/octet-stream\r\n\r\n').encode() + (pkg / 'firmware.bin').read_bytes() + f'\r\n--{boundary}--\r\n'.encode()
     st, u = http(h, '/api/ota/upload', body, timeout=180, ctype=f'multipart/form-data; boundary={boundary}')
     if st != 200: raise SystemExit(f'upload refused, boot partition unchanged: {u}')
+    record_install(INSTALLED, pkg / 'firmware.bin', f'{commit[:7]}-{env} ota {datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}')
     print('written and verified on the board; restarting into a trial boot')
-    verdict = watch_confirmation(lambda: http(h, '/api/ota', timeout=4), commit, before['fw'], time.time, time.sleep)
+    hold = (lambda: print('rollback test: hold ->', http(h, '/api/ota/hold', {}))) if args.test_rollback else None
+    verdict = watch_confirmation(lambda: http(h, '/api/ota', timeout=4), commit, before['fw'], time.time, time.sleep,
+                                 limit=480 if hold else 420, on_trial=hold)
     print(verdict)
-    if not verdict.startswith('CONFIRMED'): raise SystemExit(1)
+    want = 'ROLLED BACK' if args.test_rollback else 'CONFIRMED'
+    if not verdict.startswith(want): raise SystemExit(1)
+    if args.test_rollback: print('ROLLBACK TEST PASS: the unconfirmed image was abandoned and the previous one runs')
 
 
-def watch_confirmation(get, commit, old_fw, clock, sleep, limit=420, boot_grace=90):
+def record_install(path, firmware, label):
+    private_dir(path.parent)
+    with open(path, 'a') as f: f.write(f'{hashlib.sha256(Path(firmware).read_bytes()).hexdigest()} {label}\n')
+    os.chmod(path, 0o600)
+
+
+def watch_confirmation(get, commit, old_fw, clock, sleep, limit=420, boot_grace=90, on_trial=None):
     """The new image must boot (fw == commit) and confirm itself (running_state valid).
-    The old firmware again after the new one ran, or never leaving it, means a rollback."""
+    The old firmware again after the new one ran, or never leaving it, means a rollback.
+    on_trial is called once, as soon as the new image is seen in its trial boot."""
     start, seen_new, last = clock(), False, None
     while clock() - start < limit:
         sleep(5)
@@ -185,6 +201,7 @@ def watch_confirmation(get, commit, old_fw, clock, sleep, limit=420, boot_grace=
         last = o
         if o.get('fw') == commit:
             seen_new = True
+            if on_trial and o.get('running_state') == 'pending-verify': on_trial(); on_trial = None
             if o.get('running_state') == 'valid': return f"CONFIRMED: {commit[:7]} runs from {o['running']} and passed its health check"
         elif o.get('fw') == old_fw and (seen_new or clock() - start > boot_grace):
             return f"ROLLED BACK: the board runs {old_fw[:7]} from {o.get('running')} again; see orcon.py status"
@@ -209,6 +226,7 @@ def main(argv=None):
     lg = sub.add_parser('logs'); lg.add_argument('--minutes', type=float, default=60)
     oi = sub.add_parser('ota-install'); oi.add_argument('--worktree', required=True); oi.add_argument('--env', required=True)
     oi.add_argument('--yes', action='store_true'); oi.add_argument('--rf-ack', default='')
+    oi.add_argument('--test-rollback', action='store_true')
     a = p.parse_args(argv)
     {'status': cmd_status, 'logs': cmd_logs, 'capture': cmd_capture, 'ota-install': cmd_ota_install, 'keygen': cmd_keygen}[a.cmd](a)
 
