@@ -765,7 +765,11 @@ void onFrame(const ramses::Frame& f, uint32_t seq, int16_t rssi) {
     const Why w = g_read.onFrame(f, g_ev, seq, millis(), rssi);
     consoleFrame(f, seq, rssi, w, othersBefore);
     captureFrame(f, seq, rssi);
-    if (!SIMULATED) g_pair.onFrame(f, orcon::ids().us, ORCON_TX_POC);
+#if ORCON_TX_POC
+    if (!SIMULATED) g_pair.onFrame(f, orcon::ids().us, true, g_pendOffer);
+#else
+    g_pair.onFrame(f, orcon::ids().us);
+#endif
     if (f.cmd == 0x31D9 && f.len >= 3 && f.has_addr[0] && orcon::state().fanKnown && f.addr[0] == orcon::ids().fan &&
         (f.type == ramses::MsgType::I || f.type == ramses::MsgType::RP))
         g_cmd.onUnitMode(f.payload[2], seq);
@@ -825,13 +829,13 @@ void tick(uint32_t now) {
     consumeTxResults(now); // settle completions before expiry or any follow-up
     g_pair.tick(now, pairDone(), pairFan());
     static bool confirmLogged = false;
-    if (g_pair.st == St::Active && g_pair.confirmed && !confirmLogged)
+    if (g_pair.st == St::Active && g_pair.sent && g_pair.confirmed && !confirmLogged)
         g_con.add(rfcon::INFO, now, "koppelen: unit bevestigde (W 1FC9 00 31D9) %lu ms na het aanbod; afsluiting volgt",
                   (unsigned long)(now - g_pair.sentAtMs()));
-    confirmLogged = g_pair.st == St::Active && g_pair.confirmed;
+    confirmLogged = g_pair.st == St::Active && g_pair.sent && g_pair.confirmed;
     // The only automatic TX: compiled out wherever pairing is unsupported (RF builds without
     // ORCON_TX_PAIR). One closing ack per session, inside the per-boot packet cap.
-    if (CAN_PAIR && g_pair.st == St::Active && g_pair.confirmed && !g_pair.ackSent &&
+    if (CAN_PAIR && g_pair.st == St::Active && g_pair.sent && g_pair.confirmed && !g_pair.ackSent &&
         !g_pair.txFailed && !g_pendAck) {
         orcon::Ids ids = orcon::ids(); ids.fan = g_pair.from;
         const rlog::Device* heard = nullptr; const size_t heardN = rlog::devices(&heard);

@@ -385,6 +385,25 @@ int main() {
       CHECK(has(all, "koppelen: 1FC9-aanbod verzonden (RF), fout none, RX-herstel ok") &&
             has(all, "koppelen: unit bevestigde (W 1FC9 00 31D9)") && has(all, "koppelen: 1FC9-afsluiting verzonden (RF)"),
             "console: offer, confirmation and ack each leave a line for remote diagnosis"); }
+    // Realistic order: the unit answers within ms, BEFORE the owner has published the offer's
+    // result. The W must still count; if the offer then turns out not sent, it must not.
+    for (int sentOk = 1; sentOk >= 0; --sentOk) {
+        orcon::setIds(37, 404, 32, 0);
+        txpoc::s_rf.onair = sentOk == 1; txpoc::s_rf.healthy = true;
+        g_ms += 200000;                                                  // past the previous window and rate floor
+        CHECK(call("POST", "/api/setup/pair/start") == 201, "RF pairing: second session");
+        const uint32_t ps = J["sid"]; char x[96];
+        snprintf(x, sizeof(x), "{\"sid\":%u,\"keys\":[\"auto\",\"1\"]}", unsigned(ps));
+        const int offers = txpoc::s_rf.sent[1], acks = txpoc::s_rf.sent[2];
+        CHECK(call("POST", "/api/setup/pair/press", x) == 200, "offer accepted");
+        rx(fr(MsgType::W, UNIT32, US, 0x1FC9, {0x00, 0x31, 0xD9, 0x80, 0, 0xCA}));   // queued before the owner runs
+        loopTick(); loopTick(); call("GET", "/api/setup/pair/state");
+        if (sentOk) CHECK(txpoc::s_rf.sent[1] == offers + 1 && J["rf_confirmed"] == true && J["paired"] == true && txpoc::s_rf.sent[2] == acks + 1,
+                          "W before the offer result is published: still confirmed, one ack, paired");
+        else CHECK(J["status"] == "tx_failed" && J["rf_confirmed"] == false && txpoc::s_rf.sent[2] == acks,
+                   "offer not on air: an early W is discarded and no ack is sent");
+        call("POST", "/api/setup/pair/cancel", (std::string("{\"sid\":") + std::to_string(ps) + "}").c_str());
+    }
     txpoc::s_rf.onair = false;
     orcon::setIds(37, 404, 32, 202);
 #elif ORCON_TX_RF_ENABLE
