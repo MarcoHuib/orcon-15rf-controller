@@ -20,8 +20,8 @@
 #include "orcon_log.h"
 #if !ORCON_TX_POC || ORCON_WEB_CONTROL
 #include "setup_web.h"
-#include "ota_signed.h"
 #endif
+#include "ota_signed.h"
 
 #if defined(PINTEST)
 // ---- GPIO mapper: drives each CC1101 GPIO HIGH (others LOW) for 2.5s in turn.

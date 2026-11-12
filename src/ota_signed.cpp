@@ -100,7 +100,11 @@ static void fail(int code, const char* e) {
 static void note(uint8_t kind, const char* fmt, ...) {
     char m[96]; va_list a; va_start(a, fmt); vsnprintf(m, sizeof(m), fmt, a); va_end(a);
     Serial.printf("[ota] %s\n", m);
-    setupweb::note(kind, m);
+#if !ORCON_TX_POC || ORCON_WEB_CONTROL
+    setupweb::note(kind, m);               // the RF console exists on these builds only
+#else
+    (void)kind;
+#endif
 }
 
 // ---- GET /api/ota ------------------------------------------------------------------

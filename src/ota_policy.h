@@ -17,7 +17,7 @@ const char* variantName(Variant v);
 
 struct Manifest {
     uint8_t  v = 0;
-    char     mac[18] = "";          // lower-case aa:bb:cc:dd:ee:ff of the one board it is for
+    char     mac[18] = "";          // lower-case MAC (six hex pairs) of the one board it is for
     char     env[40] = "";
     Variant  variant = Variant::None;
     bool     allowTx = false;        // must be true exactly for a TX-capable variant
