@@ -13,8 +13,10 @@ uint32_t rfTxStarts(); // any task: RF packets started this boot (0 without the 
 // ramses_radio.cpp (SX1276 back-end, RX-task context only). The txpoc owner backend
 // is the only caller; these are the only radio functions that ever transmit.
 namespace radio { namespace sx1276 {
-bool txBegin(const uint8_t* onair, size_t n);
+static const size_t TX_MAX_BYTES = 128;   // on-air bytes per packet (offer ~106)
+bool txBegin(const uint8_t* onair, size_t n);   // sends the whole packet, then restores RX
 bool txDone();
+bool txFailed();
 bool txRestoreRx();
 uint32_t restoreDiag(); // any task: why the last fast RX restore failed (0 = it succeeded)
 } }

@@ -30,6 +30,9 @@ enum class FrameKind : uint8_t { Mode=0, BindOffer=1, BindAck=2 };
 // 22F1 fan mode, payload 00 NN TT (NN = 0 away, 1..3, 4 auto; TT = the unit family's
 // third byte: 04 MVS-15RHBP, 07 HRC400). TT must be nonzero.
 bool makeModeCmd(const orcon::Ids& ids, uint8_t mode, uint8_t tail, ramses::Frame& out);
+// I 1FC9 us -> 63:262142, 24 B: the bind offer exactly as the user's MVS-15 remote sends it
+// (local capture, 2026-11-11): tuples 00 1FC9 / 00 22F1 / 00 22F3 / 67 10E0, each with our ID.
+bool makeBindOffer(const orcon::Ids& ids, ramses::Frame& out);
 // I 1FC9 us -> fan, payload 00 (the closing frame of the observed bind handshake).
 bool makeBindAck(const orcon::Ids& ids, ramses::Frame& out);
 // Source ID equal to any sender heard (rlog devices, last remote/unit) = possible clone.

@@ -13,6 +13,22 @@ bool makeModeCmd(const orcon::Ids& ids,uint8_t mode,uint8_t tail,ramses::Frame& 
     f.payload[0]=0; f.payload[1]=mode; f.payload[2]=tail;
     out=f; return true;
 }
+bool makeBindOffer(const orcon::Ids& ids,ramses::Frame& out) {
+    if(!validId(ids.us)) return false;
+    ramses::Frame f;
+    f.type=ramses::MsgType::I;
+    f.has_addr[0]=f.has_addr[1]=true; f.has_addr[2]=false;
+    f.addr[0]=ids.us; f.addr[1]=ramses::DeviceId(63,0x3FFFE); f.cmd=0x1FC9;
+    static const uint8_t tuple[4][3]={{0x00,0x1F,0xC9},{0x00,0x22,0xF1},{0x00,0x22,0xF3},{0x67,0x10,0xE0}};
+    const uint32_t raw=ids.us.raw();
+    for(int i=0;i<4;++i) {
+        uint8_t* t=f.payload+6*i;
+        t[0]=tuple[i][0]; t[1]=tuple[i][1]; t[2]=tuple[i][2];
+        t[3]=uint8_t(raw>>16); t[4]=uint8_t(raw>>8); t[5]=uint8_t(raw);
+    }
+    f.len=24;
+    out=f; return true;
+}
 bool makeBindAck(const orcon::Ids& ids,ramses::Frame& out) {
     if(!validId(ids.us)||!validId(ids.fan)||ids.us==ids.fan) return false;
     ramses::Frame f;
@@ -91,7 +107,7 @@ bool DryRunBackend::prepare(const Request& r,size_t& bytes) {
     ramses::Frame f; uint8_t packed[ramses::MAX_ONAIR]; size_t bits=0;   // 1FC9 offer is ~105 B on air
     bool ok=false;
     if(r.kind==(uint8_t)FrameKind::Mode) ok=makeModeCmd(r.ids,r.input.mode,r.tail,f);
-    else if(r.kind==(uint8_t)FrameKind::BindOffer) { f=orcon::make1FC9_bind(r.ids); ok=true; }
+    else if(r.kind==(uint8_t)FrameKind::BindOffer) ok=makeBindOffer(r.ids,f);
     else if(r.kind==(uint8_t)FrameKind::BindAck) ok=makeBindAck(r.ids,f);
     if(!ok) return false;
     bytes=ramses::encodeFrame(f,packed,sizeof(packed),TX_PREAMBLE_BYTES,&bits);

@@ -405,6 +405,9 @@ static bool g_txActive = false, g_savedRx = false;
 static const uint8_t TX_REGS[] = { 0x09, 0x0A, 0x4D, 0x25, 0x26, 0x27,
                                   0x30, 0x31, 0x32, 0x35, 0x40, 0x41 };
 static uint8_t g_saved[sizeof(TX_REGS)];
+static const uint8_t FIFO_BYTES = 64;                // SX1276 FSK FIFO
+static const uint32_t TX_US_PER_BYTE = 260;          // 208 us at 38.4 kbit/s, plus margin
+static const uint32_t TX_SLACK_US = 10000;           // mode switch, ramp, 2 preamble bytes
 // Why the last fast restore failed, for the web layer (0 = it succeeded):
 // stage<<24 | reg<<16 | wrote<<8 | read; stage 1 standby, 2 register readback,
 // 3 receiveDirect, 4 op mode not RX (low byte = RegOpMode).
@@ -412,45 +415,9 @@ static std::atomic<uint32_t> g_restoreDiag{0};
 uint32_t restoreDiag() { return g_restoreDiag.load(std::memory_order_acquire); }
 bool txActive() { return g_txActive; }
 
-bool txBegin(const uint8_t* onair, size_t n) {
-    // No FIFO refill ISR is installed. RadioLib starts long packets with only
-    // 31 bytes loaded; accepting 105-byte binding offers would underrun on air.
-    if (!onair || n == 0 || n > 64 || g_txActive) return false;
-    g_txActive = true;  // exclude normal UART decoding until restore, also on failure
-    for (size_t i = 0; i < sizeof(TX_REGS); ++i) g_saved[i] = g_mod.SPIreadRegister(TX_REGS[i]);
-    g_savedRx = true;
-    if (g_radio.standby() != RADIOLIB_ERR_NONE ||
-        g_radio.packetMode() != RADIOLIB_ERR_NONE ||
-        g_radio.fixedPacketLengthMode((uint8_t)n) != RADIOLIB_ERR_NONE ||
-        g_radio.setEncoding(RADIOLIB_ENCODING_NRZ) != RADIOLIB_ERR_NONE ||
-        g_radio.setCRC(false) != RADIOLIB_ERR_NONE ||
-        g_radio.setDataShaping(RADIOLIB_SHAPING_0_5) != RADIOLIB_ERR_NONE ||
-        g_radio.setOutputPower(10) != RADIOLIB_ERR_NONE) return false;
-    // Raw buffer already contains all training, UART sync, Manchester, checksum
-    // and stop bits. Use two explicit hardware training bytes; no hardware sync,
-    // length, address or CRC bytes. Actual preamble/ramp must be measured on air.
-    g_mod.SPIwriteRegister(RADIOLIB_SX127X_REG_SYNC_CONFIG, 0x00);
-    g_mod.SPIwriteRegister(RADIOLIB_SX127X_REG_PREAMBLE_MSB_FSK, 0x00);
-    g_mod.SPIwriteRegister(RADIOLIB_SX127X_REG_PREAMBLE_LSB_FSK, 0x02);
-    g_mod.SPIwriteRegister(RADIOLIB_SX127X_REG_PACKET_CONFIG_1, 0x00);
-    // Fail closed on register write failure before entering TX.
-    if (g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_SYNC_CONFIG) != 0 ||
-        g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_PREAMBLE_MSB_FSK) != 0 ||
-        g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_PREAMBLE_LSB_FSK) != 2 ||
-        g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_PACKET_CONFIG_1) != 0 ||
-        g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_PACKET_CONFIG_2) != 0x40 ||
-        g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_PAYLOAD_LENGTH_FSK) != n) return false;
-    return g_radio.startTransmit(onair, n) == RADIOLIB_ERR_NONE;
-}
-
-bool txDone() {
-    const uint8_t irq = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_IRQ_FLAGS_2);
-    return g_txActive && irq != 0xFF && (irq & RADIOLIB_SX127X_FLAG_PACKET_SENT) != 0;
-}
-
-bool txRestoreRx() {
-    // Fast restore only. A full beginFSK/reset/calibration is exclusively the
-    // existing bounded recovery's job, never repeated in the TX owner.
+// Fast RX restore (also the owner's Restore step). A full beginFSK/reset/calibration is
+// exclusively the existing bounded recovery's job, never repeated here.
+static bool restoreNow() {
     uint32_t diag = 0;
     bool ok = g_radio.standby() == RADIOLIB_ERR_NONE;
     if (!ok) diag = 0x01000000u;
@@ -480,6 +447,75 @@ bool txRestoreRx() {
     g_rxReady = ok;
     g_savedRx = g_txActive = false;
     return ok;
+}
+
+// Outcome of the last started packet, completed inside txBegin (see there).
+static bool g_finished = false, g_sentOk = false, g_restoredOk = false;
+
+bool txBegin(const uint8_t* onair, size_t n) {
+    // Fixed-length packets up to TX_MAX_BYTES (8-bit payload length; the 1FC9 offer is
+    // ~106 B on air). Above the 64-byte FIFO the rest is refilled below while sending.
+    if (!onair || n == 0 || n > TX_MAX_BYTES || g_txActive) return false;
+    g_txActive = true;  // exclude normal UART decoding until restore, also on failure
+    g_finished = g_sentOk = g_restoredOk = false;
+    for (size_t i = 0; i < sizeof(TX_REGS); ++i) g_saved[i] = g_mod.SPIreadRegister(TX_REGS[i]);
+    g_savedRx = true;
+    const uint8_t fifoLen = n > FIFO_BYTES ? FIFO_BYTES : (uint8_t)n;   // RadioLib's own length check
+    if (g_radio.standby() != RADIOLIB_ERR_NONE ||
+        g_radio.packetMode() != RADIOLIB_ERR_NONE ||
+        g_radio.fixedPacketLengthMode(fifoLen) != RADIOLIB_ERR_NONE ||
+        g_radio.setEncoding(RADIOLIB_ENCODING_NRZ) != RADIOLIB_ERR_NONE ||
+        g_radio.setCRC(false) != RADIOLIB_ERR_NONE ||
+        g_radio.setDataShaping(RADIOLIB_SHAPING_0_5) != RADIOLIB_ERR_NONE ||
+        g_radio.setOutputPower(10) != RADIOLIB_ERR_NONE) return false;
+    // Raw buffer already contains all training, UART sync, Manchester, checksum
+    // and stop bits. Use two explicit hardware training bytes; no hardware sync,
+    // length, address or CRC bytes. Actual preamble/ramp must be measured on air.
+    g_mod.SPIwriteRegister(RADIOLIB_SX127X_REG_SYNC_CONFIG, 0x00);
+    g_mod.SPIwriteRegister(RADIOLIB_SX127X_REG_PREAMBLE_MSB_FSK, 0x00);
+    g_mod.SPIwriteRegister(RADIOLIB_SX127X_REG_PREAMBLE_LSB_FSK, 0x02);
+    g_mod.SPIwriteRegister(RADIOLIB_SX127X_REG_PACKET_CONFIG_1, 0x00);
+    g_mod.SPIwriteRegister(RADIOLIB_SX127X_REG_PAYLOAD_LENGTH_FSK, (uint8_t)n);   // the real length
+    // Fail closed on register write failure before entering TX.
+    if (g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_SYNC_CONFIG) != 0 ||
+        g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_PREAMBLE_MSB_FSK) != 0 ||
+        g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_PREAMBLE_LSB_FSK) != 2 ||
+        g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_PACKET_CONFIG_1) != 0 ||
+        g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_PACKET_CONFIG_2) != 0x40 ||
+        g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_PAYLOAD_LENGTH_FSK) != n) return false;
+    // RadioLib loads all of a <= 64-byte packet, or the first 31 bytes of a longer one
+    // (TX starts as soon as the FIFO is not empty).
+    if (g_radio.startTransmit(onair, n) != RADIOLIB_ERR_NONE) return false;
+    // The radio is now on air. Finish the packet here, in the RX task, without yielding:
+    // refill byte by byte while the FIFO is not full, then wait for PacketSent and return
+    // to RX at once. The unit answers a 1FC9 offer within a few ms; the owner's
+    // one-step-per-5-ms-pass Cleanup/Restore would be too late. Bounded by airtime.
+    size_t i = n > FIFO_BYTES ? RADIOLIB_SX127X_FIFO_THRESH - 1 : n;   // exactly what RadioLib loaded
+    const uint32_t t0 = micros(), budget = (uint32_t)n * TX_US_PER_BYTE + TX_SLACK_US;
+    bool ok = true;
+    for (;;) {
+        const uint8_t f = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_IRQ_FLAGS_2);
+        if (f == 0xFF || (f & RADIOLIB_SX127X_FLAG_FIFO_OVERRUN)) { ok = false; break; }
+        if (f & RADIOLIB_SX127X_FLAG_PACKET_SENT) { ok = i == n; break; }      // early = wrong length
+        if (i < n) {
+            if (f & RADIOLIB_SX127X_FLAG_FIFO_EMPTY) { ok = false; break; }   // underrun: frame broken on air
+            if (!(f & RADIOLIB_SX127X_FLAG_FIFO_FULL)) g_mod.SPIwriteRegister(RADIOLIB_SX127X_REG_FIFO, onair[i++]);
+        }
+        if ((uint32_t)(micros() - t0) > budget) { ok = false; break; }
+    }
+    g_sentOk = ok;
+    g_restoredOk = restoreNow();
+    g_finished = true;
+    return true;   // started: the outcome is read by txDone()/txFailed()/txRestoreRx()
+}
+
+bool txDone() { return g_finished && g_sentOk; }
+bool txFailed() { return g_finished && !g_sentOk; }
+
+bool txRestoreRx() {
+    // txBegin already restored RX right after the packet: report that outcome once.
+    if (g_finished) { g_finished = false; return g_restoredOk; }
+    return restoreNow();   // txBegin failed before transmitting
 }
 
 } // namespace sx1276

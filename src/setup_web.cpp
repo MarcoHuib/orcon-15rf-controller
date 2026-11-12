@@ -43,7 +43,7 @@ static const bool SIMULATED = !ORCON_TX_RF_ENABLE;
 static const bool CAN_TX = !RX_ONLY;
 static const bool SIMULATED = false;
 #endif
-static const bool CAN_PAIR = CAN_TX && CAN_RX && (!ORCON_TX_POC || SIMULATED);
+static const bool CAN_PAIR = CAN_TX && CAN_RX && (!ORCON_TX_POC || SIMULATED || ORCON_TX_PAIR);
 
 static WebServer* g_srv = nullptr;
 static char     g_token[33] = "";
@@ -791,6 +791,18 @@ void consumeTxResults(uint32_t now) {
                   txpoc::errorName(ts.result.error), diag ? "mislukt 0x" : "ok ", diag, (unsigned long)txpoc::rfTxStarts());
     }
     const bool sentOk = ts.result.error == txpoc::Error::None && (ts.result.rfSent || SIMULATED);
+    if ((g_pendOffer || g_pendAck) && !ts.busy && ts.result.request.kind != (uint8_t)txpoc::FrameKind::Mode) {
+#if ORCON_TX_RF_ENABLE
+        const unsigned long diag = (unsigned long)radio::sx1276::restoreDiag();
+#else
+        const unsigned long diag = 0;
+#endif
+        g_con.add(sentOk ? rfcon::INFO : rfcon::WARN, now, "koppelen: %s %s, fout %s, RX-herstel %s%08lX, %u B on-air, pakketten deze boot %lu",
+                  ts.result.request.kind == (uint8_t)txpoc::FrameKind::BindOffer ? "1FC9-aanbod" : "1FC9-afsluiting",
+                  ts.result.rfSent ? "verzonden (RF)" : SIMULATED ? "dry-run, niet verzonden" : "niet verzonden",
+                  txpoc::errorName(ts.result.error), diag ? "mislukt 0x" : "ok ", diag, unsigned(ts.result.bytes),
+                  (unsigned long)txpoc::rfTxStarts());
+    }
     if (g_pendOffer && !ts.busy && ts.result.request.kind == (uint8_t)txpoc::FrameKind::BindOffer) {
         if (SIMULATED && sentOk) {
             g_pairDryComplete = true;
@@ -812,7 +824,13 @@ void tick(uint32_t now) {
 #if ORCON_TX_POC
     consumeTxResults(now); // settle completions before expiry or any follow-up
     g_pair.tick(now, pairDone(), pairFan());
-    // The only automatic TX: compiled out wherever pairing is unsupported (RF builds).
+    static bool confirmLogged = false;
+    if (g_pair.st == St::Active && g_pair.confirmed && !confirmLogged)
+        g_con.add(rfcon::INFO, now, "koppelen: unit bevestigde (W 1FC9 00 31D9) %lu ms na het aanbod; afsluiting volgt",
+                  (unsigned long)(now - g_pair.sentAtMs()));
+    confirmLogged = g_pair.st == St::Active && g_pair.confirmed;
+    // The only automatic TX: compiled out wherever pairing is unsupported (RF builds without
+    // ORCON_TX_PAIR). One closing ack per session, inside the per-boot packet cap.
     if (CAN_PAIR && g_pair.st == St::Active && g_pair.confirmed && !g_pair.ackSent &&
         !g_pair.txFailed && !g_pendAck) {
         orcon::Ids ids = orcon::ids(); ids.fan = g_pair.from;

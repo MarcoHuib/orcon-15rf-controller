@@ -93,6 +93,7 @@ public:
     const char* status(bool fwPaired, const ramses::DeviceId& fan) const;
     bool paired(bool fwPaired, const ramses::DeviceId& fan) const { return confirmed && fwPaired && fan == from; }
     uint32_t leftMs(uint32_t now) const;
+    uint32_t sentAtMs() const { return sentMs_; }
 private:
     uint32_t startMs_ = 0, sentMs_ = 0;
 };

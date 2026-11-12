@@ -47,8 +47,12 @@ assert not (legacy_routes-{'/','/api/oled'})&on(routes)
 assert 'server.onNotFound([](){ server.send(403,' in routes
 assert on(webctl)=={'/log','/api/log','/api/state'},on(webctl)
 assert 'setupweb::begin(server)' in webctl
-assert 'r.kind != (uint8_t)FrameKind::Mode' in Path('src/tx_poc_runtime.cpp').read_text()
-assert 'n > 64' in radio and 'g_radio.packetMode()' in radio
+rt=Path('src/tx_poc_runtime.cpp').read_text()
+# Pairing frames reach the RF backend only on the capped RF test image (ORCON_TX_PAIR).
+pair_block=rt.split('#if ORCON_TX_PAIR\n',1)[1].split('#endif',1)[0]
+assert 'makeBindOffer' in pair_block and 'makeBindAck' in pair_block
+assert 'FrameKind::Bind' not in rt.replace(pair_block,'')
+assert 'n > TX_MAX_BYTES' in radio and 'g_radio.packetMode()' in radio
 assert 'pocAuthorize(true)' in routes.split('"/api/oled"',1)[1].split('\n',1)[0]
 ready=net.split('static bool pocReady()',1)[1].split('\n}',1)[0]
 assert 'txpoc::rxReady()' in ready and 'rxDiagnostics' not in ready  # RX health only via the atomic heartbeat
@@ -83,7 +87,7 @@ def tx_paths_safe(web,net,radio,runtime,main):
     press=fn(web,'static void handlePairPress() {'); tick=fn(web,'void tick(uint32_t now) {')
     assert press.find('if (!CAN_PAIR)')>=0 and press.find('if (!CAN_PAIR)')<press.find('submitBind(')
     assert tick.find('if (CAN_PAIR &&')>=0 and tick.find('if (CAN_PAIR &&')<tick.find('submitBind(')
-    assert 'CAN_PAIR = CAN_TX && CAN_RX && (!ORCON_TX_POC || SIMULATED);' in web
+    assert 'CAN_PAIR = CAN_TX && CAN_RX && (!ORCON_TX_POC || SIMULATED || ORCON_TX_PAIR);' in web
     assert 'static const bool SIMULATED = !ORCON_TX_RF_ENABLE;' in web
     guard='#if defined(RADIO_SX1276) && ORCON_TX_POC && ORCON_TX_RF_ENABLE\nnamespace sx1276 {'
     rf=radio.split(guard,1)[1].split('#endif // RADIO_SX1276 && ORCON_TX_POC && ORCON_TX_RF_ENABLE',1)[0]
@@ -95,7 +99,7 @@ tx_paths_safe(web,net,radio,runtime:=Path('src/tx_poc_runtime.cpp').read_text(),
 for name,old,new in [('no-profile-gate','if(!profile){fail(409,"profile-required");return;}',''),
                      ('no-unit-gate','if(!(profile->unit==orcon::ids().fan)){fail(409,"profile-unit-mismatch");return;}',''),
                      ('auto-ack-ungated','if (CAN_PAIR && g_pair.st','if (g_pair.st'),
-                     ('pairing-on-rf','(!ORCON_TX_POC || SIMULATED)','(true)'),
+                     ('pairing-on-rf','(!ORCON_TX_POC || SIMULATED || ORCON_TX_PAIR)','(true)'),
                      ('second-send-path','static void handleRemoteState() { remoteBody(200); }','static void handleRemoteState() { txpoc::controller().submitCtl(1,4,orcon::ids(),true,true,true,0); }')]:
     mutated=web.replace(old,new,1); assert mutated!=web,name
     try: tx_paths_safe(mutated,net,radio,runtime,main_src)
@@ -107,12 +111,15 @@ baseline=ini['env:heltec_v2_sx1276']['build_flags']
 assert 'ORCON_TX_POC' not in baseline and 'ORCON_TX_RF_ENABLE' not in baseline
 assert '-DORCON_TX_RF_ENABLE=0' in ini['env:heltec_v2_sx1276_tx_poc_dryrun']['build_flags']
 assert '-DORCON_TX_RF_ENABLE=1' in ini['env:heltec_v2_sx1276_tx_poc']['build_flags']
+# RF pairing is compiled into exactly one environment: the capped RF test image.
+assert [n for n in ini.sections() if 'ORCON_TX_PAIR=1' in ini[n].get('build_flags','')]==['env:heltec_v2_sx1276_rftest']
 
 base=['RADIO_SX1276=1','BOARD_HELTEC_V2=1']
 valid=[('rx-default',base,{'RX_ONLY':'1','ORCON_TX_POC':'0','ORCON_TX_RF_ENABLE':'0','MQTT_ENABLED':'1'}),
        ('dryrun',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=0'],{'RX_ONLY':'1','ORCON_TX_POC':'1','MQTT_ENABLED':'0'}),
        ('rf-web',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1'],{'RX_ONLY':'1','ORCON_TX_POC':'1','ORCON_TX_RF_ENABLE':'1','ORCON_WEB_CONTROL':'1','MQTT_ENABLED':'0'}),
-       ('rf-test-cap',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_MAX_PER_BOOT=50'],{'ORCON_TX_RF_ENABLE':'1','ORCON_TX_MAX_PER_BOOT':'50','MQTT_ENABLED':'0'})]
+       ('rf-test-cap',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_MAX_PER_BOOT=50'],{'ORCON_TX_RF_ENABLE':'1','ORCON_TX_MAX_PER_BOOT':'50','ORCON_TX_PAIR':'0','MQTT_ENABLED':'0'}),
+       ('rf-test-pair',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_MAX_PER_BOOT=50','ORCON_TX_PAIR=1'],{'ORCON_TX_PAIR':'1','ORCON_TX_MAX_PER_BOOT':'50'})]
 for name,defs,wanted in valid:
     result=run([a.compiler,'-std=c++11','-I','src','-x','c++','-dM','-E','-']+['-D'+x for x in defs],input='#include "config.h"\n')
     assert result.returncode==0,(name,result.stderr)
@@ -133,6 +140,10 @@ invalid=[('rf-alone',['ORCON_TX_RF_ENABLE=1'],'RF TX requires'),
          ('pintest',base+['PINTEST=1','ORCON_TX_POC=1','RX_ONLY=1'],'PoC requires'),
          ('invalid-capability',base+['ORCON_TX_POC=2'],'capabilities must be 0 or 1'),
          ('cap-without-rf',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_MAX_PER_BOOT=1'],'ORCON_TX_MAX_PER_BOOT is 0, or 1..100'),
+         ('pair-without-cap',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_PAIR=1'],'ORCON_TX_PAIR requires'),
+         ('pair-dryrun',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_WEB_CONTROL=1','ORCON_TX_PAIR=1'],'ORCON_TX_PAIR requires'),
+         ('pair-without-web',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_TX_MAX_PER_BOOT=50','ORCON_TX_PAIR=1'],'ORCON_TX_PAIR requires'),
+         ('invalid-pair',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_MAX_PER_BOOT=50','ORCON_TX_PAIR=2'],'ORCON_TX_PAIR requires'),
          ('cap-above-limit',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_TX_MAX_PER_BOOT=101'],'ORCON_TX_MAX_PER_BOOT is 0, or 1..100')]
 for name,defs,diagnostic in invalid:
     result=run([a.compiler,'-std=c++11','-I','src','-x','c++','-fsyntax-only','-']+['-D'+x for x in defs],input='#include "config.h"\n')

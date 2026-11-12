@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 ALLOWED_IDS = {"29:012345", "29:074565", "32:178990", "32:179422", "63:262143"}   # pre-existing examples
+ALLOWED_IDS |= {"63:262142"}   # RAMSES NUL address (the 1FC9 bind offer target): a protocol constant, not a device
 ALLOWED_IPS = {"0.0.0.0", "127.0.0.1", "10.0.0.5", "192.168.1.10", "192.168.4.1",
                "192.168.2.137", "192.168.2.139", "192.168.2.140"}                    # pre-existing defaults/examples
 ID = re.compile(r"\b(\d\d):(\d{6})\b")

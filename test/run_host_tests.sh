@@ -51,7 +51,7 @@ if [ -d "$AJ" ]; then
     run setup_web_tx -DRADIO_CC1101_ASYNC=1 -DRX_ONLY=0 $WEB
     run setup_web_webctl -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 $WEB src/tx_poc.cpp
     run setup_web_webctl_rf -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 -DORCON_TX_RF_ENABLE=1 $WEB src/tx_poc.cpp
-    run setup_web_rftest -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 -DORCON_TX_RF_ENABLE=1 -DORCON_TX_MAX_PER_BOOT=50 $WEB src/tx_poc.cpp
+    run setup_web_rftest -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 -DORCON_TX_RF_ENABLE=1 -DORCON_TX_MAX_PER_BOOT=50 -DORCON_TX_PAIR=1 $WEB src/tx_poc.cpp
 else
     echo "setup_web: NOT TESTED (no $AJ; run 'pio run -e heltec_v2_sx1276' once)"
 fi

@@ -284,7 +284,19 @@ Een diagnostisch image voor gecontroleerde fysieke zendproeven; nooit een releas
 - verse standmelding van de unit;
 - geen automatische herhaling.
 
+**Koppelen (`ORCON_TX_PAIR=1`, alleen in dit image)**
+- De compiler staat de vlag alleen toe met RF, webbediening én `ORCON_TX_MAX_PER_BOOT`. `test_tx_poc_safety.py` eist dat precies deze ene omgeving hem heeft.
+- **Het aanbod** (`I 1FC9` eigen ID → `63:262142`, 24 B) volgt exact de structuur die de eigen afstandsbediening uitzendt (lokale capture). De vier tuples zijn `00 1FC9`, `00 22F1`, `00 22F3` en `67 10E0`, telkens met het eigen ID. On-air is dat 105 bytes.
+- **Eén aanbod per sessie**, alleen na de combinatie Auto + 1.
+- **Alleen het exacte `W 1FC9 00 31D9 <eigen unit-ID>` gericht aan ons ID** telt als bevestiging.
+- **Daarna volgt automatisch precies één afsluiting** (`I 1FC9 00` → unit). De unit wordt vastgelegd in NVS.
+- **Elk pakket telt mee in de limiet per boot.**
+- **De RF-console logt** het aanbod, de bevestiging (met de vertraging in ms) en de afsluiting.
+- **Lange pakketten:** `txBegin` vult de 64-byte FIFO tijdens het zenden byte voor byte bij, zolang de FIFO niet vol is. Daarna wacht het op `PacketSent`, begrensd door de airtime. Een underrun, overrun of timeout geldt als mislukt en wordt nooit als verzonden gemeld.
+- **Ongetest op de lucht:** dat de unit dit aanbod van een niet-gekloonde identiteit accepteert. Ook de klasse van het eigen ID (nu `37`; de afstandsbediening en de unit zijn klasse `29`) is onbewezen.
+
 **Terugkeer naar RX**
+- RX wordt hersteld in `txBegin` zelf, direct na `PacketSent`, dus binnen ongeveer 1 ms en niet pas na de owner-stappen (2 × 5 ms). De unit antwoordt op een aanbod binnen enkele milliseconden.
 - Na elk pakket controleert de firmware het herstel. Het wacht begrensd (~1 ms) op de overgang FSRx → RX en faalt anders dicht.
 - Een mislukt herstel vergrendelt TX tot de volgende herstart.
 - `GET /api/remote/state` meldt `restore_diag` (0 = gelukt; anders fase, register, geschreven en gelezen waarde) en `tx_starts`.

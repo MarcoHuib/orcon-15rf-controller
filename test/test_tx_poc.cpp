@@ -513,7 +513,26 @@ static void bindHandshake() {
     CHECK(ack.addr[0]==id.us&&ack.addr[1]==id.fan);
     orcon::Ids bad=id;bad.fan=DeviceId(63,0x3FFFF);Frame tmp;CHECK(!makeBindAck(bad,tmp));
     bad.fan=DeviceId(29,7);CHECK(!makeBindAck(bad,tmp));        // fan == us
-    Frame offer=orcon::make1FC9_bind(id);CHECK(offer.cmd==0x1FC9&&offer.len==24);
+    // Our offer: the captured remote offer's exact structure, with our own ID in every tuple.
+    // Capture shape: I 1FC9 <remote> 63:262142, 24 B = 00 1FC9 id | 00 22F1 id | 00 22F3 id | 67 10E0 id.
+    Frame offer;CHECK(makeBindOffer(id,offer));
+    CHECK(offer.type==MsgType::I&&offer.cmd==0x1FC9&&offer.len==24);
+    CHECK(offer.has_addr[0]&&offer.has_addr[1]&&!offer.has_addr[2]);
+    CHECK(offer.addr[0]==id.us&&offer.addr[1]==DeviceId(63,0x3FFFE));
+    const uint8_t want[24]={0x00,0x1F,0xC9,0x74,0x00,0x07, 0x00,0x22,0xF1,0x74,0x00,0x07,
+                            0x00,0x22,0xF3,0x74,0x00,0x07, 0x67,0x10,0xE0,0x74,0x00,0x07};
+    CHECK(!memcmp(offer.payload,want,24));
+    { uint8_t lo[96];size_t ln=buildLogical(offer,lo,sizeof(lo));CHECK(ln==35);
+      uint8_t wi[128];size_t wn2=wireFromLogical(lo,ln,wi,sizeof(wi));CHECK(wn2!=0);
+      size_t used=0;Frame back;CHECK(extractWireFrame(wi,wn2,&used,back));
+      CHECK(back.type==MsgType::I&&back.cmd==0x1FC9&&back.len==24&&!memcmp(back.payload,want,24));
+      CHECK(back.addr[0]==id.us&&back.addr[1]==DeviceId(63,0x3FFFE));
+      uint8_t air[ramses::MAX_ONAIR];size_t bits=0;
+      const size_t onair=encodeFrame(offer,air,sizeof(air),TX_PREAMBLE_BYTES,&bits);
+      CHECK(onair>64&&onair<=128&&bits>64*8);                    // needs the FIFO refill, fits the 128-byte cap
+      printf("  bind offer: %zu logical bytes, %zu on-air bytes (%zu bits)\n",ln,onair,bits); }
+    { orcon::Ids noUs=id;noUs.us=DeviceId(0,0);Frame t;CHECK(!makeBindOffer(noUs,t)); }
+    { Request r;r.ids=id;r.kind=(uint8_t)FrameKind::BindOffer;DryRunBackend dr;size_t b=0;CHECK(dr.prepare(r,b)&&b>64); }
 }
 // Web-control admission: five commands, server-sequenced, tail passthrough, bind rules.
 static void webCtl() {

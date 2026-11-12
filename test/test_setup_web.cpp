@@ -196,7 +196,7 @@ int main() {
     // ---- capabilities ------------------------------------------------------------------------
     CHECK(call("GET", "/api/setup/state") == 200, "GET state");
 #if ORCON_TX_POC
-    CHECK(J["rx_only"] == true && J["caps"]["tx_supported"] == true && J["caps"]["pair_supported"] == bool(!ORCON_TX_RF_ENABLE) &&
+    CHECK(J["rx_only"] == true && J["caps"]["tx_supported"] == true && J["caps"]["pair_supported"] == bool(!ORCON_TX_RF_ENABLE || ORCON_TX_PAIR) &&
           J["caps"]["control_supported"] == true && J["caps"]["read_supported"] == true &&
           J["caps"]["simulated"] == bool(!ORCON_TX_RF_ENABLE) && J["caps"]["timer_supported"] == false,
           "web-control caps: control through the txpoc layer, simulated (dry-run), five functions");
@@ -277,7 +277,7 @@ int main() {
           "start: 201 active, step 0");
     const uint32_t sid = J["sid"];
     CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\"}") == 409 && err("session-busy"), "second session refused");
-    CHECK(call("POST", "/api/setup/pair/start") == (RX_ONLY && (!ORCON_TX_POC || ORCON_TX_RF_ENABLE) ? 501 : 409), "pairing during reading refused");
+    CHECK(call("POST", "/api/setup/pair/start") == (RX_ONLY && (!ORCON_TX_POC || (ORCON_TX_RF_ENABLE && !ORCON_TX_PAIR)) ? 501 : 409), "pairing during reading refused");
     rx(fr(MsgType::I, REM2, UNIT, 0x22F1, {0x00, 0x00, 0x04}));         // neighbour presses the right key
     rx(press(0x03));                                                    // ours, wrong key
     call("GET", "/api/setup/read/state");
@@ -351,7 +351,43 @@ int main() {
     CHECK(!orcon::idsDirty(), "reading never marks identities for NVS");
 
 #if ORCON_TX_POC
-#if ORCON_TX_RF_ENABLE
+#if ORCON_TX_RF_ENABLE && ORCON_TX_PAIR
+    // ---- RF test image: offer (captured structure) -> unit's W 1FC9 -> one closing ack -> learned unit
+    orcon::setIds(37, 404, 32, 0);                                     // unit not yet known
+    txpoc::s_rf.onair = true;
+    CHECK(call("POST", "/api/setup/pair/start") == 201 && J["status"] == "ready" && J["simulated"] == false && J["supported"] == true,
+          "RF pairing: session ready on the capped RF test image");
+    { const uint32_t ps = J["sid"]; char x[96];
+      snprintf(x, sizeof(x), "{\"sid\":%u,\"keys\":[\"auto\"]}", unsigned(ps));
+      CHECK(call("POST", "/api/setup/pair/press", x) == 422 && txpoc::s_rf.sent[1] == 0, "only the Auto+1 combination sends");
+      snprintf(x, sizeof(x), "{\"sid\":%u,\"keys\":[\"auto\",\"1\"]}", unsigned(ps));
+      CHECK(call("POST", "/api/setup/pair/press", x) == 200 && txpoc::s_rf.sent[1] == 0, "offer accepted, owner not yet run");
+      loopTick(); call("GET", "/api/setup/pair/state");
+      CHECK(J["status"] == "bind_sent" && J["bind_sent"] == true && txpoc::s_rf.sent[1] == 1 && txpoc::s_rf.sent[2] == 0,
+            "one offer on air, no ack yet");
+      CHECK(call("POST", "/api/setup/pair/press", x) == 409 && err("already-sent") && txpoc::s_rf.sent[1] == 1, "never a second offer per session");
+      // Not a confirmation: another device's W, a W with a foreign ID tuple, an RQ, a W to someone else.
+      rx(fr(MsgType::W, UNIT32, REM, 0x1FC9, {0x00, 0x31, 0xD9, 0x80, 0, 0xCA}));
+      rx(fr(MsgType::W, UNIT32, US, 0x1FC9, {0x00, 0x31, 0xD9, 0x74, 0, 0x65}));
+      rx(fr(MsgType::RQ, UNIT32, US, 0x1FC9, {0x00, 0x31, 0xD9, 0x80, 0, 0xCA}));
+      loopTick(); call("GET", "/api/setup/pair/state");
+      CHECK(J["rf_confirmed"] == false && txpoc::s_rf.sent[2] == 0, "only the unit's exact W 1FC9 00 31D9 <own id> to us confirms");
+      rx(fr(MsgType::W, UNIT32, US, 0x1FC9, {0x00, 0x31, 0xD9, 0x80, 0, 0xCA}));
+      loopTick(); loopTick(); call("GET", "/api/setup/pair/state");
+      CHECK(J["rf_confirmed"] == true && J["ack_sent"] == true && J["paired"] == true && txpoc::s_rf.sent[2] == 1,
+            "unit confirmed -> exactly one closing ack -> paired");
+      rx(fr(MsgType::W, UNIT32, US, 0x1FC9, {0x00, 0x31, 0xD9, 0x80, 0, 0xCA}));
+      loopTick(); loopTick();
+      CHECK(txpoc::s_rf.sent[2] == 1 && txpoc::s_rf.sent[1] == 1, "a repeated W never causes a second ack or offer");
+      DeviceId learned(0, 0);
+      CHECK(setupweb::takeLearnedFan(learned) && learned == UNIT32, "the confirming unit is handed over for NVS");
+      uint32_t cc = 0; const std::string all = console(&cc);
+      CHECK(has(all, "koppelen: 1FC9-aanbod verzonden (RF), fout none, RX-herstel ok") &&
+            has(all, "koppelen: unit bevestigde (W 1FC9 00 31D9)") && has(all, "koppelen: 1FC9-afsluiting verzonden (RF)"),
+            "console: offer, confirmation and ack each leave a line for remote diagnosis"); }
+    txpoc::s_rf.onair = false;
+    orcon::setIds(37, 404, 32, 202);
+#elif ORCON_TX_RF_ENABLE
     CHECK(call("POST", "/api/setup/pair/start") == 501 && err("pairing-unverified"), "RF pairing blocked without complete offer capture");
     CHECK(call("POST", "/api/setup/pair/press", "{\"sid\":1,\"keys\":[\"auto\",\"1\"]}") == 501, "RF bind press also blocked");
     CHECK(txpoc::s_rf.sent[1] == 0 && txpoc::s_rf.sent[2] == 0, "unverified binding never reaches backend");

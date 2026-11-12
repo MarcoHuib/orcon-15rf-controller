@@ -227,7 +227,7 @@ $('title').textContent=tt?tt[0]:pr?'Simulatie instellen':rdone?'Uitlezen voltooi
 $('sub').textContent=tt?tt[1]:pr?'Koppel deze controller als virtuele afstandsbediening met je ventilatie-unit.':ra?'Druk de oranje gemarkeerde knop op je fysieke afstandsbediening in.':rdone?'Alle knoppen zijn herkend.':'Kies eerst je eigen afstandsbediening.';
 const no=!S?'':pr&&!c.pair_supported?'Koppelen is met deze firmware niet beschikbaar. Echte RF-pairing wacht op een volledige protocolcapture.':ct&&!c.control_supported?'Bedienen is met deze firmware niet mogelijk: '+NOTX:rd&&!c.read_supported?'Uitlezen is met deze radio niet mogelijk.':'';
 const sim=(ct&&c.control_supported||pr&&c.pair_supported)&&c.simulated;
-const one=ct&&c.control_supported&&!c.simulated&&c.tx_max_per_boot?'RF-TESTFIRMWARE: echte RF-uitzendingen, maximaal '+c.tx_max_per_boot+' per opstart en minimaal 2 s ertussen.':'';
+const one=(ct&&c.control_supported||pr&&c.pair_supported)&&!c.simulated&&c.tx_max_per_boot?'RF-TESTFIRMWARE: echte RF-uitzendingen, maximaal '+c.tx_max_per_boot+' per opstart en minimaal 2 s ertussen'+(pr?' (de koppel-afsluiting volgt direct op het antwoord van de unit).':'.'):'';
 $('notice').textContent=sim?'DRY-RUN: commando’s doorlopen de hele keten, maar er wordt niets over RF verzonden.':one||no;$('notice').hidden=!(sim||one||no);if(S)conn();
 const f=S&&S.profiles,ap=f&&f.items.find(p=>p.id===f.active),profileOk=(!f||f.storage_ok)&&(c.profile_control_supported?!!(ap&&ap.control_mapping):!ap);
 const live=ct&&c.control_supported&&profileOk&&!busy&&!(C&&C.confirm==='pending'),um=S&&S.unit&&S.unit.known?MK[S.unit.mode]:'';
