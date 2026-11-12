@@ -1,0 +1,71 @@
+# Signed OTA and remote diagnostics (Heltec V2)
+
+## Why this is safe on the existing layout
+- **Partition table is unchanged.** It already has `otadata` plus two app slots, `app0`/`app1` of 0x330000 B each (`tools/check_parts.py`). A firmware image is about 1.1 MB.
+- **The board's bootloader already does rollback.** It is the Arduino-ESP32 2.0.16 bootloader, built with `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`. Its `bootloader_utility_get_selected_boot_partition` writes otadata state 1 (`PENDING_VERIFY`) and state 4 (`ABORTED`). `heltec_v2.sh precheck` already requires that exact bootloader. No bootloader or partition-table write is needed.
+- **Interrupted upload.** The boot partition only changes after the complete image has passed every check, so an interrupted upload leaves the running image selected.
+- **Trial boot.** A new image boots once as `PENDING_VERIFY`. `ota::tick` confirms it only when all three hold:
+  - it has run at least 60 s;
+  - WiFi is connected;
+  - the receiver is up.
+- **Automatic rollback.** If the new image is not healthy within 300 s, or resets before it confirms (crash, watchdog, power loss), the bootloader returns to the previous image.
+- **Data that survives.** NVS (WiFi, profiles, identities, OLED, MQTT) is never written by an update.
+
+## What the device accepts (`src/ota_signed.cpp`, rules in `src/ota_policy.cpp`)
+1. `POST /api/ota/nonce` returns a one-time nonce, valid for 5 min. Each `begin` consumes it, whether it succeeds or not, so an old manifest cannot be replayed or used to downgrade.
+2. `POST /api/ota/begin` takes `{"manifest": "<json>", "sig": "<DER hex>"}`.
+   - **Signature:** ECDSA P-256 over the manifest text, verified against `src/ota_pubkey.h`. This is real authentication; an Origin header or token is not enough. The private key exists only in `~/.orcon/ota-signing-key.pem` (0600).
+   - **Manifest:**
+     - this board's MAC;
+     - the issued nonce;
+     - a size that fits the inactive slot;
+     - an approved variant: `rx-only` = `heltec_v2_sx1276` with `allow_tx:false`, or `rf-test` = `heltec_v2_sx1276_rftest` with `allow_tx:true`.
+
+   Anything else is refused.
+3. `POST /api/ota/upload` (multipart) streams the image into the inactive slot with `esp_ota_*`. The legacy Update/ArduinoOTA code is not used. While streaming, the device hashes the image and scans it. It writes nothing to the boot partition unless all of these hold:
+   - size and SHA-256 equal the manifest;
+   - the commit is stamped in the image;
+   - the image carries `ORCON-SIGNED-OTA v1` (an update can never remove the WiFi update path);
+   - there are no unauthenticated-OTA strings;
+   - the variant markers match: RX-only images contain no `txpoc packet TX`, and RF test images carry the capped `RF TEST: max N packets per boot` marker;
+   - ESP-IDF's own image check passes.
+
+   Only then does the device set the boot partition and restart.
+4. **What this prevents.** RX-only can never silently become RF-TX: the variant is signed, matched against the image contents, and the CLI demands the same `"RF test image"` phrase as the USB path.
+
+**Side effect of the flash erase:** the receiver can miss frames while the slot is written.
+
+## Remote diagnostics
+- `GET /api/setup/console?after=N`: the RF console. It has per-boot sequence numbers, `lost` and `more`, and now includes a line per finished TX transaction (sent, error, RX restore result).
+- `GET /api/setup/capture`: the last 8 complete `1FC9`/`10E0` frames.
+- `GET /api/diag`:
+  - reset reason, boot count and previous uptime (RTC memory: no flash wear, lost only on power loss);
+  - heap and RX counters;
+  - OTA slot state;
+  - a crash summary from the existing coredump partition (task, PC, backtrace), written only on a crash.
+- `GET /api/ota`: firmware, running/boot/next slot and their OTA states, last refusal.
+
+## From the Mac: `tools/orcon.py`
+- `status`, `capture`.
+- `logs --minutes N` writes to `captures/sessions/<UTC>/` (git-ignored, 0700/0600):
+  - `console.jsonl`;
+  - `gaps.jsonl`, which records missing sequence numbers, board-side loss, restarts and lost links;
+  - `capture-*.json` and `diag.jsonl`.
+- `ota-install --worktree <release worktree> --env <env> --yes [--rf-ack "RF test image"]`:
+  1. runs the same `tools/heltec_v2.sh verify` as the USB path (evidence, hashes, markers);
+  2. signs a manifest for this board and uploads it;
+  3. watches the trial boot and prints `CONFIRMED` or `ROLLED BACK`.
+
+## USB is still needed once
+The firmware on the board (`ae36e42`) has no signed OTA receiver. A single USB flash of an image that contains it, using the existing app0-only procedure, is required. After that, these steps run over WiFi:
+- updates;
+- RF test images (with the phrase);
+- logs, captures, diagnostics and crash summaries;
+- restarts.
+
+## Limits
+- **Two cases still need USB:**
+  - a new image that is healthy by the check above but whose OTA receiver is broken;
+  - a broken bootloader.
+- **The USB precheck refuses a board after its first OTA, by design.** It expects otadata to select app0 and app1 to be empty or the known state. An OTA-aware USB recovery mode is not built yet.
+- **What rollback falls back to.** Rollback returns to whatever image ran before, including an approved RF test image if that was the previous one.

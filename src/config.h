@@ -185,3 +185,11 @@
 // ---------------------------------------------------------------------------
 #define DEBUG_SERIAL_BAUD 115200
 #define DEBUG_RX_HEX      1            // log raw decoded frames to serial
+
+// Signed A/B OTA over WiFi (ota_signed.cpp): Heltec V2 + SX1276 only. ECDSA-signed manifest,
+// approved variants only, bootloader rollback until the new image confirms its own health.
+#if defined(BOARD_HELTEC_V2) && defined(RADIO_SX1276)
+#define ORCON_SIGNED_OTA 1
+#else
+#define ORCON_SIGNED_OTA 0
+#endif

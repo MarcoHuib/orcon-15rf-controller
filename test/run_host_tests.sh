@@ -44,6 +44,7 @@ run rf_console -Wall -Wextra -Werror -I src test/test_rf_console.cpp src/rf_cons
 # Setup wizard HTTP glue: the real setup_web.cpp behind a fake WebServer, RX-only, TX and
 # web-control (txpoc layer). Needs the pinned ArduinoJson that `pio run -e heltec_v2_sx1276` fetches.
 AJ=.pio/libdeps/heltec_v2_sx1276/ArduinoJson/src
+run ota_policy -Wall -Wextra -Werror -I src -I $AJ test/test_ota_policy.cpp src/ota_policy.cpp
 WEB="-Wall -Wextra -Werror -DARDUINOJSON_ENABLE_ARDUINO_STRING=1 -I test/shim_web -I src -I $AJ test/test_setup_web.cpp src/setup_web.cpp src/setup_flow.cpp src/remote_profiles.cpp src/rf_console.cpp $ORCON"
 if [ -d "$AJ" ]; then
     run setup_web_rx -DRADIO_SX1276=1 -DRX_ONLY=1 $WEB

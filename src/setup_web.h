@@ -12,6 +12,7 @@ namespace setupweb {
 void restoreProfileSelection(); // after NVS load; routing only, never TX or pairing
 void begin(WebServer& server);                                    // routes + per-boot token
 void onFrame(const ramses::Frame& f, uint32_t seq, int16_t rssi);  // every decoded RX frame (main loop)
+void note(uint8_t kind, const char* msg);                        // console line from another module (rfcon kind)
 void tick(uint32_t now);                                           // timeouts (main loop, never in GET)
 #if ORCON_WEB_CONTROL
 void consumeTxResults(uint32_t now); // before draining RX, so prompt bind replies are not lost

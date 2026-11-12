@@ -439,6 +439,9 @@ int main() {
       snprintf(duplicate, sizeof(duplicate), "{\"key\":\"3\",\"request\":%u}", unsigned(request));
       CHECK(call("POST", "/api/remote/send", duplicate) == 409 && err("request-conflict"), "same sequence with different command refused");
     }
+    { uint32_t cc = 0; const std::string all = console(&cc);
+      CHECK(has(all, "INFO|TX #") && has(all, "stand 2: verzonden (RF), fout none, RX-herstel ok"),
+            "console: each finished TX transaction leaves one line (sent, error, RX restore) for remote diagnosis"); }
     // away + auto also work; a remote press during the guard is refused.
     txpoc::s_rf.onair = false;
     g_ms += txpoc::RATE_CTL_MS;

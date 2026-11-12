@@ -20,6 +20,7 @@
 #include "orcon_log.h"
 #if !ORCON_TX_POC || ORCON_WEB_CONTROL
 #include "setup_web.h"
+#include "ota_signed.h"
 #endif
 
 #if defined(PINTEST)
@@ -125,6 +126,9 @@ void loop() {
 
     // 3) web / MQTT / OLED
     net::loop();
+#if ORCON_SIGNED_OTA
+    ota::tick(millis());               // confirm a freshly installed image, or roll back
+#endif
 
     // 4) on-screen UI + touch (4848S040 panel; no-op on Heltec)
     display::loop();

@@ -13,6 +13,7 @@
 #endif
 #include "web_page.h"
 #include "setup_web.h"
+#include "ota_signed.h"
 #include "remote_profiles.h"
 #include "house_img.h"
 
@@ -958,6 +959,9 @@ void begin() {
     server.on("/api/oled",  HTTP_POST, handleOledSave);
 #endif
 #endif // ORCON_TX_POC routes
+#if ORCON_SIGNED_OTA
+    ota::begin(server);                 // signed OTA + /api/diag (every Heltec V2 SX1276 build)
+#endif
     server.begin();
 
 #if MQTT_ENABLED

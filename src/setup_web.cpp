@@ -755,6 +755,8 @@ void begin(WebServer& s) {
 #endif
 }
 
+void note(uint8_t kind, const char* msg) { g_con.add(kind, millis(), "%s", msg); }
+
 void onFrame(const ramses::Frame& f, uint32_t seq, int16_t rssi) {
     ++g_ev;                                         // monotonic per boot: orders events for the page
     drainSyncs();                                   // this frame's sync note is already queued
@@ -772,6 +774,22 @@ void onFrame(const ramses::Frame& f, uint32_t seq, int16_t rssi) {
 #if ORCON_WEB_CONTROL
 void consumeTxResults(uint32_t now) {
     const txpoc::Status& ts = txpoc::controller().status();
+    // Remote diagnostics: every finished command transaction leaves one console line.
+    static uint32_t loggedReq = 0;
+    if (!ts.busy && ts.result.request.input.request && ts.result.request.input.request != loggedReq &&
+        ts.result.request.kind == (uint8_t)txpoc::FrameKind::Mode) {
+        loggedReq = ts.result.request.input.request;
+#if ORCON_TX_RF_ENABLE
+        const unsigned long diag = (unsigned long)radio::sx1276::restoreDiag();
+#else
+        const unsigned long diag = 0;
+#endif
+        g_con.add(ts.result.error == txpoc::Error::None ? rfcon::INFO : rfcon::WARN, now,
+                  "TX #%lu stand %s: %s, fout %s, RX-herstel %s%08lX, pakketten deze boot %lu",
+                  (unsigned long)loggedReq, keyOfMode(ts.result.request.input.mode),
+                  ts.result.rfSent ? "verzonden (RF)" : SIMULATED ? "dry-run, niet verzonden" : "niet verzonden",
+                  txpoc::errorName(ts.result.error), diag ? "mislukt 0x" : "ok ", diag, (unsigned long)txpoc::rfTxStarts());
+    }
     const bool sentOk = ts.result.error == txpoc::Error::None && (ts.result.rfSent || SIMULATED);
     if (g_pendOffer && !ts.busy && ts.result.request.kind == (uint8_t)txpoc::FrameKind::BindOffer) {
         if (SIMULATED && sentOk) {

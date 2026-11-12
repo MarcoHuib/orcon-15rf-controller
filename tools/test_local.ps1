@@ -102,6 +102,7 @@ foreach ($suite in $suites.GetEnumerator()) {
 if ($Sanitizer -eq 'None') {
     $null = Invoke-Check 'safety-and-negative-compiles' 'python3' @('-B','tools/test_tx_poc_safety.py','--compiler',$Compiler)
     $null = Invoke-Check 'ubsan-host' 'bash' @('test/run_host_tests.sh') 180
+    $null = Invoke-Check 'orcon-cli' 'python3' @('-B','tools/test_orcon_cli.py') 120   # signed-OTA manifest/signature, log gaps, rollback verdicts
     $null = Invoke-Check 'app1' 'python3' @('-B','tools/test_app1.py')
     $null = Invoke-Check 'rxmon' $SerialPython @('-B','tools/test_rxmon.py')
     $null = Invoke-Check 'rxmon-soak' $SerialPython @('-B','tools/test_rxmon_soak.py')
