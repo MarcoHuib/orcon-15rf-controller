@@ -220,12 +220,13 @@ static void handleState() {
     Out o;
     o.add("{\"fw\":\"%s\",\"rx_only\":%s,\"caps\":{\"rx_supported\":%s,\"tx_supported\":%s,"
           "\"read_supported\":%s,\"pair_supported\":%s,\"control_supported\":%s,\"simulated\":%s,"
-          "\"timer_supported\":%s,\"profile_control_supported\":%s,\"settings_pages\":%s},"
+          "\"timer_supported\":%s,\"profile_control_supported\":%s,\"settings_pages\":%s,\"tx_max_per_boot\":%d},"
           "\"rf\":\"%s\",\"token\":\"%s\",\"mask_ids\":%s,\"active\":\"%s\"",
           FW_VERSION, RX_ONLY ? "true" : "false", CAN_RX ? "true" : "false", CAN_TX ? "true" : "false",
           CAN_RX ? "true" : "false", CAN_PAIR ? "true" : "false", CAN_TX ? "true" : "false",
           SIMULATED ? "true" : "false", ORCON_TX_POC ? "false" : "true", ORCON_WEB_CONTROL ? "true" : "false",
           ORCON_TX_POC ? "false" : "true",                         // /wifi and /dashboard exist (net.cpp)
+          ORCON_TX_MAX_PER_BOOT,
           rfState(), hostOk() ? g_token : "", net::maskIds() ? "true" : "false",
           g_read.st == St::Active ? "read" : pairActive() ? "pair" : "none");
     char id[16] = "";
@@ -437,11 +438,17 @@ static void remoteBody(int code) {
     const orcon::State& os = orcon::state();
     const uint32_t now = millis();
     const bool isCmd = r.request.kind == (uint8_t)txpoc::FrameKind::Mode && r.request.input.request && r.request.ids.fan==orcon::ids().fan;
+#if ORCON_TX_RF_ENABLE
+    const uint32_t restoreDiag = radio::sx1276::restoreDiag();   // facts for diagnosing a failed RX restore
+#else
+    const uint32_t restoreDiag = 0;
+#endif
     Out o;
     o.add("{\"supported\":true,\"id\":%lu,\"key\":\"%s\",\"minutes\":0,"
           "\"accepted\":%s,\"sent\":%s,\"confirm\":\"%s\",\"age_s\":%lu,"
           "\"unit_mode\":\"%s\",\"unit_age_s\":%ld,"
-          "\"phase\":\"%s\",\"error\":\"%s\",\"rf_sent\":%s,\"simulated\":%s,\"unit_confirmed\":false,\"next_request\":%lu}",
+          "\"phase\":\"%s\",\"error\":\"%s\",\"rf_sent\":%s,\"simulated\":%s,\"unit_confirmed\":false,\"next_request\":%lu,"
+          "\"restore_diag\":\"%08lX\",\"tx_starts\":%lu}",
           (unsigned long)(isCmd ? r.request.input.request : 0),
           isCmd ? keyOfMode(r.request.input.mode) : "",
           isCmd ? "true" : "false", isCmd && r.rfSent ? "true" : "false",
@@ -450,7 +457,8 @@ static void remoteBody(int code) {
           orcon::modeName(os.mode),
           os.modeMs ? long((now - os.modeMs) / 1000) : -1L,
           isCmd ? txpoc::phaseName(s.phase) : "idle", isCmd ? txpoc::errorName(r.error) : "none",
-          isCmd && r.rfSent ? "true" : "false", SIMULATED ? "true" : "false", (unsigned long)s.nextRequest);
+          isCmd && r.rfSent ? "true" : "false", SIMULATED ? "true" : "false", (unsigned long)s.nextRequest,
+          (unsigned long)restoreDiag, (unsigned long)txpoc::rfTxStarts());
     reply(code, o);
 }
 static void handleRemoteState() { remoteBody(200); }
@@ -494,6 +502,10 @@ static void handleRemoteSend() {
     if(!tail){fail(409,"profile-protocol-unsupported");return;}
     if(!(profile->unit==orcon::ids().fan)){fail(409,"profile-unit-mismatch");return;}
     if(profile->remote==orcon::ids().us){fail(403,"identity-conflict");return;}
+#if ORCON_TX_MAX_PER_BOOT
+    // RF test image: refuse cleanly once the RF backend has used its per-boot packets.
+    if(txpoc::rfTxStarts()>=ORCON_TX_MAX_PER_BOOT){fail(409,"tx-limit-reached");return;}
+#endif
     txpoc::Admission a = txpoc::controller().submitCtl(modeOfKey(k), tail, orcon::ids(),
                              true, txpoc::rxReady(), identityClear, millis(), d["request"].as<uint32_t>());
     if (a == txpoc::Admission::Duplicate) { remoteBody(200); return; }
@@ -649,6 +661,45 @@ static void consoleTick(uint32_t now) {
         g_lastSumMs = now; g_sumSyncs = d.coreSyncHits; g_sumFrames = d.frames; g_sumBad = 0;
     }
 }
+// ---- Pairing capture: complete 1FC9/10E0 frames ------------------------------------
+// The console shows six payload bytes; protocol work on the bind offer needs every byte.
+// Filled from onFrame (loop task, after the RX queue), so RX timing is never touched.
+// RAM only: nothing is written to flash; the IDs are unmasked like /api/log.
+static const uint8_t CAP_N = 8;
+struct Captured { uint32_t ms = 0, seq = 0; int16_t rssi = 0; ramses::Frame f; };
+static Captured g_cap[CAP_N];
+static uint8_t  g_capHead = 0, g_capCount = 0;
+static uint32_t g_capTotal = 0;
+static void captureFrame(const ramses::Frame& f, uint32_t seq, int16_t rssi) {
+    if (f.cmd != 0x1FC9 && f.cmd != 0x10E0) return;
+    Captured& c = g_cap[g_capHead];
+    c.ms = millis(); c.seq = seq; c.rssi = rssi; c.f = f;
+    g_capHead = uint8_t((g_capHead + 1) % CAP_N);
+    if (g_capCount < CAP_N) ++g_capCount;
+    ++g_capTotal;
+}
+static void handleCapture() {
+    if (!hostOk()) { fail(403, "forbidden-request"); return; }
+    static const char* const T[] = { "I", "RQ", "RP", "W" };
+    Out o;
+    o.add("{\"now\":%lu,\"total\":%lu,\"frames\":[", (unsigned long)millis(), (unsigned long)g_capTotal);
+    for (uint8_t k = 0; k < g_capCount; ++k) {
+        const Captured& c = g_cap[(g_capHead + CAP_N - g_capCount + k) % CAP_N];
+        const ramses::Frame& f = c.f;
+        o.add("%s{\"seq\":%lu,\"ms\":%lu,\"rssi\":%d,\"type\":\"%s\",\"addr\":[", k ? "," : "",
+              (unsigned long)c.seq, (unsigned long)c.ms, c.rssi, unsigned(f.type) < 4 ? T[unsigned(f.type)] : "?");
+        for (int i = 0; i < 3; ++i) {
+            if (f.has_addr[i]) o.add("%s\"%02u:%06lu\"", i ? "," : "", f.addr[i].cls, (unsigned long)f.addr[i].serial);
+            else               o.add("%snull", i ? "," : "");
+        }
+        o.add("],\"cmd\":\"%04X\",\"len\":%u,\"pl\":\"", f.cmd, f.len);
+        for (uint8_t i = 0; i < f.len && i < ramses::MAX_PAYLOAD; ++i) o.add("%02X", f.payload[i]);
+        o.add("\"}");
+    }
+    o.add("]}");
+    reply(200, o);
+}
+
 static void handleConsole() {
     if (!hostOk()) { fail(403, "forbidden-request"); return; }
     const String a = g_srv->arg("after");
@@ -686,6 +737,7 @@ void begin(WebServer& s) {
     s.on("/api/profiles/rename", HTTP_POST, [](){handleProfileEdit("rename");});
     s.on("/api/profiles/delete", HTTP_POST, [](){handleProfileEdit("delete");});
     s.on("/api/setup/console",     HTTP_GET,  handleConsole);
+    s.on("/api/setup/capture",     HTTP_GET,  handleCapture);
     s.on("/api/setup/read/start",  HTTP_POST, handleReadStart);
     s.on("/api/setup/read/state",  HTTP_GET,  handleReadState);
     s.on("/api/setup/read/cancel", HTTP_POST, handleReadCancel);
@@ -703,6 +755,8 @@ void begin(WebServer& s) {
 #endif
 }
 
+void note(uint8_t kind, const char* msg) { g_con.add(kind, millis(), "%s", msg); }
+
 void onFrame(const ramses::Frame& f, uint32_t seq, int16_t rssi) {
     ++g_ev;                                         // monotonic per boot: orders events for the page
     drainSyncs();                                   // this frame's sync note is already queued
@@ -710,6 +764,7 @@ void onFrame(const ramses::Frame& f, uint32_t seq, int16_t rssi) {
     const uint32_t othersBefore = g_read.others;
     const Why w = g_read.onFrame(f, g_ev, seq, millis(), rssi);
     consoleFrame(f, seq, rssi, w, othersBefore);
+    captureFrame(f, seq, rssi);
     if (!SIMULATED) g_pair.onFrame(f, orcon::ids().us, ORCON_TX_POC);
     if (f.cmd == 0x31D9 && f.len >= 3 && f.has_addr[0] && orcon::state().fanKnown && f.addr[0] == orcon::ids().fan &&
         (f.type == ramses::MsgType::I || f.type == ramses::MsgType::RP))
@@ -719,6 +774,22 @@ void onFrame(const ramses::Frame& f, uint32_t seq, int16_t rssi) {
 #if ORCON_WEB_CONTROL
 void consumeTxResults(uint32_t now) {
     const txpoc::Status& ts = txpoc::controller().status();
+    // Remote diagnostics: every finished command transaction leaves one console line.
+    static uint32_t loggedReq = 0;
+    if (!ts.busy && ts.result.request.input.request && ts.result.request.input.request != loggedReq &&
+        ts.result.request.kind == (uint8_t)txpoc::FrameKind::Mode) {
+        loggedReq = ts.result.request.input.request;
+#if ORCON_TX_RF_ENABLE
+        const unsigned long diag = (unsigned long)radio::sx1276::restoreDiag();
+#else
+        const unsigned long diag = 0;
+#endif
+        g_con.add(ts.result.error == txpoc::Error::None ? rfcon::INFO : rfcon::WARN, now,
+                  "TX #%lu stand %s: %s, fout %s, RX-herstel %s%08lX, pakketten deze boot %lu",
+                  (unsigned long)loggedReq, keyOfMode(ts.result.request.input.mode),
+                  ts.result.rfSent ? "verzonden (RF)" : SIMULATED ? "dry-run, niet verzonden" : "niet verzonden",
+                  txpoc::errorName(ts.result.error), diag ? "mislukt 0x" : "ok ", diag, (unsigned long)txpoc::rfTxStarts());
+    }
     const bool sentOk = ts.result.error == txpoc::Error::None && (ts.result.rfSent || SIMULATED);
     if (g_pendOffer && !ts.busy && ts.result.request.kind == (uint8_t)txpoc::FrameKind::BindOffer) {
         if (SIMULATED && sentOk) {

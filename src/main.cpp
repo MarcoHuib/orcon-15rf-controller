@@ -21,6 +21,7 @@
 #if !ORCON_TX_POC || ORCON_WEB_CONTROL
 #include "setup_web.h"
 #endif
+#include "ota_signed.h"
 
 #if defined(PINTEST)
 // ---- GPIO mapper: drives each CC1101 GPIO HIGH (others LOW) for 2.5s in turn.
@@ -125,6 +126,9 @@ void loop() {
 
     // 3) web / MQTT / OLED
     net::loop();
+#if ORCON_SIGNED_OTA
+    ota::tick(millis());               // confirm a freshly installed image, or roll back
+#endif
 
     // 4) on-screen UI + touch (4848S040 panel; no-op on Heltec)
     display::loop();

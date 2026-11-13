@@ -102,6 +102,7 @@ foreach ($suite in $suites.GetEnumerator()) {
 if ($Sanitizer -eq 'None') {
     $null = Invoke-Check 'safety-and-negative-compiles' 'python3' @('-B','tools/test_tx_poc_safety.py','--compiler',$Compiler)
     $null = Invoke-Check 'ubsan-host' 'bash' @('test/run_host_tests.sh') 180
+    $null = Invoke-Check 'orcon-cli' 'python3' @('-B','tools/test_orcon_cli.py') 120   # signed-OTA manifest/signature, log gaps, rollback verdicts
     $null = Invoke-Check 'app1' 'python3' @('-B','tools/test_app1.py')
     $null = Invoke-Check 'rxmon' $SerialPython @('-B','tools/test_rxmon.py')
     $null = Invoke-Check 'rxmon-soak' $SerialPython @('-B','tools/test_rxmon_soak.py')
@@ -130,7 +131,8 @@ if ($Sanitizer -eq 'None') {
 }
 if ($Firmware) {
     $null = Invoke-Check 'platformio-version' $Platformio @('--version')
-    foreach ($envName in @('heltec_v2_sx1276','heltec_v2_sx1276_tx_poc_dryrun','heltec_v3_cc1101_ota','heltec_v3_1262_ota','esp32-480480s040')) {
+    foreach ($envName in @('heltec_v2_sx1276','heltec_v2_sx1276_tx_poc_dryrun','heltec_v2_sx1276_rftest','heltec_v3_cc1101_ota','heltec_v3_1262_ota','esp32-480480s040')) {
+        $isV2 = @('heltec_v2_sx1276','heltec_v2_sx1276_tx_poc_dryrun','heltec_v2_sx1276_rftest') -contains $envName
         $code = Invoke-Check ('firmware-' + $envName) $Platformio @('run','-e',$envName) 300
         if ($code -ne 0) { continue }
         $dest = Join-Path $OutputDirectory ('artifacts/' + $envName)
@@ -138,7 +140,7 @@ if ($Firmware) {
         foreach ($image in @('firmware.bin','partitions.bin','bootloader.bin')) {
             Copy-Item -LiteralPath (Join-Path $root ('.pio/build/' + $envName + '/' + $image)) -Destination $dest
         }
-        if ($envName -eq 'heltec_v2_sx1276' -or $envName -eq 'heltec_v2_sx1276_tx_poc_dryrun') {
+        if ($isV2) {
             $core = if ($env:PLATFORMIO_CORE_DIR) {$env:PLATFORMIO_CORE_DIR} else {Join-Path $HOME '.platformio'}
             $boot = @(Get-ChildItem (Join-Path $core 'packages/framework-arduinoespressif32*/tools/partitions/boot_app0.bin') | Where-Object {
                 (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -eq 'f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0'
@@ -150,21 +152,30 @@ if ($Firmware) {
             Copy-Item -LiteralPath (Join-Path $root ('.pio/build/' + $envName + '/firmware.elf')) -Destination $elf
             $bin = Join-Path $core 'packages/toolchain-xtensa-esp32/bin'
             $null = Invoke-Check ('elf-' + $envName) 'python3' @('-B','tools/check_elf_tx.py',$elf,$envName,$bin)
+            # Signed OTA: the app's strong verifyRollbackLater must replace the core's weak one, or
+            # initArduino() confirms every new image at boot (no trial boot, no rollback).
+            $null = Invoke-Check ('rollback-hook-' + $envName) 'python3' @('-B','tools/check_rollback_hook.py',(Join-Path $bin 'xtensa-esp32-elf-nm'),$elf)
             if ($envName -eq 'heltec_v2_sx1276_tx_poc_dryrun') { $null = Invoke-Check 'elf-selftest' 'python3' @('-B','tools/test_elf_tx.py',$elf,$bin) }
         }
         $firmwareText = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes((Join-Path $dest 'firmware.bin')))
         $imageOk = $firmwareText.Contains($commit)
-        if ($envName -eq 'heltec_v2_sx1276' -or $envName -eq 'heltec_v2_sx1276_tx_poc_dryrun') {
+        if ($isV2) {
             foreach ($forbidden in @('ArduinoOTA','auth_upload','Updater.cpp')) { if ($firmwareText.Contains($forbidden)) { $imageOk = $false } }
-            $imageOk = $imageOk -and $firmwareText.Contains('SX1276 direct RX (TX disabled)')
-            if ($envName -eq 'heltec_v2_sx1276') { $imageOk = $imageOk -and $firmwareText.Contains('RX-ONLY TEST FIRMWARE') -and -not $firmwareText.Contains('tx-poc-dryrun') }
-            else { $imageOk = $imageOk -and $firmwareText.Contains('tx-poc-dryrun') }
+            if ($envName -eq 'heltec_v2_sx1276_rftest') {
+                # RF test image: the capped RF marker, never the RX-only/dry-run markers.
+                $imageOk = $imageOk -and ($firmwareText -match 'SX1276 direct RX \+ txpoc packet TX \(RF TEST: max \d+ packets per boot\)') -and
+                    -not $firmwareText.Contains('SX1276 direct RX (TX disabled)') -and -not $firmwareText.Contains('tx-poc-dryrun')
+            } else {
+                $imageOk = $imageOk -and $firmwareText.Contains('SX1276 direct RX (TX disabled)')
+                if ($envName -eq 'heltec_v2_sx1276') { $imageOk = $imageOk -and $firmwareText.Contains('RX-ONLY TEST FIRMWARE') -and -not $firmwareText.Contains('tx-poc-dryrun') }
+                else { $imageOk = $imageOk -and $firmwareText.Contains('tx-poc-dryrun') }
+            }
             $null = Invoke-Check ('partitions-' + $envName) 'python3' @('-B','tools/check_parts.py',(Join-Path $dest 'partitions.bin'))
         }
         $rows.Add([ordered]@{name=('image-' + $envName); result=$(if ($imageOk) {'PASS'} else {'FAIL'}); exit=$(if ($imageOk) {0} else {1})})
         Save-Results
         $null = Invoke-Check ('packages-' + $envName) $Platformio @('pkg','list','-e',$envName)
-        $info = [ordered]@{commit=$commit; dirty=$dirty; environment=$envName; rf_release=$false; files=@(Get-ChildItem $dest -File | ForEach-Object {[ordered]@{name=$_.Name; sha256=(Get-FileHash -LiteralPath $_.FullName).Hash.ToLowerInvariant()}})}
+        $info = [ordered]@{commit=$commit; dirty=$dirty; environment=$envName; rf_release=($envName -eq 'heltec_v2_sx1276_rftest'); files=@(Get-ChildItem $dest -File | ForEach-Object {[ordered]@{name=$_.Name; sha256=(Get-FileHash -LiteralPath $_.FullName).Hash.ToLowerInvariant()}})}
         [IO.File]::WriteAllText((Join-Path $dest 'BUILD_INFO.json'),($info | ConvertTo-Json -Depth 5))
     }
     # Flash tooling (precheck, local_ok, markers) on simulated boards; reference = the local V2 table.

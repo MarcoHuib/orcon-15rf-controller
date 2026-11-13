@@ -27,7 +27,9 @@ def img(kind_byte, hdr, body, size):
     out = bytes([0xE9, kind_byte]) + hdr + body
     return out + b"\x00" * (size - len(out))
 markers = {"heltec_v2_sx1276": b"SX1276 direct RX (TX disabled) RX-ONLY TEST FIRMWARE",
-           "heltec_v2_sx1276_tx_poc_dryrun": b"SX1276 direct RX (TX disabled) tx-poc-dryrun DRY-RUN ONLY / NO RF"}[env]
+           "heltec_v2_sx1276_tx_poc_dryrun": b"SX1276 direct RX (TX disabled) tx-poc-dryrun DRY-RUN ONLY / NO RF",
+           "heltec_v2_sx1276_rftest": b"SX1276 direct RX + txpoc packet TX (RF TEST: max 50 packets per boot)"}[env]
+if mut == "rf-uncapped": markers = b"SX1276 direct RX + txpoc packet TX"
 fw_hdr = b"\x02\x20" if mut == "fw-header-4mb" else b"\x02\x30"
 stamp = b"" if mut == "no-stamp" else sha.encode()
 fw_body = (b"\x00" if mut == "not-esp" else b"") + b" " + stamp + b" " + markers
@@ -50,7 +52,7 @@ info = [f"commit={sha}", f"env={'heltec_v2_sx1276' if mut == 'wrong-env' else en
 if kind == "local":
     ev = d + ".evidence"; shutil.rmtree(ev, ignore_errors=True); os.makedirs(f"{ev}/artifacts/{env}")
     names = os.environ["LOCAL_REQUIRED"].split()
-    names += [f"image-{env}", f"partitions-{env}", f"elf-{env}"]
+    names += [n for n in (f"firmware-{env}", f"image-{env}", f"partitions-{env}", f"elf-{env}", f"rollback-hook-{env}") if n not in names]
     json.dump({"commit": sha, "dirty": "", "checks": [{"name": n, "result": "PASS", "exit": 0} for n in names]}, open(f"{ev}/RESULTS.json", "w"))
     json.dump({"files": [{"name": n, "sha256": hashlib.sha256(files[n]).hexdigest()}
                          for n in ("bootloader.bin", "partitions.bin", "boot_app0.bin", "firmware.bin")]}, open(f"{ev}/artifacts/{env}/BUILD_INFO.json", "w"))
@@ -216,5 +218,22 @@ lines = open(sys.argv[1]).read().splitlines()
 reads = [l.split("read_flash ", 1)[1].split()[:2] for l in lines if "read_flash" in l]
 assert reads.index(["0x8000", "0xc00"]) < reads.index(["0x340000", "0x330000"]), reads
 assert not any("write_flash" in l or "erase" in l for l in lines)' "$W/esptool.log"
+# RF test image: a separate, explicitly acknowledged path; RX-only/dry-run unchanged.
+RFT=heltec_v2_sx1276_rftest ACK="RF test image"
+rf_pkg() { mkpkg "$W/tools/local/$SHA-$RFT" "$SHA" "$RFT" local "${1:-none}"; }
+script fail "LOCAL_ENV RF test image without acknowledgement" LOCAL_ENV=$RFT bash "$H" plan HEAD
+rf_pkg; LOCAL_ENV=$RFT run fail "RF test package without acknowledgement"        "" verify "$SHA"
+rf_pkg; LOCAL_ENV=$RFT ORCON_RF_TEST_ACK="yes" run fail "RF test package, wrong acknowledgement" "" verify "$SHA"
+rf_pkg; LOCAL_ENV=$RFT ORCON_RF_TEST_ACK="$ACK" run pass "RF test package with acknowledgement" "" verify "$SHA"
+rf_pkg rf-uncapped; LOCAL_ENV=$RFT ORCON_RF_TEST_ACK="$ACK" run fail "uncapped RF image refused" "" verify "$SHA"
+local_pkg; LOCAL_ENV=$DRY ORCON_RF_TEST_ACK="$ACK" run pass "acknowledgement does not change the dry-run path" "" verify "$SHA"
+rf_pkg; LOCAL_ENV=$RFT ORCON_RF_TEST_ACK="$ACK" PORT="$W/tty" HELTEC_MAC=02:00:00:00:00:08 run fail "RF flash: yes without the phrase" $'yes\n' flash "$SHA"
+rf_pkg; LOCAL_ENV=$RFT ORCON_RF_TEST_ACK="$ACK" PORT="$W/tty" HELTEC_MAC=02:00:00:00:00:08 run fail "RF flash: wrong phrase" $'yes\nyes\n' flash "$SHA"
+rf_pkg; LOCAL_ENV=$RFT ORCON_RF_TEST_ACK="$ACK" PORT="$W/tty" HELTEC_MAC=02:00:00:00:00:08 run pass "RF flash: yes + phrase, app0 only" $'yes\nRF test image\n' flash "$SHA"
+assert "RF test flash writes app0 only" python3 -c '
+import sys
+lines = open(sys.argv[1]).read().splitlines()
+w = [l for l in lines if "write_flash" in l]
+assert len(w) == 1 and " 0x10000 " in w[0] and "0x9000" not in w[0] and "erase" not in " ".join(lines), w' "$W/esptool.log"
 echo; [ $fails -eq 0 ] && echo "ALL PASSED (0 failures)" || echo "FAILED ($fails failures)"
 exit $((fails > 0))

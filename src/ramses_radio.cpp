@@ -232,7 +232,11 @@ static uint32_t g_lastReceivedMs = 0;
 static uint32_t g_lastSeq = 0;                  // loop: sync number of the frame poll() returned
 static rxs::FrameQueue<16, SyncInfo> g_sq;      // RX task -> loop: syncs for the live RF console
 
-#if ORCON_TX_RF_ENABLE
+#if ORCON_TX_RF_ENABLE && ORCON_TX_MAX_PER_BOOT
+#define ORCON_STR2(x) #x
+#define ORCON_STR(x) ORCON_STR2(x)
+const char* name() { return "SX1276 direct RX + txpoc packet TX (RF TEST: max " ORCON_STR(ORCON_TX_MAX_PER_BOOT) " packets per boot)"; }
+#elif ORCON_TX_RF_ENABLE
 const char* name() { return "SX1276 direct RX + txpoc packet TX"; }
 #else
 const char* name() { return "SX1276 direct RX (TX disabled)"; }
@@ -401,6 +405,11 @@ static bool g_txActive = false, g_savedRx = false;
 static const uint8_t TX_REGS[] = { 0x09, 0x0A, 0x4D, 0x25, 0x26, 0x27,
                                   0x30, 0x31, 0x32, 0x35, 0x40, 0x41 };
 static uint8_t g_saved[sizeof(TX_REGS)];
+// Why the last fast restore failed, for the web layer (0 = it succeeded):
+// stage<<24 | reg<<16 | wrote<<8 | read; stage 1 standby, 2 register readback,
+// 3 receiveDirect, 4 op mode not RX (low byte = RegOpMode).
+static std::atomic<uint32_t> g_restoreDiag{0};
+uint32_t restoreDiag() { return g_restoreDiag.load(std::memory_order_acquire); }
 bool txActive() { return g_txActive; }
 
 bool txBegin(const uint8_t* onair, size_t n) {
@@ -442,17 +451,30 @@ bool txDone() {
 bool txRestoreRx() {
     // Fast restore only. A full beginFSK/reset/calibration is exclusively the
     // existing bounded recovery's job, never repeated in the TX owner.
+    uint32_t diag = 0;
     bool ok = g_radio.standby() == RADIOLIB_ERR_NONE;
+    if (!ok) diag = 0x01000000u;
     if (g_savedRx) {
         for (size_t i = 0; i < sizeof(TX_REGS); ++i) {
             g_mod.SPIwriteRegister(TX_REGS[i], g_saved[i]);
-            if (g_mod.SPIreadRegister(TX_REGS[i]) != g_saved[i]) ok = false;
+            const uint8_t got = g_mod.SPIreadRegister(TX_REGS[i]);
+            if (got != g_saved[i]) {
+                ok = false;
+                if (!diag) diag = 0x02000000u | uint32_t(TX_REGS[i]) << 16 | uint32_t(g_saved[i]) << 8 | got;
+            }
         }
     }
     g_mod.SPIwriteRegister(RADIOLIB_SX127X_REG_IRQ_FLAGS_2, RADIOLIB_SX127X_FLAG_FIFO_OVERRUN);
-    if (g_radio.receiveDirect() != RADIOLIB_ERR_NONE) ok = false;
+    if (g_radio.receiveDirect() != RADIOLIB_ERR_NONE) { ok = false; if (!diag) diag = 0x03000000u; }
+    // FSK RX passes through FSRx (op 0x04) first; RadioLib itself skips the RX bit check
+    // here (#276). Poll briefly instead of judging the transition: bounded, ~1 ms.
     g_op = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_OP_MODE);
-    if ((g_op & 0x87) != 0x05) ok = false;
+    for (int i = 0; i < 20 && (g_op & 0x87) != 0x05; ++i) {
+        delayMicroseconds(50);
+        g_op = g_mod.SPIreadRegister(RADIOLIB_SX127X_REG_OP_MODE);
+    }
+    if ((g_op & 0x87) != 0x05) { ok = false; if (!diag) diag = 0x04000000u | g_op; }
+    g_restoreDiag.store(diag, std::memory_order_release);
     while (rxUart.available()) rxUart.read();
     g_dec.reset();  // discard partial frame / local echo, retain queued pre-TX frames
     g_rxReady = ok;

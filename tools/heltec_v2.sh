@@ -6,8 +6,11 @@
 # ports : list device names only (no serial access)
 # LOCAL_ENV=<env> precheck|flash <commit> : HARDWARE ACCESS, separate consent required
 # flash rollback : same hardware gates, local RX-only firmware
+# LOCAL_ENV=heltec_v2_sx1276 recover check|write <commit> : HARDWARE ACCESS, OTA-aware USB recovery
+#   (after WiFi OTA): exact bootloader/table, otadata and BOTH slots identified; write = app0 +
+#   the pinned app0 selection in otadata, each with readback. Separate consent required.
 # monitor <secs> [log] [reset] : HARDWARE ACCESS, separate consent required
-# Only app0 is written. Bootloader, partition table, otadata, NVS and app1 stay intact.
+# flash writes only app0 (recover: app0 + otadata). Bootloader, partition table, NVS and app1 stay intact.
 # There is NO automatic/power-fail rollback. Interrupted app0 writes may require ROM USB repair.
 # esptool/dependencies must already be installed locally; this script never downloads tools.
 set -euo pipefail
@@ -18,7 +21,13 @@ PORT="${PORT:-}"               # empty: the single USB serial port found in $DEV
 DEV_DIR="${DEV_DIR:-/dev}"
 ESPTOOL_SHA256="dc4ef26b659e1a8dcb019147c0ea6d94980b34de99fbe09121c7941c8b254531"
 LOCAL_ENV="${LOCAL_ENV:-}"     # empty permits ONLY the pinned historical rollback
+ORCON_INSTALLED="${ORCON_INSTALLED:-$HOME/.orcon/installed.txt}"   # images tools/orcon.py installed over WiFi
 LOCAL_ENVS="heltec_v2_sx1276 heltec_v2_sx1276_tx_poc_dryrun"   # the only images that may be written
+# The RF test image (capped packets per boot) is deliberately NOT in LOCAL_ENVS. package/verify/
+# precheck/flash accept it only with ORCON_RF_TEST_ACK set to this exact phrase; flash asks again.
+RF_TEST_ENV="heltec_v2_sx1276_rftest"
+RF_TEST_ACK="RF test image"
+env_ok() { [[ " $LOCAL_ENVS " == *" $1 "* ]] || { [ "$1" = "$RF_TEST_ENV" ] && [ "${ORCON_RF_TEST_ACK:-}" = "$RF_TEST_ACK" ]; }; }
 # A local package needs these local checks PASS on the same clean commit (RESULTS.json).
 ROLLBACK_COMMIT="d5c39e1b4d1f0ed37defe69b51e3562c36058208"  # immutable local trust anchor
 # offset:image:slot size. NVS (0x9000-0xDFFF) is never written; the merged image is never used.
@@ -126,7 +135,7 @@ problems = []
 if r.get("commit") != sha: problems.append(f"evidence commit {r.get('commit')} != {sha}")
 if r.get("dirty") != "": problems.append("evidence from a dirty tree")
 problems += [f"{n}: {v}" for n, v in rows.items() if v != "PASS"]
-for n in required + [f"firmware-{env}", f"image-{env}", f"partitions-{env}", f"elf-{env}"]:
+for n in required + [f"firmware-{env}", f"image-{env}", f"partitions-{env}", f"elf-{env}", f"rollback-hook-{env}"]:
     if rows.get(n) != "PASS": problems.append(f"{n} not PASS")
 recorded = {f["name"]: f["sha256"] for f in json.load(open(f"{ev}/artifacts/{env}/BUILD_INFO.json"))["files"]}
 for n in ("bootloader.bin", "partitions.bin", "boot_app0.bin", "firmware.bin"):
@@ -139,7 +148,13 @@ PY
 
 markers() {   # image contents per environment; network firmware update must be compiled out
     local f=$1 env=$2 s
-    grep -q -a "SX1276 direct RX (TX disabled)" "$f" || die "not the SX1276 RX-only backend"
+    if [ "$env" = "$RF_TEST_ENV" ]; then
+        env_ok "$env" || die "RF test image refused: ORCON_RF_TEST_ACK not given"
+        grep -q -a -E "SX1276 direct RX \+ txpoc packet TX \(RF TEST: max [0-9]+ packets per boot\)" "$f" \
+            || die "RF test marker missing (uncapped RF image?)"
+    else
+        grep -q -a "SX1276 direct RX (TX disabled)" "$f" || die "not the SX1276 RX-only backend"
+    fi
     for s in "Firmware update (OTA)" "ArduinoOTA" "auth_upload" "Updater.cpp"; do
         if grep -q -a "$s" "$f"; then die "image still contains '$s' (OTA/HTTP update)"; fi
     done
@@ -150,6 +165,8 @@ markers() {   # image contents per environment; network firmware update must be 
         heltec_v2_sx1276_tx_poc_dryrun)
             grep -q -a "tx-poc-dryrun" "$f" && grep -q -a "DRY-RUN ONLY / NO RF" "$f" \
                 || die "dry-run markers missing" ;;
+        "$RF_TEST_ENV")
+            if grep -q -a "tx-poc-dryrun" "$f"; then die "RF test image contains the dry-run backend"; fi ;;
         *) die "env $env may not be flashed" ;;
     esac
 }
@@ -197,9 +214,8 @@ verify() {
 }
 
 # Read-only device checks. Any deviation, missing value or esptool error stops here.
-precheck() {
-    local sha; sha="$(target "${1:-}")"
-    verify "$sha"; local d; d="$(dist "$sha")"
+board_checks() {   # <package dir>: chip, pinned MAC, 8 MB, no flash encryption/secure boot. Sets BOARD_ID.
+    local d=$1
     PORT="$(pick_port)"; echo "port: $PORT"
     local img info
     for img in bootloader.bin firmware.bin; do
@@ -230,6 +246,14 @@ def word(text, address):
 assert bin((word(sys.argv[1], '0x3ff5a000') >> 20) & 0x7f).count('1') % 2 == 0, 'flash encryption enabled'
 assert word(sys.argv[2], '0x3ff5a018') & 0x30 == 0, 'secure boot enabled'
 SECURITY
+    BOARD_ID="$id"
+}
+
+precheck() {
+    local sha; sha="$(target "${1:-}")"
+    verify "$sha"; local d; d="$(dist "$sha")"
+    board_checks "$d"
+    local id="$BOARD_ID" mac; mac="$(expected_mac)"
     # A temporary readback directory, never mutable files inside the release package.
     # On any failure the readbacks are kept as evidence, never deleted.
     local curdir; curdir="$(mktemp -d)"
@@ -276,6 +300,74 @@ SECURITY
 
 }
 
+# OTA-aware USB recovery. After a WiFi OTA, otadata selects app1 and app1 holds an image, so the
+# pristine-state precheck refuses the board by design. recover reads the state the way the
+# bootloader does and identifies BOTH slots by image hash (check_slots.py); unknown content is
+# NO-GO and nothing is written. write: app0 <- the verified RX-only package, then otadata <- the
+# pinned app0 selection, each verified by readback before the next step. Write order is safe
+# against interruption: during the app0 write otadata still selects the old, known slot (or,
+# if that was app0, the bootloader falls back to the known app1 image); during the otadata
+# write both entries may be blank, and the bootloader then starts app0 = the image just verified.
+recover() {
+    local mode=${1:-} sha; sha="$(target "${2:-}")"
+    [ "$mode" = check ] || [ "$mode" = write ] || die "usage: LOCAL_ENV=heltec_v2_sx1276 recover check|write <commit>"
+    [ "$LOCAL_ENV" = heltec_v2_sx1276 ] || die "recovery writes only a local RX-only package (LOCAL_ENV=heltec_v2_sx1276)"
+    verify "$sha"; local d; d="$(dist "$sha")"
+    board_checks "$d"
+    local w; w="$(mktemp -d)"
+    # shellcheck disable=SC2064 # expand now: w is a local of this function
+    trap "keep '$w' recover-failed" EXIT
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x8000 0xc00 "$w/partitions.bin" >/dev/null \
+        || die "reading the board partition table failed"
+    "$TOOLS/venv/bin/python" -I "$REPO/tools/check_parts.py" "$w/partitions.bin" || die "board partition layout unexpected"
+    cmp -s "$w/partitions.bin" "$d/partitions.bin" || die "board partition table differs (NVS could move)"
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x1000 \
+        "$(wc -c < "$d/bootloader.bin" | tr -d ' ')" "$w/bootloader.bin" >/dev/null || die "reading the board bootloader failed"
+    cmp -s "$w/bootloader.bin" "$d/bootloader.bin" || die "board bootloader differs; recovery refused"
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0xe000 0x2000 "$w/otadata.bin" >/dev/null \
+        || die "reading otadata failed"
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x10000 0x330000 "$w/app0.bin" >/dev/null \
+        || die "reading the entire app0 slot failed"
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x340000 0x330000 "$w/app1.bin" >/dev/null \
+        || die "reading the entire app1 slot failed"
+    local f
+    { for f in "$TOOLS"/local/*/firmware.bin "$TOOLS/fw/$ROLLBACK_COMMIT/firmware.bin"; do
+          [ -f "$f" ] && echo "$(shasum -a 256 < "$f" | cut -d' ' -f1) package $(basename "$(dirname "$f")")"
+      done
+      [ ! -f "$ORCON_INSTALLED" ] || cat "$ORCON_INSTALLED"; } > "$w/known.txt"
+    "$TOOLS/venv/bin/python" -I "$REPO/tools/check_slots.py" check "$w/partitions.bin" "$w/otadata.bin" \
+        "$w/app0.bin" "$w/app1.bin" "$w/known.txt" "$(sed -n 's/^MAC: //p' <<<"$BOARD_ID")" "$TOOLS/board.mac" \
+        || die "board state not positively identified; nothing written"
+    if [ "$mode" = check ]; then
+        rm -rf "$w"; trap - EXIT
+        echo "RECOVERY CHECK OK ${sha:0:7}: exact bootloader/table, otadata and both slots identified; nothing written"
+        return
+    fi
+    cp "$d/"{bootloader.bin,partitions.bin,boot_app0.bin,firmware.bin,BUILD_INFO.txt} "$w/"
+    sed '/  heltec-v2-rx-only-merged.bin$/d' "$d/SHA256SUMS.txt" > "$w/SHA256SUMS.txt"
+    flash_args "$w" "$PORT"
+    echo "will write: app0 <- ${sha:0:7} RX-only, then otadata 0xe000 <- pinned boot_app0.bin (app0 selection)"
+    read -r -p "Recover ${sha:0:7} on $PORT? Type recover: " ok
+    [ "$ok" = recover ] || die "aborted by user"
+    files_ok "$w" "$sha"
+    local_ok "$w" "$sha" || die "snapshot differs from the validated evidence"
+    esptool "${FLASH_ARGS[@]}" || die "app0 write failed; otadata untouched (old selection still boots)"
+    local size; size="$(wc -c < "$w/firmware.bin" | tr -d ' ')"
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0x10000 "$size" "$w/readback.bin" >/dev/null \
+        || die "app0 readback failed; otadata untouched"
+    cmp -s "$w/readback.bin" "$w/firmware.bin" || die "app0 readback mismatch; otadata untouched"
+    echo "APP0 READBACK SHA256 $(shasum -a 256 "$w/readback.bin" | cut -d' ' -f1)"
+    esptool --chip esp32 --port "$PORT" --after no_reset write_flash 0xe000 "$w/boot_app0.bin" \
+        || die "otadata write failed; no reset (app0 is verified, bootloader falls back to it)"
+    esptool --chip esp32 --port "$PORT" --after no_reset read_flash 0xe000 0x2000 "$w/otadata-readback.bin" >/dev/null \
+        || die "otadata readback failed; no reset"
+    cmp -s "$w/otadata-readback.bin" "$w/boot_app0.bin" || die "otadata readback mismatch; no reset"
+    echo "OTADATA READBACK OK (app0 selected)"
+    esptool --chip esp32 --port "$PORT" --after hard_reset read_mac
+    rm -rf "$w"; trap - EXIT
+    echo "RECOVERED ${sha:0:7}: app0 RX-only and app0 selection verified; NVS/bootloader/table/app1 untouched"
+}
+
 # Offline: full verification, then the exact command flash would run. Never opens a port.
 plan() {
     local sha; sha="$(target "${1:-}")"
@@ -298,6 +390,11 @@ flash() {
     echo "will write app0 only: esptool ${FLASH_ARGS[*]}"
     read -r -p "Write ${sha:0:7} (${LOCAL_ENV:-heltec_v2_sx1276}) on $PORT? Type yes: " ok
     [ "$ok" = "yes" ] || die "aborted by user"
+    if [ "$LOCAL_ENV" = "$RF_TEST_ENV" ]; then
+        echo "WARNING: RF TEST image: the web page can put real 868 MHz packets on air (capped per boot, 2 s apart)."
+        read -r -p "Type the RF test acknowledgement phrase: " ok
+        [ "$ok" = "$RF_TEST_ACK" ] || die "RF test image not confirmed"
+    fi
     files_ok "$snapshot" "$sha"
     # The frozen bytes must still be the ones the ORIGINAL evidence recorded, not just
     # self-consistent with a package manifest that could have changed alongside them.
@@ -319,7 +416,7 @@ flash() {
 # Reads files only; no board access. The package is verified completely before it is accepted.
 package() {
     local ev="${1:?usage: package <evidence-dir> <env>}" env="${2:?usage: package <evidence-dir> <env>}"
-    [[ " $LOCAL_ENVS " == *" $env "* ]] || die "env $env may not be flashed"
+    env_ok "$env" || die "env $env may not be flashed"
     ev="$(cd "$ev" && pwd)"; local src="$ev/artifacts/$env"
     [ -f "$ev/RESULTS.json" ] && [ -f "$src/firmware.bin" ] || die "no evidence/artifacts for $env in $ev"
     local sha; sha="$(fulsha "$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$ev/RESULTS.json")")"
@@ -342,7 +439,7 @@ monitor() {
 
 # Tests source functions only; all hardware operations are replaced by failing/local stubs.
 [ "${HELTEC_V2_SOURCE_ONLY:-}" != 1 ] || return 0
-[ -z "$LOCAL_ENV" ] || [[ " $LOCAL_ENVS " == *" $LOCAL_ENV "* ]] || die "LOCAL_ENV=$LOCAL_ENV may not be flashed"
+[ -z "$LOCAL_ENV" ] || env_ok "$LOCAL_ENV" || die "LOCAL_ENV=$LOCAL_ENV may not be flashed"
 cmd="${1:-}"; shift || true
 case "$cmd" in
     ports)   ports ;;
@@ -352,5 +449,6 @@ case "$cmd" in
     precheck) precheck "$@" ;;
     flash)   flash "$@" ;;
     monitor) monitor "$@" ;;
-    *) sed -n '2,19p' "$0"; exit 2 ;;
+    recover) recover "$@" ;;
+    *) sed -n '2,22p' "$0"; exit 2 ;;
 esac

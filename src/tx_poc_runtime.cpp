@@ -27,7 +27,16 @@ public:
         bytes = bytes_;
         return bytes_ > 0 && bits > 0;
     }
-    bool start(uint32_t) override { return radio::sx1276::txBegin(buf_, bytes_); }
+    bool start(uint32_t) override {
+#if ORCON_TX_MAX_PER_BOOT
+        // RF test image: every attempt is counted before the radio is touched, and the
+        // per-boot cap fails closed in the RX task, whatever the web layer decided.
+        if (starts.load(std::memory_order_acquire) >= ORCON_TX_MAX_PER_BOOT) return false;
+#endif
+        starts.fetch_add(1, std::memory_order_acq_rel);
+        return radio::sx1276::txBegin(buf_, bytes_);
+    }
+    static std::atomic<uint32_t> starts;
     Completion poll(uint32_t) override { return radio::sx1276::txDone() ? Completion::Complete : Completion::Pending; }
     bool cleanup() override { return true; }                       // restoreRx does the mode change
     bool restoreRx() override { return radio::sx1276::txRestoreRx(); }
@@ -36,9 +45,14 @@ private:
     size_t bytes_ = 0;
     uint8_t buf_[ramses::MAX_ONAIR];
 };
+std::atomic<uint32_t> Sx1276Backend::starts{0};
 static Sx1276Backend backend;
+uint32_t rfTxStarts() { return Sx1276Backend::starts.load(std::memory_order_acquire); }
 #else
 static DryRunBackend backend;
+#endif
+#if !ORCON_TX_RF_ENABLE
+uint32_t rfTxStarts() { return 0; }   // dry-run: nothing ever reaches the air
 #endif
 
 static Owner owner(exchange, backend);

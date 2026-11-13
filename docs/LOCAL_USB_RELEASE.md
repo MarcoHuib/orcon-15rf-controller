@@ -264,3 +264,38 @@ De keuze voor app-only, exacte bootselectie en grenzen volgt uit de lokale
 boot_app0-bytes en Espressifs primaire documentatie:
 [OTA bootselectie en rollback](https://docs.espressif.com/projects/esp-idf/en/v4.4.8/esp32/api-reference/system/ota.html)
 en [esptool, sectorwissen en imagechecks](https://docs.espressif.com/projects/esptool/en/release-v4/esp32/esptool/basic-commands.html).
+
+## RF-testimage (`heltec_v2_sx1276_rftest`)
+
+Een diagnostisch image voor gecontroleerde fysieke zendproeven; nooit een release.
+
+**Wat het image is**
+- De web-control-RF-build met `ORCON_TX_MAX_PER_BOOT=50`; de compiler staat 1–100 toe en alleen op de RF-build.
+- De RF-backend telt elke start voordat de radio wordt aangesproken, en weigert boven de limiet. De webroute antwoordt dan `409 tx-limit-reached`.
+- Elk pakket blijft een handmatige klik, minimaal 2 s na het vorige. Dat is maximaal ongeveer 0,6 % duty cycle, onder de grens van 1 % in 868,0–868,6 MHz.
+- De pagina toont een waarschuwing op het dashboard.
+
+**Gates die blijven gelden**
+- actief geverifieerd profiel;
+- dezelfde unit;
+- eigen identiteit, nooit gekloond;
+- fysieke afstandsbediening deze boot gehoord;
+- wachttijd na een druk op de afstandsbediening;
+- verse standmelding van de unit;
+- geen automatische herhaling.
+
+**Terugkeer naar RX**
+- Na elk pakket controleert de firmware het herstel. Het wacht begrensd (~1 ms) op de overgang FSRx → RX en faalt anders dicht.
+- Een mislukt herstel vergrendelt TX tot de volgende herstart.
+- `GET /api/remote/state` meldt `restore_diag` (0 = gelukt; anders fase, register, geschreven en gelezen waarde) en `tx_starts`.
+
+**Flashen**
+- De omgeving staat **niet** in `LOCAL_ENVS`. `package`, `verify`, `precheck` en `flash` accepteren hem alleen met `ORCON_RF_TEST_ACK="RF test image"`.
+- `flash` vraagt eerst `yes` en daarna die zin nogmaals.
+- `markers` eist de begrensde RF-marker en weigert een onbegrensd RF-image.
+- `check_elf_tx.py` eist:
+  - `Sx1276Backend` als enige backend;
+  - `Sx1276Backend::start` → `radio::sx1276::txBegin` als enige niet-RadioLib-route naar een zendmethode.
+- De RX-only- en dry-run-paden zijn ongewijzigd.
+
+**Na de tests:** flash het RX-only-image terug via de normale route.

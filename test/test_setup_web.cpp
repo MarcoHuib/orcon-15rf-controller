@@ -44,6 +44,10 @@ RxDiagnostics rxDiagnostics() {
     return d;
 }
 }
+#if ORCON_TX_RF_ENABLE
+static uint32_t g_restoreDiag = 0;
+namespace radio { namespace sx1276 { uint32_t restoreDiag() { return g_restoreDiag; } } }
+#endif
 static bool g_wifiFake = true;
 static int g_restarts = 0, g_forgets = 0;
 namespace net { bool apMode() { return g_apModeFake; } bool maskIds() { return true; } const char* ipAddr() { return "192.0.2.5"; }
@@ -76,6 +80,8 @@ static Owner s_owner(s_ex, s_rf);
 Controller& controller() { return s_ctl; }
 bool rxReady() { return g_radioOk && s_rf.healthy; }
 bool ownerBusy() { return s_owner.step() != Step::Idle; }
+static uint32_t g_rfStarts = 0;                 // RF packets started this boot (set by the test)
+uint32_t rfTxStarts() { return g_rfStarts; }
 }
 #endif
 
@@ -433,6 +439,9 @@ int main() {
       snprintf(duplicate, sizeof(duplicate), "{\"key\":\"3\",\"request\":%u}", unsigned(request));
       CHECK(call("POST", "/api/remote/send", duplicate) == 409 && err("request-conflict"), "same sequence with different command refused");
     }
+    { uint32_t cc = 0; const std::string all = console(&cc);
+      CHECK(has(all, "INFO|TX #") && has(all, "stand 2: verzonden (RF), fout none, RX-herstel ok"),
+            "console: each finished TX transaction leaves one line (sent, error, RX restore) for remote diagnosis"); }
     // away + auto also work; a remote press during the guard is refused.
     txpoc::s_rf.onair = false;
     g_ms += txpoc::RATE_CTL_MS;
@@ -446,6 +455,16 @@ int main() {
     loopTick(); g_ms += txpoc::RATE_CTL_MS;
     CHECK(call("POST", "/api/remote/send", "{\"key\":\"auto\"}") == 202 && J["key"] == "auto", "auto accepted");
     loopTick();
+#if ORCON_TX_MAX_PER_BOOT
+    { const int before = txpoc::s_rf.sent[0]; g_ms += txpoc::RATE_CTL_MS; txpoc::g_rfStarts = ORCON_TX_MAX_PER_BOOT;
+      CHECK(call("POST", "/api/remote/send", "{\"key\":\"1\"}") == 409 && err("tx-limit-reached") && txpoc::s_rf.sent[0] == before,
+            "one-shot RF test image: after its packet every command is refused before admission, nothing prepared");
+      call("GET", "/api/setup/state"); CHECK(J["caps"]["tx_max_per_boot"] == ORCON_TX_MAX_PER_BOOT, "state reports the per-boot cap to the page");
+      g_restoreDiag = 0x04000004u; call("GET", "/api/remote/state");
+      CHECK(J["restore_diag"] == "04000004" && J["tx_starts"] == ORCON_TX_MAX_PER_BOOT, "remote state: failed-restore reason and packets started this boot");
+      g_restoreDiag = 0;
+      txpoc::g_rfStarts = 0; }
+#endif
     // RX health gates admission.
     g_radioOk = false; g_ms += txpoc::RATE_CTL_MS;
     CHECK(call("POST", "/api/remote/send", "{\"key\":\"away\"}") == 503 && err("rf-unavailable"), "RX unhealthy: refused");
@@ -582,6 +601,31 @@ int main() {
       rx(fr(MsgType::I,UNIT32,UNIT32,0x31D9,{0,0,1}));g_ms+=4000;
       CHECK(call("POST","/api/remote/send","{\"key\":\"2\"}")==503 && err("profile-storage-unavailable"),"corrupt profile storage blocks fallback TX");
 #endif
+    }
+
+    // ---- pairing capture: complete 1FC9/10E0 frames (synthetic IDs only) -----------------------
+    {
+        call("GET", "/api/setup/capture"); const unsigned before = J["total"].as<unsigned>();
+        Frame offer = fr(MsgType::I, REM, REM2, 0x1FC9, {});
+        offer.len = 30; for (uint8_t i = 0; i < 30; ++i) offer.payload[i] = uint8_t(0xA0 + i);
+        rx(offer); rx(fr(MsgType::W, UNIT, REM, 0x1FC9, {0x00, 0x31, 0xD9, 0x01, 0x02, 0x03}));
+        rx(fr(MsgType::I, REM, UNIT, 0x1FC9, {0x00})); rx(press(0x04));
+        Frame big = fr(MsgType::I, REM, REM2, 0x10E0, {}); big.len = 64; big.has_addr[2] = true; big.addr[2] = REM;
+        for (uint8_t i = 0; i < 64; ++i) big.payload[i] = i; rx(big); loopTick();
+        CHECK(call("GET", "/api/setup/capture") == 200 && J["total"].as<unsigned>() == before + 4, "capture: only 1FC9/10E0 frames counted");
+        JsonArray fs = J["frames"].as<JsonArray>(); const size_t n = fs.size();
+        CHECK(n >= 4 && fs[n - 4]["type"] == "I" && fs[n - 4]["cmd"] == "1FC9" && fs[n - 4]["len"] == 30 &&
+              fs[n - 4]["pl"] == "A0A1A2A3A4A5A6A7A8A9AAABACADAEAFB0B1B2B3B4B5B6B7B8B9BABBBCBD" &&
+              fs[n - 4]["addr"][0] == "29:000101" && fs[n - 4]["addr"][1] == "29:000303" && fs[n - 4]["addr"][2].isNull(),
+              "capture: bind offer with every payload byte and full addresses (console stays masked)");
+        CHECK(fs[n - 3]["type"] == "W" && fs[n - 3]["pl"] == "0031D9010203" && fs[n - 2]["pl"] == "00", "capture: unit reply and closing ack kept in order");
+        CHECK(fs[n - 1]["len"] == 64 && std::string(fs[n - 1]["pl"].as<const char*>()).size() == 128, "capture: 64-byte payload complete");
+        for (int i = 0; i < 9; ++i) rx(fr(MsgType::I, REM, UNIT, 0x1FC9, {uint8_t(i)}));
+        loopTick(); call("GET", "/api/setup/capture");
+        CHECK(J["frames"].size() == 8 && J["frames"][7]["pl"] == "08" && J["frames"][0]["pl"] == "01" && J["total"].as<unsigned>() == before + 13,
+              "capture: bounded ring of 8, oldest dropped, total still counted");
+        srv.req.clear(); srv.host = "attacker.example"; srv.routes["GET /api/setup/capture"]();
+        CHECK(srv.code == 403, "capture: foreign Host refused (DNS rebinding)");
     }
 
     // ---- live RF console ------------------------------------------------------------------------

@@ -9,6 +9,12 @@
 #ifndef ORCON_WEB_CONTROL
 #define ORCON_WEB_CONTROL 0
 #endif
+#ifndef ORCON_TX_MAX_PER_BOOT
+#define ORCON_TX_MAX_PER_BOOT 0   // 0: no per-boot cap (the 2 s admission floor still applies)
+#endif
+#if ORCON_TX_MAX_PER_BOOT < 0 || ORCON_TX_MAX_PER_BOOT > 100 || (ORCON_TX_MAX_PER_BOOT && !ORCON_TX_RF_ENABLE)
+#error "ORCON_TX_MAX_PER_BOOT is 0, or 1..100 on the RF build only"
+#endif
 #if (ORCON_TX_POC != 0 && ORCON_TX_POC != 1) || (ORCON_TX_RF_ENABLE != 0 && ORCON_TX_RF_ENABLE != 1) || (ORCON_WEB_CONTROL != 0 && ORCON_WEB_CONTROL != 1)
 #error "PoC capabilities must be 0 or 1"
 #endif

@@ -74,8 +74,11 @@ void frameText(const ramses::Frame& f, uint32_t seq, int16_t rssi, char* out, si
     const uint8_t n = f.len < 6 ? f.len : 6;
     for (uint8_t i = 0; i < n; i++) snprintf(pl + 2 * i, 3, "%02X", f.payload[i]);
     const unsigned t = unsigned(f.type);
+    // Longer payloads end in "… (N B)": the full bytes of 1FC9/10E0 are in /api/setup/capture.
+    char more[16] = "";
+    if (f.len > 6) snprintf(more, sizeof(more), "\xE2\x80\xA6 (%u B)", f.len);
     snprintf(out, cap, "#%lu %d dBm %s %04X %s>%s pl=%s%s", (unsigned long)seq, rssi, t < 4 ? T[t] : "?", f.cmd,
-             src, dst, pl, f.len > 6 ? "\xE2\x80\xA6" : "");
+             src, dst, pl, more);
 }
 
 } // namespace rfcon

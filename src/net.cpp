@@ -13,11 +13,15 @@
 #endif
 #include "web_page.h"
 #include "setup_web.h"
+#include "ota_signed.h"
 #include "remote_profiles.h"
 #include "house_img.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
+#if ORCON_SIGNED_OTA
+#include <ESPmDNS.h>   // orcon15rf.local for tools/orcon.py (ArduinoOTA starts mDNS on other builds)
+#endif
 #if !RX_ONLY
 #include <ArduinoOTA.h>
 #include <Update.h>
@@ -907,6 +911,9 @@ void begin() {
     oledInit();
     wifiConnect();
 
+#if ORCON_SIGNED_OTA
+    if (!g_apMode) MDNS.begin("orcon15rf");
+#endif
 #if !RX_ONLY   // RX-only: no network firmware update (would allow a TX-capable image)
     if (!g_apMode) {                    // OTA only makes sense on the home network
         ArduinoOTA.setHostname("orcon15rf");
@@ -958,6 +965,9 @@ void begin() {
     server.on("/api/oled",  HTTP_POST, handleOledSave);
 #endif
 #endif // ORCON_TX_POC routes
+#if ORCON_SIGNED_OTA
+    ota::begin(server);                 // signed OTA + /api/diag (every Heltec V2 SX1276 build)
+#endif
     server.begin();
 
 #if MQTT_ENABLED

@@ -46,13 +46,47 @@ app1.update({"known": known, "knownflip": bytes(flip)})
 for k, v in app1.items(): open(f"{w}/app1-{k}.bin", "wb").write(v)
 PY
 
+# OTA-aware recovery: slots holding the package image, an image installed over WiFi (listed in
+# the installed record), or unknown content; otadata in the pristine and in the post-OTA state.
+printf 'x' > "$W/d/BUILD_INFO.txt"; : > "$W/d/SHA256SUMS.txt"
+cp "$(dirname "$PART_GOOD")/firmware.bin" "$W/d/firmware.bin"
+mkdir -p "$W/tools/local/pkg"; cp "$W/d/firmware.bin" "$W/tools/local/pkg/firmware.bin"
+python3 - "$W" "$(dirname "$BOOT_APP_GOOD")/firmware.bin" <<'PY'
+import hashlib, struct, sys, zlib
+w, ota_img = sys.argv[1], open(sys.argv[2], "rb").read()
+size = 0x330000; pad = lambda b: b + b"\xff" * (size - len(b))
+pkg = open(f"{w}/d/firmware.bin", "rb").read()
+bad = bytearray(ota_img); bad[100] ^= 1
+slots = {"pkg": pad(pkg), "ota": pad(ota_img), "otatail": pad(ota_img + b"\x00" * 16), "unknown": pad(bytes(bad)),
+         "garbage": pad(b"\x12" * 4096), "empty": b"\xff" * size}
+for k, v in slots.items(): open(f"{w}/slot-{k}.bin", "wb").write(v)
+def entry(seq, state):
+    return struct.pack("<I", seq) + b"\xff" * 20 + struct.pack("<II", state, zlib.crc32(struct.pack("<I", seq), 0xFFFFFFFF))
+def ota(e0, e1):
+    raw = bytearray(b"\xff" * 0x2000); raw[0:32] = e0; raw[0x1000:0x1020] = e1; return bytes(raw)
+open(f"{w}/ota-app1.bin", "wb").write(ota(entry(1, 0xFFFFFFFF), entry(2, 2)))       # after a confirmed OTA to app1
+open(f"{w}/ota-aborted.bin", "wb").write(ota(entry(1, 0xFFFFFFFF), entry(2, 4)))    # after a rollback: app0 again
+open(f"{w}/installed.txt", "w").write(hashlib.sha256(ota_img).hexdigest() + " d5c39e1-heltec_v2_sx1276 ota\n")
+PY
+
 cat > "$W/run.sh" <<EOF
 set -euo pipefail
 HELTEC_V2_SOURCE_ONLY=1 source "$REPO/tools/heltec_v2.sh"
 TOOLS="$W/tools"; PORT="\${PORT:-$W/ttyFAKE}"; DEV_DIR="$W/nodev"
 verify() { :; }; fulsha() { echo "\$1"; }; dist() { echo "$W/d"; }
+files_ok() { :; }; local_ok() { :; }   # package checks are covered by the local_ok/flash-local tests
+[ -z "\${INPUT:-}" ] || exec < <(printf '%s\n' "\$INPUT")
+ORCON_INSTALLED="\${INSTALLED:-$W/installed.txt}"
 esptool() {
   case "\$*" in
+    *write_flash*) [ -n "\${WRITES:-}" ] || { echo "FORBIDDEN write/erase in precheck" >&2; exit 99; }
+        echo "\$*" >> "$W/writes.log"; off="\$(sed 's/.*write_flash \(0x[0-9a-f]*\) .*/\1/' <<<"\$*")"
+        cp "\${@: -1}" "$W/flash-\$off.bin" ;;
+    *"read_flash 0x10000 0x330000 "*) cp "$W/slot-\${APP0:-pkg}.bin" "\${@: -1}" ;;
+    *"read_flash 0x10000 "*) head -c "\${@: -2:1}" "$W/flash-0x10000.bin" > "\${@: -1}"
+        [ -z "\${BADRB:-}" ] || printf X | dd of="\${@: -1}" bs=1 seek=9 conv=notrunc 2>/dev/null ;;
+    *"read_flash 0xe000 "*) if [ -f "$W/flash-0xe000.bin" ]; then cp "$W/flash-0xe000.bin" "\${@: -1}"; else cp "\${DEVOTA:-$BOOT_APP_GOOD}" "\${@: -1}"; fi ;;
+    *read_mac*) echo "MAC: 02:00:00:00:00:08" ;;
     *image_info*) echo "Flash size: \${IMG_FS:-8MB}" ;;
     *read_mem*0x3ff5a000*) echo "0x3ff5a000 = \${SEC_CRYPT:-0x00000000}" ;;
     *read_mem*0x3ff5a018*) echo "0x3ff5a018 = \${SEC_BOOT:-0x00000000}" ;;
@@ -61,7 +95,7 @@ esptool() {
         [ -z "\${SECTOR_BAD:-}" ] || printf X | dd of="\${@: -1}" bs=1 seek=3 conv=notrunc 2>/dev/null ;;
     *read_flash*0x1000*) if [ -n "\${DEVHDR:-}" ]; then printf "\$DEVHDR" > "\${@: -1}"; else cp "$BOOT_GOOD" "\${@: -1}"; fi ;;
     *read_flash*0xe000*) cp "\${DEVOTA:-$BOOT_APP_GOOD}" "\${@: -1}" ;;
-    *"read_flash 0x340000 0x330000 "*) cp "$W/app1-\${APP1:-empty}.bin" "\${@: -1}"; return \${APP1RC:-0} ;;
+    *"read_flash 0x340000 0x330000 "*) if [ -n "\${SLOT1:-}" ]; then cp "$W/slot-\$SLOT1.bin" "\${@: -1}"; else cp "$W/app1-\${APP1:-empty}.bin" "\${@: -1}"; fi; return \${APP1RC:-0} ;;
     *write_flash*|*erase*) echo "FORBIDDEN write/erase in precheck" >&2; exit 99 ;;
     *read_flash*) cp "\${DEVPARTS:-$W/d/partitions.bin}" "\${@: -1}" ;;
   esac
@@ -77,7 +111,8 @@ expect() {   # expect <pass|fail> <name> env...
     out="$(env "$@" bash "$W/run.sh" 2>&1)"; rc=$?
     got=$([ $rc -eq 0 ] && echo pass || echo fail)
     if [ "$got" = "$want" ]; then mark=ok; else mark=FAIL; fails=$((fails + 1)); fi
-    printf '  [%4s] %-44s -> %s: %s\n' "$mark" "$name" "$got" "$(grep -E 'PRECHECK OK|FAIL:' <<<"$out" | head -1)"
+    printf '  [%4s] %-44s -> %s: %s\n' "$mark" "$name" "$got" "$(grep -E 'PRECHECK OK|RECOVERY CHECK OK|RECOVERED|FAIL:' <<<"$out" | head -1)"
+    [ -z "${SHOWWHY:-}" ] || grep -E "NO-GO|otadata\[|^app[01]:|BOOTS" <<<"$out" | sed "s/^/           /"
 }
 echo "precheck (real functions, simulated board):"
 expect pass "good board"                     HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID"
@@ -119,6 +154,46 @@ expect fail "app1 read error"                HELTEC_MAC=02:00:00:00:00:08 FLASH_
 for t in layout flags extra md5 trail short; do
     expect fail "board partition table: $t"  HELTEC_MAC=02:00:00:00:00:08 FLASH_ID="$ID" DEVPARTS="$W/$t.bin"
 done
+
+echo "recover (OTA-aware USB recovery, real functions, simulated board):"
+R=(FLASH_ID="$ID" BOARDMAC=1 LOCAL_ENV=heltec_v2_sx1276)
+rexpect() {   # rexpect <pass|fail> <name> env...: like expect, plus the exact writes made
+    rm -f "$W/writes.log" "$W"/flash-*.bin
+    expect "$@"
+    printf '         writes: %s\n' "$( [ -f "$W/writes.log" ] && sed 's/.*write_flash \(0x[0-9a-f]*\) .*/\1/' "$W/writes.log" | tr '\n' ' ' || echo none)"
+}
+wrote() {    # wrote <name> <expected write offsets>
+    local got; got="$( [ -f "$W/writes.log" ] && sed 's/.*write_flash \(0x[0-9a-f]*\) .*/\1/' "$W/writes.log" | tr '\n' ' ' | sed 's/ $//' || echo none)"
+    if [ "$got" = "$2" ]; then printf '  [  ok] %s\n' "$1: writes '$got'"; else printf '  [FAIL] %s\n' "$1: writes '$got', want '$2'"; fails=$((fails + 1)); fi
+}
+rexpect pass "check: pristine USB state"              "${R[@]}" WHAT="recover check"
+rexpect pass "check: after OTA (app1 selected)"       "${R[@]}" WHAT="recover check" DEVOTA="$W/ota-app1.bin" SLOT1=ota
+rexpect pass "check: after rollback (app1 aborted)"   "${R[@]}" WHAT="recover check" DEVOTA="$W/ota-aborted.bin" SLOT1=ota
+rexpect pass "check: OTA image + old trailing bytes"  "${R[@]}" WHAT="recover check" DEVOTA="$W/ota-app1.bin" SLOT1=otatail
+rexpect pass "check: app1 exact known board state"    "${R[@]}" WHAT="recover check" APP1=known
+rexpect fail "check: app1 known state, other board"   "${R[@]}" WHAT="recover check" APP1=known BOARDMAC= HELTEC_MAC=02:00:00:00:00:08
+rexpect fail "check: unknown image in app1"           "${R[@]}" WHAT="recover check" DEVOTA="$W/ota-app1.bin" SLOT1=unknown
+rexpect fail "check: OTA image, installed record gone" "${R[@]}" WHAT="recover check" DEVOTA="$W/ota-app1.bin" SLOT1=ota INSTALLED=/nonexistent
+rexpect fail "check: garbage in app0"                 "${R[@]}" WHAT="recover check" APP0=garbage
+rexpect fail "check: otadata selects an empty app1"   "${R[@]}" WHAT="recover check" DEVOTA="$W/ota-app1.bin"
+rexpect fail "check: board bootloader differs"        "${R[@]}" WHAT="recover check" DEVHDR='\xe9\x03\x02\x30'
+rexpect fail "check: board partition table differs"   "${R[@]}" WHAT="recover check" DEVPARTS="$W/layout.bin"
+rexpect fail "check: other board (MAC)"               "${R[@]}" WHAT="recover check" FLASH_ID="${ID/:08/:09}"
+rexpect fail "check: RF test env refused"             "${R[@]}" WHAT="recover check" LOCAL_ENV=heltec_v2_sx1276_rftest ORCON_RF_TEST_ACK="RF test image"
+rexpect fail "missing check/write mode"               "${R[@]}" WHAT="recover"
+rexpect fail "check mode never writes (WRITES allowed)" "${R[@]}" WHAT="recover check" WRITES=1 APP0=garbage
+wrote "check mode" none
+rexpect pass "write: after OTA, confirmed"            "${R[@]}" WHAT="recover write" WRITES=1 INPUT=recover DEVOTA="$W/ota-app1.bin" SLOT1=ota
+wrote "write after OTA" "0x10000 0xe000"
+if cmp -s "$W/flash-0xe000.bin" "$BOOT_APP_GOOD" && cmp -s "$W/flash-0x10000.bin" "$W/d/firmware.bin"
+then printf '  [  ok] %s\n' "write: app0 = package image, otadata = pinned boot_app0.bin"
+else printf '  [FAIL] %s\n' "write: written bytes differ"; fails=$((fails + 1)); fi
+rexpect fail "write: not confirmed (typed yes)"       "${R[@]}" WHAT="recover write" WRITES=1 INPUT=yes DEVOTA="$W/ota-app1.bin" SLOT1=ota
+wrote "unconfirmed write" none
+rexpect fail "write: app0 readback mismatch"          "${R[@]}" WHAT="recover write" WRITES=1 INPUT=recover BADRB=1 DEVOTA="$W/ota-app1.bin" SLOT1=ota
+wrote "app0 readback mismatch: otadata untouched" "0x10000"
+rexpect fail "write: unknown app1, nothing written"   "${R[@]}" WHAT="recover write" WRITES=1 INPUT=recover DEVOTA="$W/ota-app1.bin" SLOT1=unknown
+wrote "unknown app1" none
 echo "check_parts.py on the artifact table:"
 for t in good layout flags extra md5 trail short; do
     f="$W/$t.bin"; [ $t = good ] && f="$W/d/partitions.bin"
@@ -132,7 +207,7 @@ done
 L="$W/local"; mkdir -p "$L"
 cat > "$W/local.sh" <<EOF
 set -euo pipefail
-$(sed -n '/^die()/p; /^LOCAL_REQUIRED=/p; /^local_ok()/,/^}/p; /^markers()/,/^}/p' "$REPO/tools/heltec_v2.sh")
+$(sed -n '/^die()/p; /^LOCAL_REQUIRED=/p; /^LOCAL_ENVS=/p; /^RF_TEST_ENV=/p; /^RF_TEST_ACK=/p; /^env_ok()/p; /^local_ok()/,/^}/p; /^markers()/,/^}/p' "$REPO/tools/heltec_v2.sh")
 \${WHAT:-local_ok} "\$@"
 EOF
 mkpkg() {   # mkpkg <name> <mutation>: evidence dir + package dir, then one mutation
@@ -143,7 +218,7 @@ mkpkg() {   # mkpkg <name> <mutation>: evidence dir + package dir, then one muta
 import hashlib, json, os, sys
 e, d, sha, env, mut = sys.argv[1:]
 names = os.environ["LOCAL_REQUIRED"].split()
-names += [f"image-{env}", f"partitions-{env}", f"elf-{env}"]
+names += [f"image-{env}", f"partitions-{env}", f"elf-{env}", f"rollback-hook-{env}"]
 checks = [{"name": n, "result": "PASS", "exit": 0} for n in names]
 if mut == "fail-row": checks.append({"name": "rx", "result": "FAIL"})
 if mut == "not-tested": checks.append({"name": "asan", "result": "NOT TESTED"})
