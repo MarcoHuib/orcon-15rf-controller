@@ -89,6 +89,34 @@ int main() {
     { const auto dry = image({COMMIT, "SX1276 direct RX (TX disabled)", "RX-ONLY TEST FIRMWARE", "tx-poc-dryrun", SIGNED_OTA_MARKER});
       Manifest x; parseManifest(manifest("rx-only", "heltec_v2_sx1276", false, (unsigned)dry.size()).c_str(), x);
       CHECK(!strcmp(checkImage(x, scan(dry, 300), (uint32_t)dry.size(), x.sha256), "image-not-rx-only"), "dry-run image not accepted as RX-only"); }
+    // ---- the daily-use control image: its own variant, env, TX statement and marker ----
+    const auto ctl = image({COMMIT, "SX1276 direct RX + txpoc packet TX (CONTROL: max 10/min, 60/h)", SIGNED_OTA_MARKER});
+    { Manifest x;
+      CHECK(!parseManifest(manifest("control", "heltec_v2_sx1276_control", true, (unsigned)ctl.size()).c_str(), x) &&
+            x.variant == Variant::Control && !strcmp(variantName(x.variant), "control"), "control manifest parsed");
+      CHECK(!checkManifest(x, MAC, NONCE, 0x330000), "control manifest for this board accepted");
+      for (size_t chunk : {1u, 63u, 64u, 65u, 256u, 1436u}) {
+          const Scanner s = scan(ctl, chunk);
+          CHECK(s.control && s.txCode && !s.rfTest && !s.rxRadio && !s.dryRun, "control marker found for every chunk size");
+          CHECK(!checkImage(x, s, (uint32_t)ctl.size(), x.sha256), "control image accepted");
+      } }
+    { Manifest x; parseManifest(manifest("control", "heltec_v2_sx1276_control", false).c_str(), x);
+      CHECK(!strcmp(checkManifest(x, MAC, NONCE, 0x330000), "variant-mismatch"), "control without allow_tx refused"); }
+    { Manifest x; parseManifest(manifest("control", "heltec_v2_sx1276_rftest", true).c_str(), x);
+      CHECK(!strcmp(checkManifest(x, MAC, NONCE, 0x330000), "variant-mismatch"), "control label on the RF test env refused"); }
+    { Manifest x; parseManifest(manifest("rf-test", "heltec_v2_sx1276_control", true).c_str(), x);
+      CHECK(!strcmp(checkManifest(x, MAC, NONCE, 0x330000), "variant-mismatch"), "RF test label on the control env refused"); }
+    { Manifest x; parseManifest(manifest("control", "heltec_v2_sx1276_control", true, (unsigned)rf.size()).c_str(), x);
+      CHECK(!strcmp(checkImage(x, scan(rf, 300), (uint32_t)rf.size(), x.sha256), "image-not-control"), "capped RF test image labelled control refused"); }
+    { Manifest x; parseManifest(manifest("control", "heltec_v2_sx1276_control", true, (unsigned)rx.size()).c_str(), x);
+      CHECK(!strcmp(checkImage(x, scan(rx, 300), (uint32_t)rx.size(), x.sha256), "image-not-control"), "RX-only image labelled control refused"); }
+    { const auto uncapped = image({COMMIT, "SX1276 direct RX + txpoc packet TX", SIGNED_OTA_MARKER});
+      Manifest x; parseManifest(manifest("control", "heltec_v2_sx1276_control", true, (unsigned)uncapped.size()).c_str(), x);
+      CHECK(!strcmp(checkImage(x, scan(uncapped, 300), (uint32_t)uncapped.size(), x.sha256), "image-not-control"), "unbudgeted RF image refused"); }
+    { Manifest x; parseManifest(manifest("rx-only", "heltec_v2_sx1276", false, (unsigned)ctl.size()).c_str(), x);
+      CHECK(!strcmp(checkImage(x, scan(ctl, 300), (uint32_t)ctl.size(), x.sha256), "image-not-rx-only"), "control image labelled RX-only refused (no silent TX)");
+      Manifest y; parseManifest(manifest("rf-test", "heltec_v2_sx1276_rftest", true, (unsigned)ctl.size()).c_str(), y);
+      CHECK(!strcmp(checkImage(y, scan(ctl, 300), (uint32_t)ctl.size(), y.sha256), "image-not-rf-test"), "control image labelled RF test refused"); }
     printf("ota policy: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

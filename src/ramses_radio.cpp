@@ -1,5 +1,6 @@
 // ramses_radio.cpp — see ramses_radio.h
 #include "ramses_radio.h"
+#include "tx_budget.h"
 #include "config.h"
 #if ORCON_TX_POC
 #include "tx_poc_runtime.h"
@@ -236,6 +237,9 @@ static rxs::FrameQueue<16, SyncInfo> g_sq;      // RX task -> loop: syncs for th
 #define ORCON_STR2(x) #x
 #define ORCON_STR(x) ORCON_STR2(x)
 const char* name() { return "SX1276 direct RX + txpoc packet TX (RF TEST: max " ORCON_STR(ORCON_TX_MAX_PER_BOOT) " packets per boot)"; }
+#elif ORCON_TX_RF_ENABLE && ORCON_TX_CONTROL
+static_assert(txbudget::PER_MINUTE == 10 && txbudget::PER_HOUR == 60, "keep the control marker in step with the RF budget");
+const char* name() { return "SX1276 direct RX + txpoc packet TX (CONTROL: max 10/min, 60/h)"; }
 #elif ORCON_TX_RF_ENABLE
 const char* name() { return "SX1276 direct RX + txpoc packet TX"; }
 #else
@@ -451,6 +455,8 @@ static bool restoreNow() {
 
 // Outcome of the last started packet, completed inside txBegin (see there).
 static bool g_finished = false, g_sentOk = false, g_restoredOk = false;
+static uint32_t g_lastAirUs = 0;   // TX start to PacketSent/abort: what the RF budget charges
+uint32_t txLastAirUs() { return g_lastAirUs; }
 
 bool txBegin(const uint8_t* onair, size_t n) {
     // Fixed-length packets up to TX_MAX_BYTES (8-bit payload length; the 1FC9 offer is
@@ -458,6 +464,7 @@ bool txBegin(const uint8_t* onair, size_t n) {
     if (!onair || n == 0 || n > TX_MAX_BYTES || g_txActive) return false;
     g_txActive = true;  // exclude normal UART decoding until restore, also on failure
     g_finished = g_sentOk = g_restoredOk = false;
+    g_lastAirUs = 0;
     for (size_t i = 0; i < sizeof(TX_REGS); ++i) g_saved[i] = g_mod.SPIreadRegister(TX_REGS[i]);
     g_savedRx = true;
     const uint8_t fifoLen = n > FIFO_BYTES ? FIFO_BYTES : (uint8_t)n;   // RadioLib's own length check
@@ -503,6 +510,7 @@ bool txBegin(const uint8_t* onair, size_t n) {
         }
         if ((uint32_t)(micros() - t0) > budget) { ok = false; break; }
     }
+    g_lastAirUs = (uint32_t)(micros() - t0);   // an upper bound: includes the poll loop's latency
     g_sentOk = ok;
     g_restoredOk = restoreNow();
     g_finished = true;

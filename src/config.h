@@ -153,7 +153,7 @@
 #define WIFI_SSID        ""            // empty => start SoftAP setup portal
 #define WIFI_PASSWORD    ""
 #define WIFI_AP_NAME     "Orcon15RF-Setup"
-#define WIFI_AP_PASS     "orconsetup"  // >= 8 chars
+#define WIFI_AP_PASS     "orconsetup"  // ONLY the OLED-less 4848; boards with an OLED use a random per-device password
 
 #if ORCON_TX_POC
 #define MQTT_ENABLED     0          // no broker, discovery or command route in phase 1
@@ -192,4 +192,20 @@
 #define ORCON_SIGNED_OTA 1
 #else
 #define ORCON_SIGNED_OTA 0
+#endif
+// Web login (web_auth / auth_store): password, sessions and CSRF for every control and settings
+// route. Needs the signed-OTA key: a password is only (re)set with a code the device issues for
+// a request signed with that key. Other boards keep the per-boot token of the setup page.
+#ifndef ORCON_WEB_AUTH
+#if ORCON_SIGNED_OTA
+#define ORCON_WEB_AUTH 1
+#else
+#define ORCON_WEB_AUTH 0
+#endif
+#endif
+#if ORCON_WEB_AUTH && !ORCON_SIGNED_OTA
+#error "ORCON_WEB_AUTH needs ORCON_SIGNED_OTA (password recovery is signed with the OTA key)"
+#endif
+#if ORCON_TX_CONTROL && !ORCON_WEB_AUTH
+#error "the control image transmits for anyone who can use its web page: it requires the web login"
 #endif

@@ -5,7 +5,9 @@
 
 namespace otap {
 
-const char* variantName(Variant v) { return v == Variant::RxOnly ? "rx-only" : v == Variant::RfTest ? "rf-test" : "none"; }
+const char* variantName(Variant v) {
+    return v == Variant::RxOnly ? "rx-only" : v == Variant::RfTest ? "rf-test" : v == Variant::Control ? "control" : "none";
+}
 
 static bool hexOk(const char* s, size_t n) {
     if (strlen(s) != n) return false;
@@ -34,7 +36,8 @@ const char* parseManifest(const char* json, Manifest& m) {
     for (size_t i = 0; i < 17; ++i) m.mac[i] = (char)tolower((unsigned char)mac[i]);
     strcpy(m.env, env); strcpy(m.commit, commit); strcpy(m.nonce, nonce);
     for (int i = 0; i < 32; ++i) m.sha256[i] = uint8_t(nib(sha[2 * i]) << 4 | nib(sha[2 * i + 1]));
-    m.variant = !strcmp(var, "rx-only") ? Variant::RxOnly : !strcmp(var, "rf-test") ? Variant::RfTest : Variant::None;
+    m.variant = !strcmp(var, "rx-only") ? Variant::RxOnly : !strcmp(var, "rf-test") ? Variant::RfTest :
+                !strcmp(var, "control") ? Variant::Control : Variant::None;
     if (m.variant == Variant::None) return "variant-not-approved";
     return nullptr;
 }
@@ -54,6 +57,7 @@ const char* checkManifest(const Manifest& m, const char* ownMac, const char* iss
     // Each approved variant has exactly one env and one TX statement; RX-only never says TX.
     if (m.variant == Variant::RxOnly && (strcmp(m.env, "heltec_v2_sx1276") || m.allowTx)) return "variant-mismatch";
     if (m.variant == Variant::RfTest && (strcmp(m.env, "heltec_v2_sx1276_rftest") || !m.allowTx)) return "variant-mismatch";
+    if (m.variant == Variant::Control && (strcmp(m.env, "heltec_v2_sx1276_control") || !m.allowTx)) return "variant-mismatch";
     return nullptr;
 }
 
@@ -63,6 +67,7 @@ static const uint8_t XK = 0x5A;
 static const uint8_t P_RX[] = {0x09,0x02,0x6b,0x68,0x6d,0x6c,0x7a,0x3e,0x33,0x28,0x3f,0x39,0x2e,0x7a,0x08,0x02,0x7a,0x72,0x0e,0x02,0x7a,0x3e,0x33,0x29,0x3b,0x38,0x36,0x3f,0x3e,0x73};
 static const uint8_t P_BANNER[] = {0x08,0x02,0x77,0x15,0x14,0x16,0x03,0x7a,0x0e,0x1f,0x09,0x0e,0x7a,0x1c,0x13,0x08,0x17,0x0d,0x1b,0x08,0x1f};
 static const uint8_t P_RF[] = {0x09,0x02,0x6b,0x68,0x6d,0x6c,0x7a,0x3e,0x33,0x28,0x3f,0x39,0x2e,0x7a,0x08,0x02,0x7a,0x71,0x7a,0x2e,0x22,0x2a,0x35,0x39,0x7a,0x2a,0x3b,0x39,0x31,0x3f,0x2e,0x7a,0x0e,0x02,0x7a,0x72,0x08,0x1c,0x7a,0x0e,0x1f,0x09,0x0e,0x60,0x7a,0x37,0x3b,0x22,0x7a};
+static const uint8_t P_CTL[] = {0x2e,0x22,0x2a,0x35,0x39,0x7a,0x2a,0x3b,0x39,0x31,0x3f,0x2e,0x7a,0x0e,0x02,0x7a,0x72,0x19,0x15,0x14,0x0e,0x08,0x15,0x16,0x60,0x7a};
 static const uint8_t P_TX[] = {0x2e,0x22,0x2a,0x35,0x39,0x7a,0x2a,0x3b,0x39,0x31,0x3f,0x2e,0x7a,0x0e,0x02};
 static const uint8_t P_DRY[] = {0x2e,0x22,0x77,0x2a,0x35,0x39,0x77,0x3e,0x28,0x23,0x28,0x2f,0x34};
 static const uint8_t P_L0[] = {0x1c,0x33,0x28,0x37,0x2d,0x3b,0x28,0x3f,0x7a,0x2f,0x2a,0x3e,0x3b,0x2e,0x3f,0x7a,0x72,0x15,0x0e,0x1b,0x73};
@@ -93,6 +98,7 @@ static bool has(const uint8_t* b, size_t n, const Pat& x) {
 }
 void Scanner::match(const uint8_t* b, size_t n) {
     rxRadio |= has(b, n, PAT(P_RX)); rxBanner |= has(b, n, PAT(P_BANNER)); rfTest |= has(b, n, PAT(P_RF));
+    control |= has(b, n, PAT(P_CTL));
     txCode |= has(b, n, PAT(P_TX)); dryRun |= has(b, n, PAT(P_DRY)); signedOta |= has(b, n, SIGNED_OTA_MARKER);
     for (const Pat& p : LEGACY) legacyOta |= has(b, n, p);
     if (commit_[0]) commitStamp |= has(b, n, commit_);
@@ -120,10 +126,12 @@ const char* checkImage(const Manifest& m, const Scanner& s, uint32_t received, c
     if (!s.commitStamp) return "commit-not-in-image";
     if (!s.signedOta) return "image-without-signed-ota";      // would take away the WiFi update path
     if (s.legacyOta) return "image-has-unauthenticated-ota";
-    if (m.variant == Variant::RxOnly && !(s.rxRadio && s.rxBanner && !s.txCode && !s.rfTest && !s.dryRun))
+    if (m.variant == Variant::RxOnly && !(s.rxRadio && s.rxBanner && !s.txCode && !s.rfTest && !s.control && !s.dryRun))
         return "image-not-rx-only";
-    if (m.variant == Variant::RfTest && !(s.rfTest && s.txCode && !s.rxRadio && !s.dryRun))
+    if (m.variant == Variant::RfTest && !(s.rfTest && s.txCode && !s.control && !s.rxRadio && !s.dryRun))
         return "image-not-rf-test";
+    if (m.variant == Variant::Control && !(s.control && s.txCode && !s.rfTest && !s.rxRadio && !s.dryRun))
+        return "image-not-control";
     return nullptr;
 }
 

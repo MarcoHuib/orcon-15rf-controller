@@ -99,9 +99,11 @@ def analyse(elf, env, bindir):
             reverse.setdefault(callee, set()).add(caller)
     reaching = closure(tx, reverse) - set(tx)
     outside = sorted(n for n in reaching if not RADIOLIB.match(n))
-    # The one-shot RF test image has exactly one approved path to the air; every other env none.
+    # The two approved RF images (capped RF test, daily-use control) have exactly one path to the
+    # air; every other env none.
     RF_PATH = {'radio::sx1276::txBegin(unsigned char const*, unsigned int)', 'txpoc::Sx1276Backend::start(unsigned int)'}
-    allowed = RF_PATH if env == 'heltec_v2_sx1276_rftest' else set()
+    RF_ENVS = ('heltec_v2_sx1276_rftest', 'heltec_v2_sx1276_control')
+    allowed = RF_PATH if env in RF_ENVS else set()
     problems = [f'non-RadioLib function reaches transmit: {n}' for n in outside if n not in allowed]
     send = [n for n in names if n.startswith('radio::sendFrame(')]
     if send:
@@ -125,11 +127,11 @@ def analyse(elf, env, bindir):
             problems.append('DryRunBackend not linked')
         leak = sorted(n for n in closure(dry, edges) if RADIO_OR_SPI.search(n))
         problems += [f'DryRunBackend reaches radio/SPI: {n}' for n in leak]
-    elif env == 'heltec_v2_sx1276_rftest':
+    elif env in RF_ENVS:
         if backends != ['vtable for txpoc::Sx1276Backend']:
-            problems.append(f'RF test image must link only Sx1276Backend: {backends}')
+            problems.append(f'RF image must link only Sx1276Backend: {backends}')
         if set(outside) != RF_PATH:
-            problems.append(f'RF test transmit path is not exactly {sorted(RF_PATH)}: {outside}')
+            problems.append(f'RF transmit path is not exactly {sorted(RF_PATH)}: {outside}')
     else:
         problems.append(f'env {env} is not a Heltec V2 image')
 

@@ -38,6 +38,7 @@ run rxpipe   -pthread -I src test/test_rxpipe.cpp src/rx_stream.cpp src/ramses_c
 run netcfg   -I src test/test_netcfg.cpp
 run oled     -I src test/test_oled_power.cpp
 run tx_poc   -pthread -Wall -Wextra -Werror -I src test/test_tx_poc.cpp src/tx_poc.cpp src/ramses_codec.cpp src/orcon_frames.cpp
+run tx_budget -Wall -Wextra -Werror -I src test/test_tx_budget.cpp src/tx_budget.cpp
 run profiles -Wall -Wextra -Werror -I src test/test_remote_profiles.cpp src/remote_profiles.cpp src/setup_flow.cpp
 run setup    -Wall -Wextra -Werror -I src test/test_setup.cpp src/setup_flow.cpp
 run rf_console -Wall -Wextra -Werror -I src test/test_rf_console.cpp src/rf_console.cpp src/ramses_codec.cpp
@@ -45,13 +46,16 @@ run rf_console -Wall -Wextra -Werror -I src test/test_rf_console.cpp src/rf_cons
 # web-control (txpoc layer). Needs the pinned ArduinoJson that `pio run -e heltec_v2_sx1276` fetches.
 AJ=.pio/libdeps/heltec_v2_sx1276/ArduinoJson/src
 run ota_policy -Wall -Wextra -Werror -I src -I $AJ test/test_ota_policy.cpp src/ota_policy.cpp
-WEB="-Wall -Wextra -Werror -DARDUINOJSON_ENABLE_ARDUINO_STRING=1 -I test/shim_web -I src -I $AJ test/test_setup_web.cpp src/setup_web.cpp src/setup_flow.cpp src/remote_profiles.cpp src/rf_console.cpp $ORCON"
+run web_auth -Wall -Wextra -Werror -I src -I $AJ test/test_web_auth.cpp src/web_auth.cpp
+WEB="-Wall -Wextra -Werror -DARDUINOJSON_ENABLE_ARDUINO_STRING=1 -I test/shim_web -I src -I $AJ test/test_setup_web.cpp src/setup_web.cpp src/setup_flow.cpp src/remote_profiles.cpp src/rf_console.cpp src/web_auth.cpp $ORCON"
 if [ -d "$AJ" ]; then
     run setup_web_rx -DRADIO_SX1276=1 -DRX_ONLY=1 $WEB
+    run setup_web_rx_v2 -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 $WEB          # RX-only rollback image: web login
     run setup_web_tx -DRADIO_CC1101_ASYNC=1 -DRX_ONLY=0 $WEB
     run setup_web_webctl -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 $WEB src/tx_poc.cpp
     run setup_web_webctl_rf -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 -DORCON_TX_RF_ENABLE=1 $WEB src/tx_poc.cpp
     run setup_web_rftest -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 -DORCON_TX_RF_ENABLE=1 -DORCON_TX_MAX_PER_BOOT=50 -DORCON_TX_PAIR=1 $WEB src/tx_poc.cpp
+    run setup_web_control -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 -DORCON_TX_RF_ENABLE=1 -DORCON_TX_PAIR=1 -DORCON_TX_CONTROL=1 $WEB src/tx_poc.cpp
 else
     echo "setup_web: NOT TESTED (no $AJ; run 'pio run -e heltec_v2_sx1276' once)"
 fi

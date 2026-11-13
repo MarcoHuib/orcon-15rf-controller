@@ -53,6 +53,9 @@ void setup() {
     delay(200);
     Serial.printf("\nOrcon 15RF emulator starting... fw=%s\n", FW_VERSION);
 
+#if ORCON_TX_POC
+    txpoc::budgetBegin();      // the RF budget history kept in RTC memory, before any TX path runs
+#endif
     display::begin();          // init the panel (if any) before the radio takes the shared SPI
 
     if (!radio::begin()) {

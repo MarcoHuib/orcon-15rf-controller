@@ -59,6 +59,8 @@ static bool g_hold = false;   // rollback test: this trial boot refuses to confi
 static const char* variantOfThisBuild() {
 #if ORCON_TX_MAX_PER_BOOT
     return "rf-test";
+#elif ORCON_TX_CONTROL
+    return "control";
 #elif RX_ONLY && !ORCON_TX_POC
     return "rx-only";
 #else
@@ -84,7 +86,7 @@ static const char* stateName(const esp_partition_t* p) {
         case ESP_OTA_IMG_ABORTED: return "aborted"; default: return "undefined";
     }
 }
-static void ownMac(char out[18]) {
+void ownMac(char out[18]) {
     uint8_t m[6] = {0};
     esp_read_mac(m, ESP_MAC_WIFI_STA);
     snprintf(out, 18, "%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5]);
@@ -152,7 +154,7 @@ static void handleNonce() {
     reply(200, b);
 }
 
-static bool verifySignature(const char* text, size_t n, const char* sigHex) {
+bool verifySignature(const char* text, size_t n, const char* sigHex) {
     const size_t hexLen = strlen(sigHex);
     if (hexLen < 16 || hexLen > 2 * 80 || hexLen % 2) return false;
     uint8_t sig[80]; const size_t sigLen = hexLen / 2;
