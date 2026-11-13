@@ -793,6 +793,14 @@ void consumeTxResults(uint32_t now) {
                   (unsigned long)loggedReq, keyOfMode(ts.result.request.input.mode),
                   ts.result.rfSent ? "verzonden (RF)" : SIMULATED ? "dry-run, niet verzonden" : "niet verzonden",
                   txpoc::errorName(ts.result.error), diag ? "mislukt 0x" : "ok ", diag, (unsigned long)txpoc::rfTxStarts());
+        // Correlation evidence: compare these t values with the RX lines' sync times.
+        if (ts.result.rfSent && ts.reported)
+            g_con.add(rfcon::INFO, now, "TX #%lu %s: TX-start t=%lu, unitmelding t=%lu (+%lu ms)",
+                      (unsigned long)loggedReq, txpoc::phaseName(ts.phase), (unsigned long)ts.result.startedMs,
+                      (unsigned long)ts.reportMs, (unsigned long)(ts.reportMs - ts.result.startedMs));
+        else if (ts.result.rfSent)
+            g_con.add(rfcon::INFO, now, "TX #%lu %s: TX-start t=%lu, geen bruikbare unitmelding",
+                      (unsigned long)loggedReq, txpoc::phaseName(ts.phase), (unsigned long)ts.result.startedMs);
     }
     const bool sentOk = ts.result.error == txpoc::Error::None && (ts.result.rfSent || SIMULATED);
     if ((g_pendOffer || g_pendAck) && !ts.busy && ts.result.request.kind != (uint8_t)txpoc::FrameKind::Mode) {

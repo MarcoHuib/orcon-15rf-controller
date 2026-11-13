@@ -145,6 +145,7 @@ static void ownerTrace() {
     owner.tick(1025,true);CHECK(owner.step()==Step::Idle);
     Result result;CHECK(ex.results.pop(result)&&result.rxRestored&&!result.rfSent&&result.touched);
     CHECK(f.prepares==1&&f.starts==1&&f.cleanups==1&&f.restores==1);
+    CHECK(result.startedMs==1005&&result.sentMs==1010);   // the pass in which start() ran
     // Expiration between dequeue and preparation still forbids starting work.
     Exchange late;Fake lf;Owner lo(late,lf);CHECK(late.requests.push(req()));
     lo.tick(1499,true);lo.tick(1500,true);
@@ -243,15 +244,15 @@ static void transactions() {
     CHECK(sub(fc,input(1,2),ADMIT)==Admission::Busy);
     Request r;CHECK(full.requests.pop(r)&&r.ids.fan==ids().fan);
 }
-// A future RF result as the owner would publish it: sent at ADMIT+10, RX back at ADMIT+30.
-static const uint32_t SENT=ADMIT+10, RESTORED=ADMIT+30, LAST=SENT+CONFIRM_MS-1;
+// An RF result as the owner publishes it: start() pass at ADMIT+2, sent at ADMIT+10, RX back at ADMIT+30.
+static const uint32_t STARTED=ADMIT+2, SENT=ADMIT+10, RESTORED=ADMIT+30, LAST=SENT+CONFIRM_MS-1;
 static Request admit(Exchange& ex,Controller& c,uint8_t prior=1,uint8_t mode=2) {
     prime(c,T0,prior);
     CHECK(sub(c,input(1,mode),ADMIT)==Admission::Accepted);
     Request r;CHECK(ex.requests.pop(r));CHECK(r.prior==prior);return r;
 }
 static void publishSent(Exchange& ex,Controller& c,const Request& r) {
-    Result s;s.request=r;s.touched=s.rfSent=s.rxRestored=true;s.sentMs=SENT;s.restoredMs=RESTORED;
+    Result s;s.request=r;s.touched=s.rfSent=s.rxRestored=true;s.startedMs=STARTED;s.sentMs=SENT;s.restoredMs=RESTORED;
     CHECK(ex.results.push(s));c.tick(RESTORED+10);
 }
 static void armSent(Exchange& ex,Controller& c,uint8_t prior=1,uint8_t mode=2) {
@@ -304,8 +305,8 @@ static void correlation() {
     // Unit keeps reporting its prior stand: unchanged. Any third stand: ambiguous.
     CHECK(outcome([](Controller& c){see(c,statusFrame(ids().fan,1),RESTORED+100);})==Phase::Unchanged);
     CHECK(outcome([](Controller& c){see(c,statusFrame(ids().fan,3),RESTORED+100);})==Phase::Ambiguous);
-    // Window edges: before send/restore and at the deadline are ignored; LAST still counts.
-    CHECK(outcome([](Controller& c){see(c,statusFrame(ids().fan,2),SENT-1,RESTORED+50);
+    // Window edges: at/before the TX-start pass (fail closed) and at the deadline are ignored; LAST counts.
+    CHECK(outcome([](Controller& c){see(c,statusFrame(ids().fan,2),STARTED,RESTORED+50);
         see(c,statusFrame(ids().fan,2),SENT+5,RESTORED+50);see(c,statusFrame(ids().fan,2),SENT+CONFIRM_MS);})==Phase::Ambiguous);
     CHECK(outcome([](Controller& c){see(c,statusFrame(ids().fan,2),LAST);})==Phase::UnitReported);
     // Missing or future receive time is never evidence.
@@ -590,6 +591,72 @@ static void webCtl() {
     for(uint32_t t=5350;t<5600;t+=5){bo.tick(t,true);bc.tick(t);}
     CHECK(bc.status().phase==Phase::DryRunComplete);
 }
+// The RF owner transmits and restores RX inside start(); the unit answers ~20 ms later, so its
+// 31D9 is often drained while the controller is still Queued (result not yet published).
+// Admit prior 1 -> stand 2, run `queued` while Queued, publish, run `after`, expire the window.
+static Phase earlyOutcome(void (*queued)(Controller&),bool sent=true,Error err=Error::None,
+                          void (*after)(Controller&)=nullptr) {
+    Exchange ex;Controller c(ex);Request q=admit(ex,c);queued(c);CHECK(c.status().phase==Phase::Queued);
+    Result s;s.request=q;s.touched=s.rxRestored=true;s.rfSent=sent;s.error=err;
+    s.startedMs=STARTED;s.sentMs=SENT;s.restoredMs=RESTORED;
+    CHECK(ex.results.push(s));c.tick(RESTORED+10);
+    if(after) after(c);
+    c.tick(SENT+CONFIRM_MS+EXPIRY_GRACE_MS);return c.status().phase;
+}
+static void earlyReports() {
+    {   // Field replay, 2026-11-13 16:16:54Z: board ms from the RF console (no IDs). Remote Auto
+        // 22F1 and the unit's 31D9 auto at 11496587/11496604; one stand-3 send; the unit's 31D9
+        // stand 3 at 11607080 and 11607642; TX result consumed at 11607109. After start the
+        // owner needs >= 4 passes (5 ms) plus 11 ms airtime, so start <= 11607078 < 11607080.
+        const uint32_t S=11607061;
+        Exchange ex;Controller c(ex);
+        see(c,remoteFrame(4),11496587);see(c,statusFrame(ids().fan,4),11496604);
+        CHECK(c.submitCtl(3,4,ids(),true,true,true,S-6)==Admission::Accepted);
+        Request q;CHECK(ex.requests.pop(q)&&q.prior==4);
+        see(c,statusFrame(ids().fan,3),11607080);              // drained while still Queued
+        CHECK(c.status().phase==Phase::Queued&&!c.status().reported);
+        Result r;r.request=q;r.touched=r.rfSent=r.rxRestored=true;r.startedMs=S;r.sentMs=S+16;r.restoredMs=S+26;
+        CHECK(ex.results.push(r));c.tick(11607109);
+        CHECK(c.status().phase==Phase::AwaitUnit);             // before the fix: Ambiguous here
+        see(c,statusFrame(ids().fan,3),11607642);
+        c.tick(r.sentMs+CONFIRM_MS+EXPIRY_GRACE_MS);
+        CHECK(c.status().phase==Phase::UnitReported&&c.status().reported&&c.status().reportMs==11607080);
+    }
+    // Drained while Queued, received after the start pass: evidence like any in-window report.
+    CHECK(earlyOutcome([](Controller& c){see(c,statusFrame(ids().fan,2),STARTED+1);})==Phase::UnitReported);
+    CHECK(earlyOutcome([](Controller& c){see(c,statusFrame(ids().fan,1),STARTED+1);})==Phase::Unchanged);
+    // Never a confirmation: requested stand in the start pass itself or before it (someone else
+    // changed it before our frame), a third stand, more early reports than kept, a remote press
+    // in the guard window, or no transmission at all.
+    CHECK(earlyOutcome([](Controller& c){see(c,statusFrame(ids().fan,2),STARTED);})==Phase::Ambiguous);
+    CHECK(earlyOutcome([](Controller& c){see(c,statusFrame(ids().fan,2),STARTED-1);
+        see(c,statusFrame(ids().fan,2),STARTED+5);})==Phase::Ambiguous);
+    CHECK(earlyOutcome([](Controller& c){see(c,statusFrame(ids().fan,3),STARTED+1);})==Phase::Ambiguous);
+    CHECK(earlyOutcome([](Controller& c){see(c,statusFrame(ids().fan,2),STARTED+1);},true,Error::None,
+        [](Controller& c){see(c,statusFrame(ids().fan,3),RESTORED+100);})==Phase::Ambiguous);
+    CHECK(earlyOutcome([](Controller& c){for(uint32_t i=1;i<=4;i++)see(c,statusFrame(ids().fan,2),STARTED+i);})==Phase::UnitReported);
+    CHECK(earlyOutcome([](Controller& c){for(uint32_t i=1;i<=5;i++)see(c,statusFrame(ids().fan,2),STARTED+i);})==Phase::Ambiguous);
+    CHECK(earlyOutcome([](Controller& c){see(c,remoteFrame(2),STARTED-100);
+        see(c,statusFrame(ids().fan,2),STARTED+1);})==Phase::Ambiguous);
+    CHECK(earlyOutcome([](Controller& c){see(c,statusFrame(ids().fan,2),STARTED+1);},false,Error::Send)==Phase::Failed);
+    CHECK(earlyOutcome([](Controller& c){see(c,statusFrame(ids().fan,2),STARTED+1);},false)==Phase::DryRunComplete);
+    // Received before acceptance, drained late: only the prior state, never evidence.
+    CHECK(earlyOutcome([](Controller& c){see(c,statusFrame(ids().fan,2),ADMIT-1,ADMIT+1);})==Phase::NotConfirmed);
+    {   // Early reports never leak into the next transaction (here: from a bind offer).
+        Exchange ex;Controller c(ex);prime(c,T0,1);
+        CHECK(c.submitBind((uint8_t)FrameKind::BindOffer,ids(),true,true,ADMIT)==Admission::Accepted);
+        see(c,statusFrame(ids().fan,2),ADMIT+3);see(c,statusFrame(ids().fan,1),ADMIT+4);
+        Request q;CHECK(ex.requests.pop(q));
+        Result b;b.request=q;b.touched=b.rfSent=b.rxRestored=true;b.startedMs=ADMIT+1;b.sentMs=ADMIT+5;b.restoredMs=ADMIT+9;
+        CHECK(ex.results.push(b));c.tick(ADMIT+20);CHECK(!c.status().busy);
+        const uint32_t A2=ADMIT+RATE_CTL_MS;
+        CHECK(c.submitCtl(3,4,ids(),true,true,true,A2)==Admission::Accepted);
+        CHECK(ex.requests.pop(q)&&q.prior==1);
+        Result m;m.request=q;m.touched=m.rfSent=m.rxRestored=true;m.startedMs=A2+2;m.sentMs=A2+10;m.restoredMs=A2+30;
+        CHECK(ex.results.push(m));c.tick(A2+40);CHECK(c.status().phase==Phase::AwaitUnit);
+        c.tick(m.sentMs+CONFIRM_MS+EXPIRY_GRACE_MS);CHECK(c.status().phase==Phase::NotConfirmed&&!c.status().reported);
+    }
+}
 static void independentRegressions() {
     { Exchange ex; Controller c(ex); prime(c,T0);
       orcon::Ids other=ids(); other.fan=NEIGHBOUR_UNIT;
@@ -652,10 +719,10 @@ static void independentRegressions() {
       Exchange ex;Controller c(ex);const uint32_t start=0xfffff000u;
       prime(c,start);const uint32_t a=start+REMOTE_GUARD_MS+100;
       CHECK(sub(c,input(1,2),a)==Admission::Accepted);Request q;CHECK(ex.requests.pop(q));
-      Result r;r.request=q;r.touched=r.rxRestored=r.rfSent=true;r.sentMs=a+10;r.restoredMs=a+30;
+      Result r;r.request=q;r.touched=r.rxRestored=r.rfSent=true;r.startedMs=a+2;r.sentMs=a+10;r.restoredMs=a+30;
       CHECK(ex.results.push(r));c.consumeResult(r.restoredMs);see(c,statusFrame(ids().fan,2),r.sentMs+CONFIRM_MS-1);
       c.tick(r.sentMs+CONFIRM_MS+EXPIRY_GRACE_MS);CHECK(c.status().phase==Phase::UnitReported);
     }
 }
-int main(){independentRegressions();golden();bindHandshake();webCtl();schema();faults();ownerTrace();dryRunFaults();transactions();correlation();identity();health();security();interleavings();concurrency();
+int main(){independentRegressions();earlyReports();golden();bindHandshake();webCtl();schema();faults();ownerTrace();dryRunFaults();transactions();correlation();identity();health();security();interleavings();concurrency();
     printf("TX-PoC: %d checks, %d failures\n",checks,fails);return fails?1:0;}

@@ -496,7 +496,9 @@ int main() {
     }
     { uint32_t cc = 0; const std::string all = console(&cc);
       CHECK(has(all, "INFO|TX #") && has(all, "stand 2: verzonden (RF), fout none, RX-herstel ok"),
-            "console: each finished TX transaction leaves one line (sent, error, RX restore) for remote diagnosis"); }
+            "console: each finished TX transaction leaves one line (sent, error, RX restore) for remote diagnosis");
+      CHECK(has(all, " unit-reported-mode: TX-start t=") && has(all, ", unitmelding t=") && has(all, " ms)"),
+            "console: on-air TX also logs its start pass and the unit's report time (correlation evidence)"); }
     // away + auto also work; a remote press during the guard is refused.
     txpoc::s_rf.onair = false;
     g_ms += txpoc::RATE_CTL_MS;

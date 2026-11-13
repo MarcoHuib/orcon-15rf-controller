@@ -137,7 +137,7 @@ void Owner::tick(uint32_t now,bool rxHealthy) {
             result_.touched=true; // from here a hardware backend may have changed radio state
             if(!port_.prepare(result_.request,result_.bytes)) fail(Error::Prepare);
             else if(!port_.start(now)) fail(Error::Start);
-            else step_=Step::Simulate;
+            else { result_.startedMs=now; step_=Step::Simulate; }
             break;
         case Step::Simulate: {
             if(due(now,deadline_)) { fail(Error::SendTimeout); break; }
@@ -176,6 +176,7 @@ Admission Controller::begin(Request& request,uint32_t now) {
     status_.acceptedMs=now;
     acceptedMs_=lastAcceptedMs_=now; haveAccepted_=true; ownerTimedOut_=false;
     priorChanged_=false; observed_=Phase::NotConfirmed; observedMs_=0;
+    earlyN_=0; status_.reported=false; status_.reportMs=0;
     return Admission::Accepted;
 }
 Admission Controller::submit(Input input,const orcon::Ids& ids,bool known,bool ready,bool identityClear,uint32_t now) {
@@ -257,7 +258,8 @@ void Controller::consumeResult(uint32_t now) {
     } else if(result.rfSent) {
         if(result.request.kind==(uint8_t)FrameKind::Mode) {   // only mode commands await a unit report
             status_.phase=Phase::AwaitUnit;
-            if(interfered()||priorChanged_) settle(Phase::Ambiguous);
+            for(uint8_t i=0;i<earlyN_;i++) report(early_[i].mode,early_[i].ms);
+            if(status_.phase==Phase::AwaitUnit&&(interfered()||priorChanged_)) settle(Phase::Ambiguous);
         } else settle(Phase::Idle);   // bind offer/ack: send done; setupflow::Pair drives the UI
     }
     else settle(Phase::DryRunComplete);
@@ -299,21 +301,31 @@ void Controller::onFrame(const ramses::Frame& f,uint32_t receivedMs,uint32_t now
        f.cmd!=0x31D9||f.len<3||f.payload[0]!=0||f.payload[2]>7) return;
     const uint8_t mode=f.payload[2];
     if(!status_.haveUnit||due(receivedMs,status_.unitMs)) { status_.unitMode=mode; status_.unitMs=receivedMs; status_.haveUnit=true; }
-    const Result& r=status_.result;
-    // Fail closed when the admission-time prior state changed while queued, or
-    // a delayed pre-send report proves it had already changed before our send.
-    if((status_.phase==Phase::Queued&&due(receivedMs,acceptedMs_))||
-       (status_.phase==Phase::AwaitUnit&&!due(receivedMs,r.sentMs+1))) {
-        if(mode!=r.request.prior) priorChanged_=true;
+    if(status_.phase==Phase::Queued) {
+        // Before acceptance: just the prior state. After it: kept until the result tells
+        // whether it came before our transmission (prior changed) or after it (evidence).
+        if(due(receivedMs,acceptedMs_)) {
+            if(earlyN_<EARLY_MAX) early_[earlyN_++]=Early{mode,receivedMs};
+            else priorChanged_=true;
+        }
+        return;
     }
-    if(status_.phase!=Phase::AwaitUnit) return;
-    if(!due(receivedMs,r.restoredMs)||!due(receivedMs,r.sentMs+1)||due(receivedMs,r.sentMs+CONFIRM_MS)) return; // old or late
+    if(status_.phase==Phase::AwaitUnit) report(mode,receivedMs);
+}
+void Controller::report(uint8_t mode,uint32_t receivedMs) {
+    const Result& r=status_.result;
+    // At or before the TX-start pass: the state before our frame. A different stand there
+    // means the prior changed under us (fail closed); it is never evidence.
+    if(!due(receivedMs,r.startedMs+1)) { if(mode!=r.request.prior) priorChanged_=true; return; }
+    if(due(receivedMs,r.sentMs+CONFIRM_MS)) return;   // late
     if(interfered()||priorChanged_) settle(Phase::Ambiguous);
     else if(mode!=r.request.input.mode&&mode!=r.request.prior) observed_=Phase::Ambiguous;
     else if(observed_!=Phase::Ambiguous&&(!observedMs_||due(receivedMs,observedMs_))) {
-        observedMs_=receivedMs;
-        observed_=mode==r.request.input.mode?Phase::UnitReported:
-                  mode==r.request.prior?Phase::Unchanged:Phase::Ambiguous;
+        const Phase o=mode==r.request.input.mode?Phase::UnitReported:
+                      mode==r.request.prior?Phase::Unchanged:Phase::Ambiguous;
+        // reportMs: the FIRST report of the current reading (the unit's reaction time).
+        if(!status_.reported||o!=observed_) { status_.reported=true; status_.reportMs=receivedMs; }
+        observedMs_=receivedMs; observed_=o;
         // Retain the reservation through the whole window: later interference
         // must not be hidden by an early matching report.
     }

@@ -74,7 +74,10 @@ struct Result {
     bool cleanupFailed=false;          // independent of the first diagnostic
     bool touched=false;               // radio work began (prepare called): cleanup/restore needed
     bool rxRestored=false, rfSent=false;
-    uint32_t sentMs=0, restoredMs=0;
+    // startedMs: the RX-task pass `now` in which start() succeeded. The RF backend transmits
+    // and restores RX inside start(), and that pass decodes before the owner runs, so a sync
+    // stamped later than startedMs was received after our frame; at or before it, never.
+    uint32_t startedMs=0, sentMs=0, restoredMs=0;
     size_t bytes=0;
 };
 struct Exchange { Mailbox<Request> requests; Mailbox<Result> results; };
@@ -134,6 +137,7 @@ struct Status {
     bool haveUnit=false, haveRemote=false;
     uint8_t unitMode=0xFF; uint32_t unitMs=0, remoteMs=0;
     ramses::DeviceId remoteId;
+    bool reported=false; uint32_t reportMs=0;   // receive time of the first report of the current reading
 };
 // Main-loop only. Cross-task traffic is exclusively through Exchange.
 class Controller {
@@ -157,6 +161,13 @@ public:
     const Status& status() const { return status_; }
 private:
     bool interfered() const;
+    void report(uint8_t mode,uint32_t receivedMs);   // one unit 31D9 against the published result
+    // Unit reports drained while still Queued: the RF owner may already have transmitted (and
+    // the unit answered) before its result is published. Judged when the result arrives.
+    struct Early { uint8_t mode; uint32_t ms; };
+    static constexpr uint8_t EARLY_MAX=4;            // more than this while queued = fail closed
+    Early early_[EARLY_MAX]{};
+    uint8_t earlyN_=0;
     void selectUnit(const ramses::DeviceId&);
     ramses::DeviceId observedUnit_;
     bool unitSelected_=false;
