@@ -131,8 +131,8 @@ if ($Sanitizer -eq 'None') {
 }
 if ($Firmware) {
     $null = Invoke-Check 'platformio-version' $Platformio @('--version')
-    foreach ($envName in @('heltec_v2_sx1276','heltec_v2_sx1276_tx_poc_dryrun','heltec_v2_sx1276_rftest','heltec_v3_cc1101_ota','heltec_v3_1262_ota','esp32-480480s040')) {
-        $isV2 = @('heltec_v2_sx1276','heltec_v2_sx1276_tx_poc_dryrun','heltec_v2_sx1276_rftest') -contains $envName
+    foreach ($envName in @('heltec_v2_sx1276','heltec_v2_sx1276_tx_poc_dryrun','heltec_v2_sx1276_rftest','heltec_v2_sx1276_control','heltec_v3_cc1101_ota','heltec_v3_1262_ota','esp32-480480s040')) {
+        $isV2 = @('heltec_v2_sx1276','heltec_v2_sx1276_tx_poc_dryrun','heltec_v2_sx1276_rftest','heltec_v2_sx1276_control') -contains $envName
         $code = Invoke-Check ('firmware-' + $envName) $Platformio @('run','-e',$envName) 300
         if ($code -ne 0) { continue }
         $dest = Join-Path $OutputDirectory ('artifacts/' + $envName)
@@ -165,6 +165,11 @@ if ($Firmware) {
                 # RF test image: the capped RF marker, never the RX-only/dry-run markers.
                 $imageOk = $imageOk -and ($firmwareText -match 'SX1276 direct RX \+ txpoc packet TX \(RF TEST: max \d+ packets per boot\)') -and
                     -not $firmwareText.Contains('SX1276 direct RX (TX disabled)') -and -not $firmwareText.Contains('tx-poc-dryrun')
+            } elseif ($envName -eq 'heltec_v2_sx1276_control') {
+                # Control image: the budget marker, never the RF test, RX-only or dry-run markers.
+                $imageOk = $imageOk -and $firmwareText.Contains('SX1276 direct RX + txpoc packet TX (CONTROL: max 10/min, 60/h)') -and
+                    -not $firmwareText.Contains('RF TEST: max') -and -not $firmwareText.Contains('SX1276 direct RX (TX disabled)') -and
+                    -not $firmwareText.Contains('tx-poc-dryrun')
             } else {
                 $imageOk = $imageOk -and $firmwareText.Contains('SX1276 direct RX (TX disabled)')
                 if ($envName -eq 'heltec_v2_sx1276') { $imageOk = $imageOk -and $firmwareText.Contains('RX-ONLY TEST FIRMWARE') -and -not $firmwareText.Contains('tx-poc-dryrun') }
@@ -175,7 +180,7 @@ if ($Firmware) {
         $rows.Add([ordered]@{name=('image-' + $envName); result=$(if ($imageOk) {'PASS'} else {'FAIL'}); exit=$(if ($imageOk) {0} else {1})})
         Save-Results
         $null = Invoke-Check ('packages-' + $envName) $Platformio @('pkg','list','-e',$envName)
-        $info = [ordered]@{commit=$commit; dirty=$dirty; environment=$envName; rf_release=($envName -eq 'heltec_v2_sx1276_rftest'); files=@(Get-ChildItem $dest -File | ForEach-Object {[ordered]@{name=$_.Name; sha256=(Get-FileHash -LiteralPath $_.FullName).Hash.ToLowerInvariant()}})}
+        $info = [ordered]@{commit=$commit; dirty=$dirty; environment=$envName; rf_release=(@('heltec_v2_sx1276_rftest','heltec_v2_sx1276_control') -contains $envName); files=@(Get-ChildItem $dest -File | ForEach-Object {[ordered]@{name=$_.Name; sha256=(Get-FileHash -LiteralPath $_.FullName).Hash.ToLowerInvariant()}})}
         [IO.File]::WriteAllText((Join-Path $dest 'BUILD_INFO.json'),($info | ConvertTo-Json -Depth 5))
     }
     # Flash tooling (precheck, local_ok, markers) on simulated boards; reference = the local V2 table.

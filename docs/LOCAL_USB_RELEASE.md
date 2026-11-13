@@ -275,6 +275,11 @@ Een diagnostisch image voor gecontroleerde fysieke zendproeven; nooit een releas
 - Elk pakket blijft een handmatige klik, minimaal 2 s na het vorige. Dat is maximaal ongeveer 0,6 % duty cycle, onder de grens van 1 % in 868,0–868,6 MHz.
 - De pagina toont een waarschuwing op het dashboard.
 
+Dit image is voor tests. Voor dagelijks gebruik is er de control-image (`heltec_v2_sx1276_control`, zie `docs/CONTROL.md`):
+- hetzelfde zendpad, begrensd door het doorlopende RF-budget (10 per minuut, 60 per uur) in plaats van een limiet per opstart;
+- alleen te bedienen na aanmelden;
+- alleen te verpakken of te installeren met `ORCON_CONTROL_ACK="control firmware"`.
+
 **Gates die blijven gelden**
 - actief geverifieerd profiel;
 - dezelfde unit;

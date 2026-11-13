@@ -4,12 +4,16 @@
   orcon.py status                       firmware, OTA slots, reset reason, crash summary
   orcon.py logs [--minutes N]           collect console/capture/diag into captures/sessions/<UTC>/
   orcon.py capture                      save the complete 1FC9/10E0 capture buffer
-  orcon.py ota-install --worktree DIR --env ENV --yes [--rf-ack "RF test image"]
+  orcon.py ota-install --worktree DIR --env ENV --yes [--tx-ack PHRASE]
                                         verify the local package with tools/heltec_v2.sh, sign a
                                         manifest for THIS board with ~/.orcon/ota-signing-key.pem,
-                                        upload, then confirm the new image (or report the rollback)
+                                        upload, then confirm the new image (or report the rollback).
+                                        PHRASE for images that transmit: "RF test image" (rftest),
+                                        "control firmware" (the daily-use control image)
        ota-install ... --test-rollback  rollback test: the trial boot is told not to confirm itself
                                         (POST /api/ota/hold); PASS only if the previous image returns
+  orcon.py auth-code                    web login: a one-time code (10 min) to set or reset the
+                                        password, issued only for a request signed with the OTA key
   orcon.py keygen                       create the signing key (once) and src/ota_pubkey.h
 
 Host: --host, $ORCON_HOST, ~/.orcon/config.json {"host": ...}, else orcon15rf.local.
@@ -24,8 +28,11 @@ REPO = Path(__file__).resolve().parent.parent
 KEY = Path.home() / '.orcon' / 'ota-signing-key.pem'
 # Every image written over WiFi ("<sha256> <label>"): tools/heltec_v2.sh recover identifies slots with it.
 INSTALLED = Path.home() / '.orcon' / 'installed.txt'
-RF_ACK = 'RF test image'                      # same phrase as tools/heltec_v2.sh
-ENV_VARIANT = {'heltec_v2_sx1276': ('rx-only', False), 'heltec_v2_sx1276_rftest': ('rf-test', True)}
+RF_ACK = 'RF test image'                      # same phrases as tools/heltec_v2.sh
+CONTROL_ACK = 'control firmware'
+ENV_VARIANT = {'heltec_v2_sx1276': ('rx-only', False), 'heltec_v2_sx1276_rftest': ('rf-test', True),
+               'heltec_v2_sx1276_control': ('control', True)}
+ENV_ACK = {'heltec_v2_sx1276_rftest': ('ORCON_RF_TEST_ACK', RF_ACK), 'heltec_v2_sx1276_control': ('ORCON_CONTROL_ACK', CONTROL_ACK)}
 
 
 def host(args):
@@ -73,9 +80,15 @@ def sign(text, key=KEY):
 
 
 def rf_gate(env, ack):
-    """An RF test image needs the same explicit phrase as the USB flash path."""
-    if ENV_VARIANT.get(env, (None, False))[1] and ack != RF_ACK:
-        raise SystemExit(f'{env} can transmit: pass --rf-ack "{RF_ACK}" to install it')
+    """An image that can transmit needs its own explicit phrase, the same as the USB flash path."""
+    if ENV_VARIANT.get(env, (None, False))[1]:
+        need = ENV_ACK[env][1]
+        if ack != need: raise SystemExit(f'{env} can transmit: pass --tx-ack "{need}" to install it')
+
+
+def reset_request(mac, nonce):
+    """The signed web-login recovery request: exactly these fields, for this board and nonce."""
+    return json.dumps({'v': 1, 'kind': 'orcon-auth-reset', 'mac': mac.lower(), 'nonce': nonce}, separators=(',', ':'))
 
 
 # ---- log collection with gap detection ---------------------------------------------------
@@ -148,12 +161,12 @@ def cmd_status(args):
 
 def cmd_ota_install(args):
     h, wt, env = host(args), Path(args.worktree).resolve(), args.env
-    rf_gate(env, args.rf_ack)
+    rf_gate(env, args.tx_ack)
     if not args.yes: raise SystemExit('refusing without --yes (explicit approval for this update)')
     commit = subprocess.run(['git', '-C', str(wt), 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
     pkg = wt / '.flashtools' / 'local' / f'{commit}-{env}'
     # Same package verification as the USB path: evidence, hashes, markers, ELF reachability.
-    venv = dict(os.environ, LOCAL_ENV=env, **({'ORCON_RF_TEST_ACK': RF_ACK} if ENV_VARIANT[env][1] else {}))
+    venv = dict(os.environ, LOCAL_ENV=env, **({ENV_ACK[env][0]: ENV_ACK[env][1]} if env in ENV_ACK else {}))
     v = subprocess.run(['bash', 'tools/heltec_v2.sh', 'verify', commit], cwd=wt, env=venv, capture_output=True, text=True)
     if v.returncode or 'VERIFIED' not in v.stdout: raise SystemExit('package verification failed:\n' + v.stdout[-800:] + v.stderr[-800:])
     mac = (wt / '.flashtools' / 'board.mac').read_text().strip()
@@ -214,6 +227,20 @@ def watch_confirmation(get, commit, old_fw, clock, sleep, limit=420, boot_grace=
     return f'NO CONFIRMATION within {limit} s; last state: {last}'
 
 
+def cmd_auth_code(args):
+    """Web login recovery: the board issues a one-time code only for a request signed with the
+    OTA key on this Mac. Enter it in the web page ("Wachtwoord vergeten") with a new password."""
+    h = host(args)
+    st, n = http(h, '/api/auth/nonce', {})
+    if st == 404: raise SystemExit('this firmware has no web login (no /api/auth)')
+    if st != 200 or 'mac' not in n: raise SystemExit(f'nonce refused (HTTP {st}): {n}')
+    text = reset_request(n['mac'], n['nonce'])
+    st, r = http(h, '/api/auth/reset', {'manifest': text, 'sig': sign(text)})
+    if st != 200: raise SystemExit(f'recovery request refused (HTTP {st}): {r.get("error", r)}')
+    print(f"Herstelcode: {r['code']}   (eenmalig, {r['ttl_s'] // 60} minuten geldig)")
+    print('Open de webinterface, kies "Wachtwoord vergeten" (of het instelscherm) en stel een nieuw wachtwoord in.')
+
+
 def cmd_keygen(args):
     private_dir(KEY.parent)
     if not KEY.exists():
@@ -228,13 +255,14 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--host')
     sub = p.add_subparsers(dest='cmd', required=True)
-    sub.add_parser('status'); sub.add_parser('capture'); sub.add_parser('keygen')
+    sub.add_parser('status'); sub.add_parser('capture'); sub.add_parser('keygen'); sub.add_parser('auth-code')
     lg = sub.add_parser('logs'); lg.add_argument('--minutes', type=float, default=60)
     oi = sub.add_parser('ota-install'); oi.add_argument('--worktree', required=True); oi.add_argument('--env', required=True)
-    oi.add_argument('--yes', action='store_true'); oi.add_argument('--rf-ack', default='')
+    oi.add_argument('--yes', action='store_true'); oi.add_argument('--tx-ack', '--rf-ack', dest='tx_ack', default='')
     oi.add_argument('--test-rollback', action='store_true')
     a = p.parse_args(argv)
-    {'status': cmd_status, 'logs': cmd_logs, 'capture': cmd_capture, 'ota-install': cmd_ota_install, 'keygen': cmd_keygen}[a.cmd](a)
+    {'status': cmd_status, 'logs': cmd_logs, 'capture': cmd_capture, 'ota-install': cmd_ota_install, 'keygen': cmd_keygen,
+     'auth-code': cmd_auth_code}[a.cmd](a)
 
 
 if __name__ == '__main__':

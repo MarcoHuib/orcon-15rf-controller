@@ -266,7 +266,7 @@ int main() {
     };
     const char* MAC = "02:00:00:00:00:0a";
     std::string nonce = nonceNow();
-    CHECK(nonce.size() == 32, "CLI: a 128-bit nonce for the signed request");
+    CHECK(nonce.size() == 32 && J["mac"] == MAC, "CLI: a 128-bit nonce and the board to sign for");
     CHECK(call("POST", "/api/auth/reset", resetBody(nonce, "dead", MAC).c_str(), nullptr, "application/json", nullptr) == 403 &&
           err("bad-signature"), "request without a valid OTA-key signature: no code");
     CHECK(call("POST", "/api/auth/reset", resetBody(nonce, "a1b2", MAC).c_str(), nullptr, "application/json", nullptr) == 403 &&

@@ -23,7 +23,10 @@
      - this board's MAC;
      - the issued nonce;
      - a size that fits the inactive slot;
-     - an approved variant: `rx-only` = `heltec_v2_sx1276` with `allow_tx:false`, or `rf-test` = `heltec_v2_sx1276_rftest` with `allow_tx:true`.
+     - an approved variant:
+       - `rx-only` = `heltec_v2_sx1276` with `allow_tx:false`;
+       - `rf-test` = `heltec_v2_sx1276_rftest` with `allow_tx:true`;
+       - `control` = `heltec_v2_sx1276_control` (daily use, see `docs/CONTROL.md`) with `allow_tx:true`.
 
    Anything else is refused.
 3. `POST /api/ota/upload` (multipart) streams the image into the inactive slot with `esp_ota_*`. The legacy Update/ArduinoOTA code is not used. While streaming, the device hashes the image and scans it. It writes nothing to the boot partition unless all of these hold:
@@ -31,11 +34,16 @@
    - the commit is stamped in the image;
    - the image carries `ORCON-SIGNED-OTA v1` (an update can never remove the WiFi update path);
    - there are no unauthenticated-OTA strings;
-   - the variant markers match: RX-only images contain no `txpoc packet TX`, and RF test images carry the capped `RF TEST: max N packets per boot` marker;
+   - the variant markers match:
+     - RX-only images contain no `txpoc packet TX`;
+     - RF test images carry the capped `RF TEST: max N packets per boot` marker;
+     - control images carry `CONTROL: max 10/min, 60/h` and neither of the other two markers;
    - ESP-IDF's own image check passes.
 
    Only then does the device set the boot partition and restart.
-4. **What this prevents.** RX-only can never silently become RF-TX: the variant is signed, matched against the image contents, and the CLI demands the same `"RF test image"` phrase as the USB path.
+4. **What this prevents.** RX-only can never silently become RF-TX:
+   - the variant is signed and matched against the image contents;
+   - the CLI demands the same phrase as the USB path: `"RF test image"` for the test image, `"control firmware"` for the control image (`--tx-ack`).
 
 **Side effect of the flash erase:** the receiver can miss frames while the slot is written.
 

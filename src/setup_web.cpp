@@ -901,7 +901,8 @@ static bool cliOk() {
 static void handleAuthNonce() {
     if (!cliOk()) return;
     const char* n = g_recovery.issueNonce(millis(), authstore::random);
-    Out o; o.add("{\"nonce\":\"%s\",\"ttl_s\":%lu}", n, (unsigned long)(webauth::NONCE_TTL_MS / 1000)); reply(200, o);
+    char mac[18]; authstore::ownMac(mac);           // the CLI signs for exactly this board
+    Out o; o.add("{\"nonce\":\"%s\",\"mac\":\"%s\",\"ttl_s\":%lu}", n, mac, (unsigned long)(webauth::NONCE_TTL_MS / 1000)); reply(200, o);
 }
 static void handleAuthReset() {  // a request signed with the OTA key buys one 10-minute code
     static const char* const K[] = { "manifest", "sig" };
