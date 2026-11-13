@@ -424,7 +424,9 @@ static const char* ctlConfirm(const txpoc::Status& s) {
     switch (s.phase) {
         case txpoc::Phase::Queued:
         case txpoc::Phase::AwaitUnit:      return "pending";
-        case txpoc::Phase::UnitReported:   return "observed";
+        // confirmed: on air, the requested stand, reported within PROMPT_MS of our TX start
+        // (the unit's reaction to our frame). A later matching report is only observed.
+        case txpoc::Phase::UnitReported:   return s.result.rfSent && s.prompt ? "confirmed" : "observed";
         case txpoc::Phase::Unchanged:      return "unchanged";
         case txpoc::Phase::Ambiguous:      return "ambiguous";
         case txpoc::Phase::NotConfirmed:   return "not_confirmed";
@@ -447,7 +449,7 @@ static void remoteBody(int code) {
     o.add("{\"supported\":true,\"id\":%lu,\"key\":\"%s\",\"minutes\":0,"
           "\"accepted\":%s,\"sent\":%s,\"confirm\":\"%s\",\"age_s\":%lu,"
           "\"unit_mode\":\"%s\",\"unit_age_s\":%ld,"
-          "\"phase\":\"%s\",\"error\":\"%s\",\"rf_sent\":%s,\"simulated\":%s,\"unit_confirmed\":false,\"next_request\":%lu,"
+          "\"phase\":\"%s\",\"error\":\"%s\",\"rf_sent\":%s,\"simulated\":%s,\"unit_confirmed\":%s,\"next_request\":%lu,"
           "\"restore_diag\":\"%08lX\",\"tx_starts\":%lu}",
           (unsigned long)(isCmd ? r.request.input.request : 0),
           isCmd ? keyOfMode(r.request.input.mode) : "",
@@ -457,7 +459,8 @@ static void remoteBody(int code) {
           orcon::modeName(os.mode),
           os.modeMs ? long((now - os.modeMs) / 1000) : -1L,
           isCmd ? txpoc::phaseName(s.phase) : "idle", isCmd ? txpoc::errorName(r.error) : "none",
-          isCmd && r.rfSent ? "true" : "false", SIMULATED ? "true" : "false", (unsigned long)s.nextRequest,
+          isCmd && r.rfSent ? "true" : "false", SIMULATED ? "true" : "false",
+          isCmd && !strcmp(ctlConfirm(s), "confirmed") ? "true" : "false", (unsigned long)s.nextRequest,
           (unsigned long)restoreDiag, (unsigned long)txpoc::rfTxStarts());
     reply(code, o);
 }

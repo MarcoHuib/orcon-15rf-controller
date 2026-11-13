@@ -278,11 +278,20 @@ Een diagnostisch image voor gecontroleerde fysieke zendproeven; nooit een releas
 **Gates die blijven gelden**
 - actief geverifieerd profiel;
 - dezelfde unit;
-- eigen identiteit, nooit gekloond;
-- fysieke afstandsbediening deze boot gehoord;
+- eigen identiteit, nooit gekloond: de ID mag niet gelijk zijn aan de afstandsbedienings-ID in het profiel, en ook niet aan een zender die deze boot gehoord is (dat laatste wordt vastgehouden);
 - wachttijd na een druk op de afstandsbediening;
-- verse standmelding van de unit;
 - geen automatische herhaling.
+
+**Zelfstandige bediening**
+- Sinds `fix(txpoc)` na `b120de9` hoeft de fysieke afstandsbediening niet meer gehoord te zijn. De kloon-check gebeurt tegen het profiel.
+- Een verse standmelding (< 10 min) wordt vastgelegd als de stand vóór het commando, en weigert een commando voor de stand waarin de unit al staat.
+- Zonder verse melding is de stand vóór het commando onbekend. Dan telt alleen de directe reactie van de unit, binnen 500 ms na de TX-start; gemeten is 17–20 ms. Een latere of spontane melding van dezelfde stand bevestigt dan nooit.
+- `confirm: "confirmed"` en `unit_confirmed: true` verschijnen alleen bij:
+  - een RF-verzending;
+  - de gevraagde stand;
+  - een directe reactie;
+  - geen interferentie.
+- Een latere melding van de gevraagde stand geeft `observed`.
 
 **Koppelen (`ORCON_TX_PAIR=1`, alleen in dit image)**
 - De compiler staat de vlag alleen toe met RF, webbediening én `ORCON_TX_MAX_PER_BOOT`. `test_tx_poc_safety.py` eist dat precies deze ene omgeving hem heeft.

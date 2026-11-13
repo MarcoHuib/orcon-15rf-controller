@@ -486,7 +486,8 @@ int main() {
     CHECK(J["confirm"] == "pending" && J["phase"] == "await-unit-status", "a match stays provisional inside the window");
     g_ms += txpoc::CONFIRM_MS + txpoc::EXPIRY_GRACE_MS + 1;            // the observation window ends
     loopTick(); call("GET", "/api/remote/state");
-    CHECK(J["confirm"] == "observed" && J["unit_mode"] == "medium" && J["unit_confirmed"] == false, "matching unit mode is observed, not proof of command delivery");
+    CHECK(J["confirm"] == "confirmed" && J["unit_mode"] == "medium" && J["unit_confirmed"] == true,
+          "the unit's prompt report of the requested stand after our RF send is a confirmation");
     { const uint32_t request = J["id"]; const int sent = txpoc::s_rf.sent[0];
       char duplicate[96]; snprintf(duplicate, sizeof(duplicate), "{\"key\":\"2\",\"request\":%u}", unsigned(request));
       CHECK(call("POST", "/api/remote/send", duplicate) == 200 && txpoc::s_rf.sent[0] == sent,
@@ -499,6 +500,15 @@ int main() {
             "console: each finished TX transaction leaves one line (sent, error, RX restore) for remote diagnosis");
       CHECK(has(all, " unit-reported-mode: TX-start t=") && has(all, ", unitmelding t=") && has(all, " ms)"),
             "console: on-air TX also logs its start pass and the unit's report time (correlation evidence)"); }
+    {   // A matching report later than PROMPT_MS after our TX start: observed, never confirmed.
+        g_ms += txpoc::RATE_CTL_MS;
+        CHECK(call("POST", "/api/remote/send", "{\"key\":\"1\"}") == 202, "late-report case: accepted");
+        loopTick(); g_ms += txpoc::PROMPT_MS + 100;
+        rx(fr(MsgType::I, UNIT32, UNIT32, 0x31D9, {0x00, 0x00, 0x01})); loopTick();
+        g_ms += txpoc::CONFIRM_MS + txpoc::EXPIRY_GRACE_MS + 1; loopTick(); call("GET", "/api/remote/state");
+        CHECK(J["phase"] == "unit-reported-mode" && J["confirm"] == "observed" && J["unit_confirmed"] == false,
+              "a late matching report is observed, not a confirmation");
+    }
     // away + auto also work; a remote press during the guard is refused.
     txpoc::s_rf.onair = false;
     g_ms += txpoc::RATE_CTL_MS;

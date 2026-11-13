@@ -17,7 +17,11 @@ constexpr uint32_t RATE_CTL_MS=2000;
 constexpr uint32_t CONFIRM_MS=3000;
 constexpr uint32_t EXPIRY_GRACE_MS=250;      // loop-time slack so a timely, still-queued frame counts
 constexpr uint32_t REMOTE_GUARD_MS=3000;     // a remote action this close before TX = interference
-constexpr uint32_t UNIT_STATE_MAX_AGE_MS=600000; // prior unit mode must be this fresh (PoC choice)
+constexpr uint32_t UNIT_STATE_MAX_AGE_MS=600000; // a prior unit mode this fresh is pinned as prior
+// The unit answers a command it accepts with 31D9 within ~20 ms (field 2026-11-13: 17 and 19 ms;
+// measurement 2: 16/17 presses within 300 ms) and sends nothing for an unbound sender. A
+// report this soon after our TX start is its reaction to our frame (a prompt report).
+constexpr uint32_t PROMPT_MS=500;
 constexpr uint32_t HEALTH_MAX_AGE_MS=250;    // RX-task heartbeat (one pass ~5 ms)
 bool due(uint32_t now, uint32_t deadline);
 bool validIds(const orcon::Ids& ids);
@@ -138,6 +142,7 @@ struct Status {
     uint8_t unitMode=0xFF; uint32_t unitMs=0, remoteMs=0;
     ramses::DeviceId remoteId;
     bool reported=false; uint32_t reportMs=0;   // receive time of the first report of the current reading
+    bool prompt=false;                         // ...and it came within PROMPT_MS of our TX start
 };
 // Main-loop only. Cross-task traffic is exclusively through Exchange.
 class Controller {
@@ -146,8 +151,11 @@ public:
     // identityClear: identityConflict() was false for these ids.
     // Phase-1 endpoint protocol: client-sequenced requests, 10 s rate, modes 0..4.
     Admission submit(Input,const orcon::Ids&,bool known,bool ready,bool identityClear,uint32_t now);
-    // Wizard/web control: same admission, but the server assigns the sequence and the
-    // spacing is RATE_CTL_MS. tail must be 04 or 07 (from a verified profile); anything else is Invalid.
+    // Wizard/web control: the server assigns the sequence and the spacing is RATE_CTL_MS. tail
+    // must be 04 or 07 (from a verified profile); anything else is Invalid. Unlike submit(), it
+    // needs neither the physical remote heard this boot (the clone check uses the profile's
+    // remote ID, setup_web, plus every sender heard: identityClear) nor a fresh unit state:
+    // without one the prior is unknown (0xFF) and only a prompt unit report counts.
     Admission submitCtl(uint8_t mode,uint8_t tail,const orcon::Ids&,bool known,bool ready,
                         bool identityClear,uint32_t now,uint32_t request=0);
     // Pairing sends: BindOffer (ids.fan = broadcast is allowed) and BindAck (ids.fan = the

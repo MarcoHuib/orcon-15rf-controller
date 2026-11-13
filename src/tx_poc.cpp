@@ -176,7 +176,7 @@ Admission Controller::begin(Request& request,uint32_t now) {
     status_.acceptedMs=now;
     acceptedMs_=lastAcceptedMs_=now; haveAccepted_=true; ownerTimedOut_=false;
     priorChanged_=false; observed_=Phase::NotConfirmed; observedMs_=0;
-    earlyN_=0; status_.reported=false; status_.reportMs=0;
+    earlyN_=0; status_.reported=false; status_.reportMs=0; status_.prompt=false;
     return Admission::Accepted;
 }
 Admission Controller::submit(Input input,const orcon::Ids& ids,bool known,bool ready,bool identityClear,uint32_t now) {
@@ -215,14 +215,13 @@ Admission Controller::submitCtl(uint8_t mode,uint8_t tail,const orcon::Ids& ids,
     if(status_.busy) return Admission::Busy;
     if(!ready||status_.locked) return Admission::Unavailable;
     if(identityCollided_||!identityClear||(status_.haveRemote&&status_.remoteId==ids.us)) return Admission::IdentityConflict;
-    if(!status_.haveRemote) return Admission::IdentityUnverified;
     if(haveAccepted_&&(uint32_t)(now-lastAcceptedMs_)<RATE_CTL_MS) return Admission::Limited;
-    if(!status_.haveUnit||(uint32_t)(now-status_.unitMs)>=UNIT_STATE_MAX_AGE_MS) return Admission::UnitStateUnknown;
-    if(status_.unitMode==mode) return Admission::Unchanged;
-    if(!due(now,status_.remoteMs+REMOTE_GUARD_MS)) return Admission::RemoteActive;
+    const bool fresh=status_.haveUnit&&(uint32_t)(now-status_.unitMs)<UNIT_STATE_MAX_AGE_MS;
+    if(fresh&&status_.unitMode==mode) return Admission::Unchanged;
+    if(status_.haveRemote&&!due(now,status_.remoteMs+REMOTE_GUARD_MS)) return Admission::RemoteActive;
     Input input; input.request=status_.nextRequest; input.mode=mode;
     Request request; request.input=input; request.ids=ids; request.expires=now+QUEUE_MS;
-    request.prior=status_.unitMode; request.tail=tail;
+    request.prior=fresh?status_.unitMode:0xFF; request.tail=tail;   // 0xFF: prior unknown
     return begin(request,now);
 }
 Admission Controller::submitBind(uint8_t kind,const orcon::Ids& ids,bool ready,bool identityClear,uint32_t now) {
@@ -318,13 +317,17 @@ void Controller::report(uint8_t mode,uint32_t receivedMs) {
     // means the prior changed under us (fail closed); it is never evidence.
     if(!due(receivedMs,r.startedMs+1)) { if(mode!=r.request.prior) priorChanged_=true; return; }
     if(due(receivedMs,r.sentMs+CONFIRM_MS)) return;   // late
+    const bool prompt=!due(receivedMs,r.startedMs+PROMPT_MS+1);
+    // Unknown prior: a later matching report may be a spontaneous broadcast of an unchanged
+    // stand, so only the unit's prompt reaction is evidence. Other stands still count below.
+    if(r.request.prior==0xFF&&mode==r.request.input.mode&&!prompt) return;
     if(interfered()||priorChanged_) settle(Phase::Ambiguous);
     else if(mode!=r.request.input.mode&&mode!=r.request.prior) observed_=Phase::Ambiguous;
     else if(observed_!=Phase::Ambiguous&&(!observedMs_||due(receivedMs,observedMs_))) {
         const Phase o=mode==r.request.input.mode?Phase::UnitReported:
                       mode==r.request.prior?Phase::Unchanged:Phase::Ambiguous;
         // reportMs: the FIRST report of the current reading (the unit's reaction time).
-        if(!status_.reported||o!=observed_) { status_.reported=true; status_.reportMs=receivedMs; }
+        if(!status_.reported||o!=observed_) { status_.reported=true; status_.reportMs=receivedMs; status_.prompt=prompt; }
         observedMs_=receivedMs; observed_=o;
         // Retain the reservation through the whole window: later interference
         // must not be hidden by an early matching report.

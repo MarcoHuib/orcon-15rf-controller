@@ -657,10 +657,79 @@ static void earlyReports() {
         c.tick(m.sentMs+CONFIRM_MS+EXPIRY_GRACE_MS);CHECK(c.status().phase==Phase::NotConfirmed&&!c.status().reported);
     }
 }
+// Web control without the physical remote: nothing heard this boot, unit state unknown or stale.
+// Admit stand 2 with prior unknown, run `queued` while Queued, publish, run `after`, expire.
+static Phase ctlOutcome(void (*queued)(Controller&),void (*after)(Controller&),bool* prompt=nullptr) {
+    Exchange ex;Controller c(ex);
+    CHECK(c.submitCtl(2,4,ids(),true,true,true,ADMIT)==Admission::Accepted);
+    Request q;CHECK(ex.requests.pop(q)&&q.prior==0xFF);
+    if(queued) queued(c);
+    Result s;s.request=q;s.touched=s.rfSent=s.rxRestored=true;s.startedMs=STARTED;s.sentMs=SENT;s.restoredMs=RESTORED;
+    CHECK(ex.results.push(s));c.tick(RESTORED+10);
+    if(after) after(c);
+    c.tick(SENT+CONFIRM_MS+EXPIRY_GRACE_MS);
+    if(prompt) *prompt=c.status().prompt;
+    return c.status().phase;
+}
+static void autonomous() {
+    bool prompt=false;
+    // The unit's own reaction (~20 ms after our frame): confirmed, also drained while Queued.
+    CHECK(ctlOutcome(nullptr,[](Controller& c){see(c,statusFrame(ids().fan,2),STARTED+19);},&prompt)==Phase::UnitReported&&prompt);
+    CHECK(ctlOutcome([](Controller& c){see(c,statusFrame(ids().fan,2),STARTED+19);},nullptr,&prompt)==Phase::UnitReported&&prompt);
+    CHECK(ctlOutcome(nullptr,[](Controller& c){see(c,statusFrame(ids().fan,2),STARTED+PROMPT_MS);},&prompt)==Phase::UnitReported&&prompt);
+    // Prior unknown: a later matching report could be a spontaneous broadcast. Never evidence.
+    CHECK(ctlOutcome(nullptr,[](Controller& c){see(c,statusFrame(ids().fan,2),STARTED+PROMPT_MS+1);
+        see(c,statusFrame(ids().fan,2),LAST);})==Phase::NotConfirmed);
+    // Other stand, report at/before the start pass, remote press in the guard window: ambiguous.
+    CHECK(ctlOutcome(nullptr,[](Controller& c){see(c,statusFrame(ids().fan,3),STARTED+19);})==Phase::Ambiguous);
+    CHECK(ctlOutcome(nullptr,[](Controller& c){see(c,statusFrame(ids().fan,3),SENT+1000);})==Phase::Ambiguous);
+    CHECK(ctlOutcome([](Controller& c){see(c,statusFrame(ids().fan,2),STARTED);},nullptr)==Phase::Ambiguous);
+    CHECK(ctlOutcome([](Controller& c){see(c,remoteFrame(2),STARTED-100);},
+        [](Controller& c){see(c,statusFrame(ids().fan,2),STARTED+19);})==Phase::Ambiguous);
+    CHECK(ctlOutcome(nullptr,[](Controller& c){see(c,statusFrame(ids().fan,2),STARTED+19);
+        see(c,remoteFrame(3),STARTED+400);})==Phase::Ambiguous);
+    CHECK(ctlOutcome(nullptr,nullptr)==Phase::NotConfirmed);            // silent unit: unconfirmed
+    {   // Fresh state still pins the prior: same stand refused, a late match only observed.
+        Exchange ex;Controller c(ex);prime(c,T0,2);
+        CHECK(c.submitCtl(2,4,ids(),true,true,true,ADMIT)==Admission::Unchanged&&!ex.requests.full());
+        CHECK(c.submitCtl(3,4,ids(),true,true,true,ADMIT)==Admission::Accepted);
+        Request q;CHECK(ex.requests.pop(q)&&q.prior==2);
+        Result s;s.request=q;s.touched=s.rfSent=s.rxRestored=true;s.startedMs=STARTED;s.sentMs=SENT;s.restoredMs=RESTORED;
+        CHECK(ex.results.push(s));c.tick(RESTORED+10);see(c,statusFrame(ids().fan,3),SENT+1500);
+        c.tick(SENT+CONFIRM_MS+EXPIRY_GRACE_MS);
+        CHECK(c.status().phase==Phase::UnitReported&&!c.status().prompt);
+    }
+    {   // Stale state (10 min) is not trusted: no Unchanged refusal, prior unknown.
+        Exchange ex;Controller c(ex);prime(c,T0,2);const uint32_t late=T0+40+UNIT_STATE_MAX_AGE_MS;
+        CHECK(c.submitCtl(2,4,ids(),true,true,true,late)==Admission::Accepted);
+        Request q;CHECK(ex.requests.pop(q)&&q.prior==0xFF);
+    }
+    {   // Guards that stay: a remote press 3 s before, identity conflicts, rate floor, limits.
+        Exchange ex;Controller c(ex);see(c,remoteFrame(1),ADMIT-1000);
+        CHECK(c.submitCtl(2,4,ids(),true,true,true,ADMIT)==Admission::RemoteActive);
+        CHECK(c.submitCtl(2,4,ids(),true,true,true,ADMIT+2000)==Admission::Accepted);
+        Exchange e2;Controller c2(e2);
+        CHECK(c2.submitCtl(2,4,ids(),true,true,false,ADMIT)==Admission::IdentityConflict);   // heard sender uses our ID
+        CHECK(c2.submitCtl(2,4,ids(),true,false,true,ADMIT)==Admission::Unavailable);       // RX not ready
+        CHECK(c2.submitCtl(2,4,ids(),false,true,true,ADMIT)==Admission::UnknownUnit);
+        Frame own=statusFrame(ids().us,1);own.cmd=0x0001;see(c2,own,ADMIT);
+        CHECK(c2.submitCtl(2,4,ids(),true,true,true,ADMIT+1)==Admission::IdentityConflict);  // our ID on air: latched
+        Exchange e3;Controller c3(e3);
+        CHECK(c3.submitCtl(2,4,ids(),true,true,true,ADMIT)==Admission::Accepted);Request q;CHECK(e3.requests.pop(q));
+        Result s;s.request=q;s.touched=s.rfSent=s.rxRestored=true;s.startedMs=STARTED;s.sentMs=SENT;s.restoredMs=RESTORED;
+        CHECK(e3.results.push(s));c3.tick(RESTORED+10);c3.tick(SENT+CONFIRM_MS+EXPIRY_GRACE_MS);
+        CHECK(!c3.status().busy&&!c3.status().locked);
+        const uint32_t next=ADMIT+RATE_CTL_MS>SENT+CONFIRM_MS+EXPIRY_GRACE_MS?ADMIT+RATE_CTL_MS:SENT+CONFIRM_MS+EXPIRY_GRACE_MS;
+        CHECK(c3.submitCtl(3,4,ids(),true,true,true,ADMIT+RATE_CTL_MS-1)==Admission::Limited);
+        CHECK(c3.submitCtl(3,4,ids(),true,true,true,next)==Admission::Accepted);
+    }
+}
 static void independentRegressions() {
     { Exchange ex; Controller c(ex); prime(c,T0);
       orcon::Ids other=ids(); other.fan=NEIGHBOUR_UNIT;
-      CHECK(c.submitCtl(2,4,other,true,true,true,ADMIT)==Admission::IdentityUnverified);
+      // Another unit: the old unit's state is never its prior (web control sends with prior unknown).
+      CHECK(c.submitCtl(2,4,other,true,true,true,ADMIT)==Admission::Accepted);
+      Request q;CHECK(ex.requests.pop(q)&&q.prior==0xFF&&q.ids.fan==NEIGHBOUR_UNIT);
       CHECK(!c.status().haveUnit&&!c.status().haveRemote);
       see(c,remoteFrame(1,false,0x22F1,other.fan),ADMIT);
       CHECK(!c.status().haveUnit);
@@ -724,5 +793,5 @@ static void independentRegressions() {
       c.tick(r.sentMs+CONFIRM_MS+EXPIRY_GRACE_MS);CHECK(c.status().phase==Phase::UnitReported);
     }
 }
-int main(){independentRegressions();earlyReports();golden();bindHandshake();webCtl();schema();faults();ownerTrace();dryRunFaults();transactions();correlation();identity();health();security();interleavings();concurrency();
+int main(){independentRegressions();earlyReports();autonomous();golden();bindHandshake();webCtl();schema();faults();ownerTrace();dryRunFaults();transactions();correlation();identity();health();security();interleavings();concurrency();
     printf("TX-PoC: %d checks, %d failures\n",checks,fails);return fails?1:0;}
