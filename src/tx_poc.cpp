@@ -13,6 +13,22 @@ bool makeModeCmd(const orcon::Ids& ids,uint8_t mode,uint8_t tail,ramses::Frame& 
     f.payload[0]=0; f.payload[1]=mode; f.payload[2]=tail;
     out=f; return true;
 }
+bool makeBindOffer(const orcon::Ids& ids,ramses::Frame& out) {
+    if(!validId(ids.us)) return false;
+    ramses::Frame f;
+    f.type=ramses::MsgType::I;
+    f.has_addr[0]=f.has_addr[1]=true; f.has_addr[2]=false;
+    f.addr[0]=ids.us; f.addr[1]=ramses::DeviceId(63,0x3FFFE); f.cmd=0x1FC9;
+    static const uint8_t tuple[4][3]={{0x00,0x1F,0xC9},{0x00,0x22,0xF1},{0x00,0x22,0xF3},{0x67,0x10,0xE0}};
+    const uint32_t raw=ids.us.raw();
+    for(int i=0;i<4;++i) {
+        uint8_t* t=f.payload+6*i;
+        t[0]=tuple[i][0]; t[1]=tuple[i][1]; t[2]=tuple[i][2];
+        t[3]=uint8_t(raw>>16); t[4]=uint8_t(raw>>8); t[5]=uint8_t(raw);
+    }
+    f.len=24;
+    out=f; return true;
+}
 bool makeBindAck(const orcon::Ids& ids,ramses::Frame& out) {
     if(!validId(ids.us)||!validId(ids.fan)||ids.us==ids.fan) return false;
     ramses::Frame f;
@@ -91,7 +107,7 @@ bool DryRunBackend::prepare(const Request& r,size_t& bytes) {
     ramses::Frame f; uint8_t packed[ramses::MAX_ONAIR]; size_t bits=0;   // 1FC9 offer is ~105 B on air
     bool ok=false;
     if(r.kind==(uint8_t)FrameKind::Mode) ok=makeModeCmd(r.ids,r.input.mode,r.tail,f);
-    else if(r.kind==(uint8_t)FrameKind::BindOffer) { f=orcon::make1FC9_bind(r.ids); ok=true; }
+    else if(r.kind==(uint8_t)FrameKind::BindOffer) ok=makeBindOffer(r.ids,f);
     else if(r.kind==(uint8_t)FrameKind::BindAck) ok=makeBindAck(r.ids,f);
     if(!ok) return false;
     bytes=ramses::encodeFrame(f,packed,sizeof(packed),TX_PREAMBLE_BYTES,&bits);
@@ -121,7 +137,7 @@ void Owner::tick(uint32_t now,bool rxHealthy) {
             result_.touched=true; // from here a hardware backend may have changed radio state
             if(!port_.prepare(result_.request,result_.bytes)) fail(Error::Prepare);
             else if(!port_.start(now)) fail(Error::Start);
-            else step_=Step::Simulate;
+            else { result_.startedMs=now; step_=Step::Simulate; }
             break;
         case Step::Simulate: {
             if(due(now,deadline_)) { fail(Error::SendTimeout); break; }
@@ -160,6 +176,7 @@ Admission Controller::begin(Request& request,uint32_t now) {
     status_.acceptedMs=now;
     acceptedMs_=lastAcceptedMs_=now; haveAccepted_=true; ownerTimedOut_=false;
     priorChanged_=false; observed_=Phase::NotConfirmed; observedMs_=0;
+    earlyN_=0; status_.reported=false; status_.reportMs=0; status_.prompt=false;
     return Admission::Accepted;
 }
 Admission Controller::submit(Input input,const orcon::Ids& ids,bool known,bool ready,bool identityClear,uint32_t now) {
@@ -198,14 +215,13 @@ Admission Controller::submitCtl(uint8_t mode,uint8_t tail,const orcon::Ids& ids,
     if(status_.busy) return Admission::Busy;
     if(!ready||status_.locked) return Admission::Unavailable;
     if(identityCollided_||!identityClear||(status_.haveRemote&&status_.remoteId==ids.us)) return Admission::IdentityConflict;
-    if(!status_.haveRemote) return Admission::IdentityUnverified;
     if(haveAccepted_&&(uint32_t)(now-lastAcceptedMs_)<RATE_CTL_MS) return Admission::Limited;
-    if(!status_.haveUnit||(uint32_t)(now-status_.unitMs)>=UNIT_STATE_MAX_AGE_MS) return Admission::UnitStateUnknown;
-    if(status_.unitMode==mode) return Admission::Unchanged;
-    if(!due(now,status_.remoteMs+REMOTE_GUARD_MS)) return Admission::RemoteActive;
+    const bool fresh=status_.haveUnit&&(uint32_t)(now-status_.unitMs)<UNIT_STATE_MAX_AGE_MS;
+    if(fresh&&status_.unitMode==mode) return Admission::Unchanged;
+    if(status_.haveRemote&&!due(now,status_.remoteMs+REMOTE_GUARD_MS)) return Admission::RemoteActive;
     Input input; input.request=status_.nextRequest; input.mode=mode;
     Request request; request.input=input; request.ids=ids; request.expires=now+QUEUE_MS;
-    request.prior=status_.unitMode; request.tail=tail;
+    request.prior=fresh?status_.unitMode:0xFF; request.tail=tail;   // 0xFF: prior unknown
     return begin(request,now);
 }
 Admission Controller::submitBind(uint8_t kind,const orcon::Ids& ids,bool ready,bool identityClear,uint32_t now) {
@@ -241,7 +257,8 @@ void Controller::consumeResult(uint32_t now) {
     } else if(result.rfSent) {
         if(result.request.kind==(uint8_t)FrameKind::Mode) {   // only mode commands await a unit report
             status_.phase=Phase::AwaitUnit;
-            if(interfered()||priorChanged_) settle(Phase::Ambiguous);
+            for(uint8_t i=0;i<earlyN_;i++) report(early_[i].mode,early_[i].ms);
+            if(status_.phase==Phase::AwaitUnit&&(interfered()||priorChanged_)) settle(Phase::Ambiguous);
         } else settle(Phase::Idle);   // bind offer/ack: send done; setupflow::Pair drives the UI
     }
     else settle(Phase::DryRunComplete);
@@ -283,21 +300,35 @@ void Controller::onFrame(const ramses::Frame& f,uint32_t receivedMs,uint32_t now
        f.cmd!=0x31D9||f.len<3||f.payload[0]!=0||f.payload[2]>7) return;
     const uint8_t mode=f.payload[2];
     if(!status_.haveUnit||due(receivedMs,status_.unitMs)) { status_.unitMode=mode; status_.unitMs=receivedMs; status_.haveUnit=true; }
-    const Result& r=status_.result;
-    // Fail closed when the admission-time prior state changed while queued, or
-    // a delayed pre-send report proves it had already changed before our send.
-    if((status_.phase==Phase::Queued&&due(receivedMs,acceptedMs_))||
-       (status_.phase==Phase::AwaitUnit&&!due(receivedMs,r.sentMs+1))) {
-        if(mode!=r.request.prior) priorChanged_=true;
+    if(status_.phase==Phase::Queued) {
+        // Before acceptance: just the prior state. After it: kept until the result tells
+        // whether it came before our transmission (prior changed) or after it (evidence).
+        if(due(receivedMs,acceptedMs_)) {
+            if(earlyN_<EARLY_MAX) early_[earlyN_++]=Early{mode,receivedMs};
+            else priorChanged_=true;
+        }
+        return;
     }
-    if(status_.phase!=Phase::AwaitUnit) return;
-    if(!due(receivedMs,r.restoredMs)||!due(receivedMs,r.sentMs+1)||due(receivedMs,r.sentMs+CONFIRM_MS)) return; // old or late
+    if(status_.phase==Phase::AwaitUnit) report(mode,receivedMs);
+}
+void Controller::report(uint8_t mode,uint32_t receivedMs) {
+    const Result& r=status_.result;
+    // At or before the TX-start pass: the state before our frame. A different stand there
+    // means the prior changed under us (fail closed); it is never evidence.
+    if(!due(receivedMs,r.startedMs+1)) { if(mode!=r.request.prior) priorChanged_=true; return; }
+    if(due(receivedMs,r.sentMs+CONFIRM_MS)) return;   // late
+    const bool prompt=!due(receivedMs,r.startedMs+PROMPT_MS+1);
+    // Unknown prior: a later matching report may be a spontaneous broadcast of an unchanged
+    // stand, so only the unit's prompt reaction is evidence. Other stands still count below.
+    if(r.request.prior==0xFF&&mode==r.request.input.mode&&!prompt) return;
     if(interfered()||priorChanged_) settle(Phase::Ambiguous);
     else if(mode!=r.request.input.mode&&mode!=r.request.prior) observed_=Phase::Ambiguous;
     else if(observed_!=Phase::Ambiguous&&(!observedMs_||due(receivedMs,observedMs_))) {
-        observedMs_=receivedMs;
-        observed_=mode==r.request.input.mode?Phase::UnitReported:
-                  mode==r.request.prior?Phase::Unchanged:Phase::Ambiguous;
+        const Phase o=mode==r.request.input.mode?Phase::UnitReported:
+                      mode==r.request.prior?Phase::Unchanged:Phase::Ambiguous;
+        // reportMs: the FIRST report of the current reading (the unit's reaction time).
+        if(!status_.reported||o!=observed_) { status_.reported=true; status_.reportMs=receivedMs; status_.prompt=prompt; }
+        observedMs_=receivedMs; observed_=o;
         // Retain the reservation through the whole window: later interference
         // must not be hidden by an early matching report.
     }

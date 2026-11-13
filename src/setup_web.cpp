@@ -43,7 +43,7 @@ static const bool SIMULATED = !ORCON_TX_RF_ENABLE;
 static const bool CAN_TX = !RX_ONLY;
 static const bool SIMULATED = false;
 #endif
-static const bool CAN_PAIR = CAN_TX && CAN_RX && (!ORCON_TX_POC || SIMULATED);
+static const bool CAN_PAIR = CAN_TX && CAN_RX && (!ORCON_TX_POC || SIMULATED || ORCON_TX_PAIR);
 
 static WebServer* g_srv = nullptr;
 static char     g_token[33] = "";
@@ -424,7 +424,9 @@ static const char* ctlConfirm(const txpoc::Status& s) {
     switch (s.phase) {
         case txpoc::Phase::Queued:
         case txpoc::Phase::AwaitUnit:      return "pending";
-        case txpoc::Phase::UnitReported:   return "observed";
+        // confirmed: on air, the requested stand, reported within PROMPT_MS of our TX start
+        // (the unit's reaction to our frame). A later matching report is only observed.
+        case txpoc::Phase::UnitReported:   return s.result.rfSent && s.prompt ? "confirmed" : "observed";
         case txpoc::Phase::Unchanged:      return "unchanged";
         case txpoc::Phase::Ambiguous:      return "ambiguous";
         case txpoc::Phase::NotConfirmed:   return "not_confirmed";
@@ -447,7 +449,7 @@ static void remoteBody(int code) {
     o.add("{\"supported\":true,\"id\":%lu,\"key\":\"%s\",\"minutes\":0,"
           "\"accepted\":%s,\"sent\":%s,\"confirm\":\"%s\",\"age_s\":%lu,"
           "\"unit_mode\":\"%s\",\"unit_age_s\":%ld,"
-          "\"phase\":\"%s\",\"error\":\"%s\",\"rf_sent\":%s,\"simulated\":%s,\"unit_confirmed\":false,\"next_request\":%lu,"
+          "\"phase\":\"%s\",\"error\":\"%s\",\"rf_sent\":%s,\"simulated\":%s,\"unit_confirmed\":%s,\"next_request\":%lu,"
           "\"restore_diag\":\"%08lX\",\"tx_starts\":%lu}",
           (unsigned long)(isCmd ? r.request.input.request : 0),
           isCmd ? keyOfMode(r.request.input.mode) : "",
@@ -457,7 +459,8 @@ static void remoteBody(int code) {
           orcon::modeName(os.mode),
           os.modeMs ? long((now - os.modeMs) / 1000) : -1L,
           isCmd ? txpoc::phaseName(s.phase) : "idle", isCmd ? txpoc::errorName(r.error) : "none",
-          isCmd && r.rfSent ? "true" : "false", SIMULATED ? "true" : "false", (unsigned long)s.nextRequest,
+          isCmd && r.rfSent ? "true" : "false", SIMULATED ? "true" : "false",
+          isCmd && !strcmp(ctlConfirm(s), "confirmed") ? "true" : "false", (unsigned long)s.nextRequest,
           (unsigned long)restoreDiag, (unsigned long)txpoc::rfTxStarts());
     reply(code, o);
 }
@@ -765,7 +768,11 @@ void onFrame(const ramses::Frame& f, uint32_t seq, int16_t rssi) {
     const Why w = g_read.onFrame(f, g_ev, seq, millis(), rssi);
     consoleFrame(f, seq, rssi, w, othersBefore);
     captureFrame(f, seq, rssi);
-    if (!SIMULATED) g_pair.onFrame(f, orcon::ids().us, ORCON_TX_POC);
+#if ORCON_TX_POC
+    if (!SIMULATED) g_pair.onFrame(f, orcon::ids().us, true, g_pendOffer);
+#else
+    g_pair.onFrame(f, orcon::ids().us);
+#endif
     if (f.cmd == 0x31D9 && f.len >= 3 && f.has_addr[0] && orcon::state().fanKnown && f.addr[0] == orcon::ids().fan &&
         (f.type == ramses::MsgType::I || f.type == ramses::MsgType::RP))
         g_cmd.onUnitMode(f.payload[2], seq);
@@ -789,8 +796,28 @@ void consumeTxResults(uint32_t now) {
                   (unsigned long)loggedReq, keyOfMode(ts.result.request.input.mode),
                   ts.result.rfSent ? "verzonden (RF)" : SIMULATED ? "dry-run, niet verzonden" : "niet verzonden",
                   txpoc::errorName(ts.result.error), diag ? "mislukt 0x" : "ok ", diag, (unsigned long)txpoc::rfTxStarts());
+        // Correlation evidence: compare these t values with the RX lines' sync times.
+        if (ts.result.rfSent && ts.reported)
+            g_con.add(rfcon::INFO, now, "TX #%lu %s: TX-start t=%lu, unitmelding t=%lu (+%lu ms)",
+                      (unsigned long)loggedReq, txpoc::phaseName(ts.phase), (unsigned long)ts.result.startedMs,
+                      (unsigned long)ts.reportMs, (unsigned long)(ts.reportMs - ts.result.startedMs));
+        else if (ts.result.rfSent)
+            g_con.add(rfcon::INFO, now, "TX #%lu %s: TX-start t=%lu, geen bruikbare unitmelding",
+                      (unsigned long)loggedReq, txpoc::phaseName(ts.phase), (unsigned long)ts.result.startedMs);
     }
     const bool sentOk = ts.result.error == txpoc::Error::None && (ts.result.rfSent || SIMULATED);
+    if ((g_pendOffer || g_pendAck) && !ts.busy && ts.result.request.kind != (uint8_t)txpoc::FrameKind::Mode) {
+#if ORCON_TX_RF_ENABLE
+        const unsigned long diag = (unsigned long)radio::sx1276::restoreDiag();
+#else
+        const unsigned long diag = 0;
+#endif
+        g_con.add(sentOk ? rfcon::INFO : rfcon::WARN, now, "koppelen: %s %s, fout %s, RX-herstel %s%08lX, %u B on-air, pakketten deze boot %lu",
+                  ts.result.request.kind == (uint8_t)txpoc::FrameKind::BindOffer ? "1FC9-aanbod" : "1FC9-afsluiting",
+                  ts.result.rfSent ? "verzonden (RF)" : SIMULATED ? "dry-run, niet verzonden" : "niet verzonden",
+                  txpoc::errorName(ts.result.error), diag ? "mislukt 0x" : "ok ", diag, unsigned(ts.result.bytes),
+                  (unsigned long)txpoc::rfTxStarts());
+    }
     if (g_pendOffer && !ts.busy && ts.result.request.kind == (uint8_t)txpoc::FrameKind::BindOffer) {
         if (SIMULATED && sentOk) {
             g_pairDryComplete = true;
@@ -812,8 +839,14 @@ void tick(uint32_t now) {
 #if ORCON_TX_POC
     consumeTxResults(now); // settle completions before expiry or any follow-up
     g_pair.tick(now, pairDone(), pairFan());
-    // The only automatic TX: compiled out wherever pairing is unsupported (RF builds).
-    if (CAN_PAIR && g_pair.st == St::Active && g_pair.confirmed && !g_pair.ackSent &&
+    static bool confirmLogged = false;
+    if (g_pair.st == St::Active && g_pair.sent && g_pair.confirmed && !confirmLogged)
+        g_con.add(rfcon::INFO, now, "koppelen: unit bevestigde (W 1FC9 00 31D9) %lu ms na het aanbod; afsluiting volgt",
+                  (unsigned long)(now - g_pair.sentAtMs()));
+    confirmLogged = g_pair.st == St::Active && g_pair.sent && g_pair.confirmed;
+    // The only automatic TX: compiled out wherever pairing is unsupported (RF builds without
+    // ORCON_TX_PAIR). One closing ack per session, inside the per-boot packet cap.
+    if (CAN_PAIR && g_pair.st == St::Active && g_pair.sent && g_pair.confirmed && !g_pair.ackSent &&
         !g_pair.txFailed && !g_pendAck) {
         orcon::Ids ids = orcon::ids(); ids.fan = g_pair.from;
         const rlog::Device* heard = nullptr; const size_t heardN = rlog::devices(&heard);

@@ -12,6 +12,12 @@
 #ifndef ORCON_TX_MAX_PER_BOOT
 #define ORCON_TX_MAX_PER_BOOT 0   // 0: no per-boot cap (the 2 s admission floor still applies)
 #endif
+#ifndef ORCON_TX_PAIR
+#define ORCON_TX_PAIR 0           // 1: RF pairing (1FC9 offer + closing ack) on the capped RF test image
+#endif
+#if (ORCON_TX_PAIR != 0 && ORCON_TX_PAIR != 1) || (ORCON_TX_PAIR && (!ORCON_TX_RF_ENABLE || !ORCON_WEB_CONTROL || !ORCON_TX_MAX_PER_BOOT))
+#error "ORCON_TX_PAIR requires the capped RF web-control test image (RF, web control, ORCON_TX_MAX_PER_BOOT)"
+#endif
 #if ORCON_TX_MAX_PER_BOOT < 0 || ORCON_TX_MAX_PER_BOOT > 100 || (ORCON_TX_MAX_PER_BOOT && !ORCON_TX_RF_ENABLE)
 #error "ORCON_TX_MAX_PER_BOOT is 0, or 1..100 on the RF build only"
 #endif

@@ -17,15 +17,19 @@ class Sx1276Backend : public Backend {
 public:
     bool prepare(const Request& r, size_t& bytes) override {
         ramses::Frame f;
-        // The captured offer is truncated. The legacy 24-byte offer is not proven
-        // for this device and exceeds the 64-byte FIFO. Never put it on air.
-        if (r.kind != (uint8_t)FrameKind::Mode) return false;
-        bool ok = makeModeCmd(r.ids, r.input.mode, r.tail, f);
+        bool ok = false;
+        if (r.kind == (uint8_t)FrameKind::Mode) ok = makeModeCmd(r.ids, r.input.mode, r.tail, f);
+#if ORCON_TX_PAIR
+        // Pairing frames exist on the capped RF test image only: the offer as the user's
+        // remote sends it (captured), and the closing ack after the unit's W 1FC9.
+        else if (r.kind == (uint8_t)FrameKind::BindOffer) ok = makeBindOffer(r.ids, f);
+        else if (r.kind == (uint8_t)FrameKind::BindAck) ok = makeBindAck(r.ids, f);
+#endif
         if (!ok) return false;
         size_t bits = 0;
         bytes_ = ramses::encodeFrame(f, buf_, sizeof(buf_), TX_PREAMBLE_BYTES, &bits);
         bytes = bytes_;
-        return bytes_ > 0 && bits > 0;
+        return bytes_ > 0 && bits > 0 && bytes_ <= radio::sx1276::TX_MAX_BYTES;
     }
     bool start(uint32_t) override {
 #if ORCON_TX_MAX_PER_BOOT
@@ -37,7 +41,10 @@ public:
         return radio::sx1276::txBegin(buf_, bytes_);
     }
     static std::atomic<uint32_t> starts;
-    Completion poll(uint32_t) override { return radio::sx1276::txDone() ? Completion::Complete : Completion::Pending; }
+    Completion poll(uint32_t) override {
+        if (radio::sx1276::txDone()) return Completion::Complete;
+        return radio::sx1276::txFailed() ? Completion::Failed : Completion::Pending;
+    }
     bool cleanup() override { return true; }                       // restoreRx does the mode change
     bool restoreRx() override { return radio::sx1276::txRestoreRx(); }
     bool onAir() const override { return true; }                   // a completed cycle really transmitted

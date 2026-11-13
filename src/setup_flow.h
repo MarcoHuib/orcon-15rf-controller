@@ -86,13 +86,18 @@ public:
     void start(uint32_t sid, uint32_t now) { *this = Pair(); this->sid = sid; st = St::Active; startMs_ = now; }
     void cancel() { if (st == St::Active) st = St::Cancelled; }
     static bool isBindCombo(uint8_t keyMask) { return keyMask == ((1u << K_AUTO) | (1u << K_1)); }
-    void bindResult(bool ok, uint32_t now) { sent = ok; txFailed = !ok; sentMs_ = now; }
-    void onFrame(const ramses::Frame& f, const ramses::DeviceId& us, bool strict=false);
+    // A confirmation seen while the offer was still in flight counts only if the offer
+    // really went out (the unit can only answer an offer it received).
+    void bindResult(bool ok, uint32_t now) { sent = ok; txFailed = !ok; sentMs_ = now; if (!ok) confirmed = false; }
+    // offerInFlight: our offer was handed to the radio and its result is not yet known. The
+    // unit answers within milliseconds, well before the owner publishes that result.
+    void onFrame(const ramses::Frame& f, const ramses::DeviceId& us, bool strict=false, bool offerInFlight=false);
     void tick(uint32_t now, bool fwPaired, const ramses::DeviceId& fan);
     // "ready" | "bind_sent" | "tx_failed" | "rf_confirmed" | "ack_sent" | "paired" | st name
     const char* status(bool fwPaired, const ramses::DeviceId& fan) const;
     bool paired(bool fwPaired, const ramses::DeviceId& fan) const { return confirmed && fwPaired && fan == from; }
     uint32_t leftMs(uint32_t now) const;
+    uint32_t sentAtMs() const { return sentMs_; }
 private:
     uint32_t startMs_ = 0, sentMs_ = 0;
 };

@@ -17,7 +17,11 @@ constexpr uint32_t RATE_CTL_MS=2000;
 constexpr uint32_t CONFIRM_MS=3000;
 constexpr uint32_t EXPIRY_GRACE_MS=250;      // loop-time slack so a timely, still-queued frame counts
 constexpr uint32_t REMOTE_GUARD_MS=3000;     // a remote action this close before TX = interference
-constexpr uint32_t UNIT_STATE_MAX_AGE_MS=600000; // prior unit mode must be this fresh (PoC choice)
+constexpr uint32_t UNIT_STATE_MAX_AGE_MS=600000; // a prior unit mode this fresh is pinned as prior
+// The unit answers a command it accepts with 31D9 within ~20 ms (field 2026-11-13: 17 and 19 ms;
+// measurement 2: 16/17 presses within 300 ms) and sends nothing for an unbound sender. A
+// report this soon after our TX start is its reaction to our frame (a prompt report).
+constexpr uint32_t PROMPT_MS=500;
 constexpr uint32_t HEALTH_MAX_AGE_MS=250;    // RX-task heartbeat (one pass ~5 ms)
 bool due(uint32_t now, uint32_t deadline);
 bool validIds(const orcon::Ids& ids);
@@ -30,6 +34,9 @@ enum class FrameKind : uint8_t { Mode=0, BindOffer=1, BindAck=2 };
 // 22F1 fan mode, payload 00 NN TT (NN = 0 away, 1..3, 4 auto; TT = the unit family's
 // third byte: 04 MVS-15RHBP, 07 HRC400). TT must be nonzero.
 bool makeModeCmd(const orcon::Ids& ids, uint8_t mode, uint8_t tail, ramses::Frame& out);
+// I 1FC9 us -> 63:262142, 24 B: the bind offer exactly as the user's MVS-15 remote sends it
+// (local capture, 2026-11-11): tuples 00 1FC9 / 00 22F1 / 00 22F3 / 67 10E0, each with our ID.
+bool makeBindOffer(const orcon::Ids& ids, ramses::Frame& out);
 // I 1FC9 us -> fan, payload 00 (the closing frame of the observed bind handshake).
 bool makeBindAck(const orcon::Ids& ids, ramses::Frame& out);
 // Source ID equal to any sender heard (rlog devices, last remote/unit) = possible clone.
@@ -71,7 +78,10 @@ struct Result {
     bool cleanupFailed=false;          // independent of the first diagnostic
     bool touched=false;               // radio work began (prepare called): cleanup/restore needed
     bool rxRestored=false, rfSent=false;
-    uint32_t sentMs=0, restoredMs=0;
+    // startedMs: the RX-task pass `now` in which start() succeeded. The RF backend transmits
+    // and restores RX inside start(), and that pass decodes before the owner runs, so a sync
+    // stamped later than startedMs was received after our frame; at or before it, never.
+    uint32_t startedMs=0, sentMs=0, restoredMs=0;
     size_t bytes=0;
 };
 struct Exchange { Mailbox<Request> requests; Mailbox<Result> results; };
@@ -131,6 +141,8 @@ struct Status {
     bool haveUnit=false, haveRemote=false;
     uint8_t unitMode=0xFF; uint32_t unitMs=0, remoteMs=0;
     ramses::DeviceId remoteId;
+    bool reported=false; uint32_t reportMs=0;   // receive time of the first report of the current reading
+    bool prompt=false;                         // ...and it came within PROMPT_MS of our TX start
 };
 // Main-loop only. Cross-task traffic is exclusively through Exchange.
 class Controller {
@@ -139,8 +151,11 @@ public:
     // identityClear: identityConflict() was false for these ids.
     // Phase-1 endpoint protocol: client-sequenced requests, 10 s rate, modes 0..4.
     Admission submit(Input,const orcon::Ids&,bool known,bool ready,bool identityClear,uint32_t now);
-    // Wizard/web control: same admission, but the server assigns the sequence and the
-    // spacing is RATE_CTL_MS. tail must be 04 or 07 (from a verified profile); anything else is Invalid.
+    // Wizard/web control: the server assigns the sequence and the spacing is RATE_CTL_MS. tail
+    // must be 04 or 07 (from a verified profile); anything else is Invalid. Unlike submit(), it
+    // needs neither the physical remote heard this boot (the clone check uses the profile's
+    // remote ID, setup_web, plus every sender heard: identityClear) nor a fresh unit state:
+    // without one the prior is unknown (0xFF) and only a prompt unit report counts.
     Admission submitCtl(uint8_t mode,uint8_t tail,const orcon::Ids&,bool known,bool ready,
                         bool identityClear,uint32_t now,uint32_t request=0);
     // Pairing sends: BindOffer (ids.fan = broadcast is allowed) and BindAck (ids.fan = the
@@ -154,6 +169,13 @@ public:
     const Status& status() const { return status_; }
 private:
     bool interfered() const;
+    void report(uint8_t mode,uint32_t receivedMs);   // one unit 31D9 against the published result
+    // Unit reports drained while still Queued: the RF owner may already have transmitted (and
+    // the unit answered) before its result is published. Judged when the result arrives.
+    struct Early { uint8_t mode; uint32_t ms; };
+    static constexpr uint8_t EARLY_MAX=4;            // more than this while queued = fail closed
+    Early early_[EARLY_MAX]{};
+    uint8_t earlyN_=0;
     void selectUnit(const ramses::DeviceId&);
     ramses::DeviceId observedUnit_;
     bool unitSelected_=false;

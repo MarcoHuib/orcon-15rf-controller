@@ -159,8 +159,8 @@ Why Read::onFrame(const ramses::Frame& f, uint32_t ev, uint32_t seq, uint32_t no
 }
 
 // ---- Pair ---------------------------------------------------------------------
-void Pair::onFrame(const ramses::Frame& f, const ramses::DeviceId& us, bool strict) {
-    if (st != St::Active || !sent || confirmed || f.cmd != 0x1FC9 || f.type == ramses::MsgType::RQ) return;
+void Pair::onFrame(const ramses::Frame& f, const ramses::DeviceId& us, bool strict, bool offerInFlight) {
+    if (st != St::Active || !(sent || offerInFlight) || confirmed || f.cmd != 0x1FC9 || f.type == ramses::MsgType::RQ) return;
     if (!f.has_addr[0] || f.addr[0] == us) return;
     const bool toUs = (f.has_addr[1] && f.addr[1] == us) || (f.has_addr[2] && f.addr[2] == us);
     if (strict) {
