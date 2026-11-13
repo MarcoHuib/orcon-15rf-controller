@@ -91,6 +91,16 @@ check(run([OLD, NEW_P, NEW_P, NEW_P, OLD], on_trial=lambda: calls.append(1)).sta
       'rollback test: hold sent exactly once in the trial boot, then the old image is reported')
 calls.clear(); run([OLD, NEW_V], on_trial=lambda: calls.append(1))
 check(calls == [], 'rollback test: no hold for an image that is already confirmed')
+# Two images of ONE commit (RX-only rollback image in app0, control image written to app1): only the
+# slot tells them apart. Found on hardware 2026-11-13: a real rollback was reported as CONFIRMED.
+SAME_OLD = {'fw': 'n' * 40, 'variant': 'rx-only', 'running': 'app0', 'running_state': 'valid'}
+SAME_P = {'fw': 'n' * 40, 'variant': 'control', 'running': 'app1', 'running_state': 'pending-verify'}
+SAME_V = dict(SAME_P, running_state='valid')
+slot = dict(target='app1', old_slot='app0')
+check(run([SAME_OLD, SAME_P, SAME_P, SAME_OLD], **slot).startswith('ROLLED BACK'), 'same commit: back in the old slot is a rollback, not a success')
+check(run([SAME_OLD, SAME_P, SAME_V], **slot).startswith('CONFIRMED'), 'same commit: confirmed only from the target slot')
+check(run([SAME_OLD] * 30, **slot).startswith('ROLLED BACK'), 'same commit: never left the old slot -> rollback after the grace time')
+check(not run([SAME_OLD, SAME_OLD, SAME_OLD], limit=10, **slot).startswith('CONFIRMED'), 'same commit: the old slot is never taken for the new image')
 # Install record for heltec_v2.sh recover: "<sha256 of the image> <label>", private file, appended
 with tempfile.TemporaryDirectory() as d:
     fw = Path(d) / 'fw.bin'; fw.write_bytes(b'\xe9image'); rec = Path(d) / 'o' / 'installed.txt'

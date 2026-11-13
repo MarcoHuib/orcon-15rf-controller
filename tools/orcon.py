@@ -188,7 +188,7 @@ def cmd_ota_install(args):
     print('written and verified on the board; restarting into a trial boot')
     hold = (lambda: print('rollback test: hold ->', http(h, '/api/ota/hold', {}))) if args.test_rollback else None
     verdict = watch_confirmation(lambda: http(h, '/api/ota', timeout=4), commit, before['fw'], time.time, time.sleep,
-                                 limit=480 if hold else 420, on_trial=hold)
+                                 limit=480 if hold else 420, on_trial=hold, target=b['partition'], old_slot=before.get('running'))
     print(verdict)
     want = 'ROLLED BACK' if args.test_rollback else 'CONFIRMED'
     if not verdict.startswith(want): raise SystemExit(1)
@@ -201,9 +201,11 @@ def record_install(path, firmware, label):
     os.chmod(path, 0o600)
 
 
-def watch_confirmation(get, commit, old_fw, clock, sleep, limit=420, boot_grace=90, on_trial=None):
-    """The new image must boot (fw == commit) and confirm itself (running_state valid).
-    The old firmware again after the new one ran, or never leaving it, means a rollback.
+def watch_confirmation(get, commit, old_fw, clock, sleep, limit=420, boot_grace=90, on_trial=None, target=None, old_slot=None):
+    """The new image must boot (fw == commit, from the target slot the upload wrote) and confirm
+    itself (running_state valid). The old slot again after the new image ran, or never leaving it,
+    means a rollback. Slots, not only commits: two images of one commit (e.g. the RX-only rollback
+    image and the control image) differ only by slot and variant.
     on_trial is called once, as soon as the new image is seen in its trial boot."""
     start, seen_new, seen_trial, last = clock(), False, False, None
     while clock() - start < limit:
@@ -212,7 +214,9 @@ def watch_confirmation(get, commit, old_fw, clock, sleep, limit=420, boot_grace=
         except (urllib.error.URLError, OSError): continue
         if st != 200: continue
         last = o
-        if o.get('fw') == commit:
+        new = o.get('fw') == commit and (target is None or o.get('running') == target)
+        old = o.get('running') == old_slot if old_slot else o.get('fw') == old_fw
+        if new:
             seen_new = True
             if o.get('running_state') == 'pending-verify':
                 seen_trial = True
@@ -222,8 +226,8 @@ def watch_confirmation(get, commit, old_fw, clock, sleep, limit=420, boot_grace=
                 # the bootloader rollback was bypassed (e.g. the core confirmed it at boot).
                 if not seen_trial: return f'NO TRIAL BOOT: {commit[:7]} was already confirmed when first seen; rollback protection is not active'
                 return f"CONFIRMED: {commit[:7]} runs from {o['running']} and passed its health check"
-        elif o.get('fw') == old_fw and (seen_new or clock() - start > boot_grace):
-            return f"ROLLED BACK: the board runs {old_fw[:7]} from {o.get('running')} again; see orcon.py status"
+        elif old and (seen_new or clock() - start > boot_grace):
+            return f"ROLLED BACK: the board runs {str(o.get('fw'))[:7]} ({o.get('variant')}) from {o.get('running')} again; see orcon.py status"
     return f'NO CONFIRMATION within {limit} s; last state: {last}'
 
 
