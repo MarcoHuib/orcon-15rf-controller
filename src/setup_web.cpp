@@ -1066,6 +1066,9 @@ void consumeTxResults(uint32_t now) {
 void tick(uint32_t now) {
     g_read.tick(now);
     consoleTick(now);
+#if ORCON_WEB_AUTH
+    g_sessions.sweep(now); g_throttle.sweep(now); g_recovery.sweep(now);   // before a millis() wrap revives them
+#endif
 #if ORCON_TX_POC
     consumeTxResults(now); // settle completions before expiry or any follow-up
     g_pair.tick(now, pairDone(), pairFan());

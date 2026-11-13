@@ -11,7 +11,7 @@
                                         PHRASE for images that transmit: "RF test image" (rftest),
                                         "control firmware" (the daily-use control image)
        ota-install ... --test-rollback  rollback test: the trial boot is told not to confirm itself
-                                        (POST /api/ota/hold); PASS only if the previous image returns
+                                        (POST /api/ota/hold, logged in); PASS only if the previous image returns
   orcon.py auth-code                    web login: a one-time code (10 min) to set or reset the
                                         password, issued only for a request signed with the OTA key
   orcon.py keygen                       create the signing key (once) and src/ota_pubkey.h
@@ -20,7 +20,7 @@ Host: --host, $ORCON_HOST, ~/.orcon/config.json {"host": ...}, else orcon15rf.lo
 Captures hold real device IDs: they go to captures/ (git-ignored), directories 0700, files 0600.
 Nothing here uses GitHub or the network beyond the board itself.
 """
-import argparse, hashlib, json, os, subprocess, sys, tempfile, time, urllib.error, urllib.request, uuid
+import argparse, getpass, hashlib, json, os, subprocess, sys, tempfile, time, urllib.error, urllib.request, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -43,15 +43,49 @@ def host(args):
     return 'orcon15rf.local'
 
 
-def http(h, path, body=None, timeout=10, ctype='application/json'):
+def http(h, path, body=None, timeout=10, ctype='application/json', headers=None):
     data = None if body is None else (body if isinstance(body, bytes) else json.dumps(body).encode())
     req = urllib.request.Request(f'http://{h}{path}', data=data, method='GET' if body is None else 'POST')
     if body is not None: req.add_header('Content-Type', ctype)
+    for k, v in (headers or {}).items(): req.add_header(k, v)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r: return r.status, json.loads(r.read() or b'{}')
     except urllib.error.HTTPError as e:
         try: return e.code, json.loads(e.read() or b'{}')
         except ValueError: return e.code, {}
+
+
+def cookie_sid(set_cookies):
+    """The orcon_sid value (32 hex) from the Set-Cookie headers of a login reply, else ''."""
+    for c in set_cookies:
+        v = c.split(';', 1)[0].strip()
+        if v.startswith('orcon_sid=') and len(v) == 42 and all(ch in '0123456789abcdef' for ch in v[10:]): return v[10:]
+    return ''
+
+
+def login(h, password, timeout=15):
+    """Web login (PBKDF2 on the board takes ~1.3 s). Returns the headers that authorise a mutating
+    request: session cookie, its CSRF token and the same-origin header the board requires."""
+    origin = f'http://{h}'
+    req = urllib.request.Request(f'{origin}/api/auth/login', data=json.dumps({'password': password}).encode(), method='POST',
+                                 headers={'Content-Type': 'application/json', 'Origin': origin})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            j, sid = json.loads(r.read() or b'{}'), cookie_sid(r.headers.get_all('Set-Cookie') or [])
+    except urllib.error.HTTPError as e:
+        try: err = json.loads(e.read() or b'{}').get('error', '')
+        except ValueError: err = ''
+        raise SystemExit(f'login refused (HTTP {e.code} {err})')
+    if not sid or not j.get('token'): raise SystemExit('login reply without a session')
+    return {'Cookie': f'orcon_sid={sid}', 'X-Orcon-Token': j['token'], 'Origin': origin}
+
+
+def rollback_hold(h, password, login_fn=login, post=http):
+    """Rollback test: the trial boot is a fresh boot (sessions live in RAM), so log in there,
+    then ask it not to confirm itself. The board only accepts this from a logged-in owner."""
+    def hold():
+        print('rollback test: hold ->', post(h, '/api/ota/hold', {}, headers=login_fn(h, password)))
+    return hold
 
 
 def private_dir(p):
@@ -170,6 +204,8 @@ def cmd_ota_install(args):
     v = subprocess.run(['bash', 'tools/heltec_v2.sh', 'verify', commit], cwd=wt, env=venv, capture_output=True, text=True)
     if v.returncode or 'VERIFIED' not in v.stdout: raise SystemExit('package verification failed:\n' + v.stdout[-800:] + v.stderr[-800:])
     mac = (wt / '.flashtools' / 'board.mac').read_text().strip()
+    # Asked before anything is written: the hold is sent minutes later, inside the trial boot.
+    password = getpass.getpass('Webwachtwoord van de controller (rollbacktest): ') if args.test_rollback else ''
     st, before = http(h, '/api/ota')
     if st != 200 or before.get('signed_ota') != 'ORCON-SIGNED-OTA v1': raise SystemExit(f'board has no signed OTA (HTTP {st}); USB bootstrap first')
     if before.get('running_state') == 'pending-verify': raise SystemExit('board is still confirming its running image; wait')
@@ -186,7 +222,7 @@ def cmd_ota_install(args):
     if st != 200: raise SystemExit(f'upload refused, boot partition unchanged: {u}')
     record_install(INSTALLED, pkg / 'firmware.bin', f'{commit[:7]}-{env} ota {datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}')
     print('written and verified on the board; restarting into a trial boot')
-    hold = (lambda: print('rollback test: hold ->', http(h, '/api/ota/hold', {}))) if args.test_rollback else None
+    hold = rollback_hold(h, password) if args.test_rollback else None
     verdict = watch_confirmation(lambda: http(h, '/api/ota', timeout=4), commit, before['fw'], time.time, time.sleep,
                                  limit=480 if hold else 420, on_trial=hold, target=b['partition'], old_slot=before.get('running'))
     print(verdict)

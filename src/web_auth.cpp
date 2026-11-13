@@ -87,6 +87,7 @@ Session* Sessions::find(const char* id, uint32_t now) {
 }
 void Sessions::remove(const char* id) { for (Session& s : s_) if (s.used && equal(s.id, id)) s = Session(); }
 void Sessions::clear() { for (Session& s : s_) s = Session(); }
+void Sessions::sweep(uint32_t now) { for (Session& s : s_) if (s.used && expired(s, now)) s = Session(); }
 size_t Sessions::active(uint32_t now) const {
     size_t n = 0;
     for (const Session& s : s_) if (!expired(s, now)) ++n;
@@ -95,9 +96,9 @@ size_t Sessions::active(uint32_t now) const {
 
 // ---- login throttle -------------------------------------------------------------------------
 uint32_t Throttle::waitMs(uint32_t now) const {
-    if (fails_ <= FREE_FAILURES) return 0;
+    if (!locked_) return 0;
     const int32_t d = int32_t(until_ - now);
-    return d > 0 ? uint32_t(d) : 0;
+    return d > 0 && uint32_t(d) <= MAX_LOCK_MS ? uint32_t(d) : 0;   // never more than the longest lock
 }
 void Throttle::failure(uint32_t now) {
     if (fails_ < 255) ++fails_;
@@ -105,7 +106,9 @@ void Throttle::failure(uint32_t now) {
     uint32_t lock = 30000;
     for (uint8_t i = FREE_FAILURES + 1; i < fails_ && lock < MAX_LOCK_MS; ++i) lock *= 2;
     until_ = now + (lock > MAX_LOCK_MS ? MAX_LOCK_MS : lock);
+    locked_ = true;
 }
+void Throttle::sweep(uint32_t now) { if (locked_ && !waitMs(now)) locked_ = false; }
 
 // ---- recovery --------------------------------------------------------------------------------
 static const char ALPHABET[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";   // 32 symbols, no 0/O/1/I
@@ -146,6 +149,10 @@ Recovery::Check Recovery::use(const char* in, uint32_t now) {
     if (fits && k == 8 && equal(norm, code_)) { code_[0] = 0; return Check::Ok; }
     if (++tries_ >= CODE_TRIES) { code_[0] = 0; return Check::Exhausted; }
     return Check::Wrong;
+}
+void Recovery::sweep(uint32_t now) {
+    if (nonce_[0] && uint32_t(now - nonceMs_) >= NONCE_TTL_MS) nonce_[0] = 0;
+    if (code_[0] && uint32_t(now - codeMs_) >= CODE_TTL_MS) memset(code_, 0, sizeof(code_));
 }
 const char* checkName(Recovery::Check c) {
     switch (c) {

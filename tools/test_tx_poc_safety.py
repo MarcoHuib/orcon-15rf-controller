@@ -179,4 +179,15 @@ bm=runtime.replace('if (txbudget::waitMs(g_budget, t, 1, est)) return false;',''
 try: tx_paths_safe(web,net,radio,bm,main_src)
 except AssertionError: print('PASS TX-path guard rejects mutation no-backend-budget')
 else: raise AssertionError('TX-path guard accepted mutation no-backend-budget')
+# Codex SEC-01: the rollback-test route can undo an update, so its first act is the owner login
+# check (session, CSRF, origin), and it only exists where that login exists.
+def hold_safe(ota):
+    body=fn(ota,'static void handleHold() {')
+    assert body.lstrip().startswith('if (!setupweb::authorize(true)) return;'),'hold must authorize first'
+    reg=ota.split('s.on("/api/ota/hold"',1)[0].rsplit('\n',2)[-2]
+    assert reg.strip()=='#if !ORCON_TX_POC || ORCON_WEB_CONTROL',('hold registration guard',reg)
+ota_src=Path('src/ota_signed.cpp').read_text(); hold_safe(ota_src)
+try: hold_safe(ota_src.replace('if (!setupweb::authorize(true)) return;','',1))
+except AssertionError: print('PASS hold guard rejects mutation unauthenticated-hold')
+else: raise AssertionError('hold guard accepted mutation unauthenticated-hold')
 print('PASS local source safety, guard mutations and capability compiles')

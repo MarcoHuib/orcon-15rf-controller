@@ -41,21 +41,27 @@ public:
     Session* find(const char* id, uint32_t now);          // valid + not expired; refreshes "last"
     void remove(const char* id);
     void clear();
+    void sweep(uint32_t now);                              // drop expired sessions (call often: see below)
     size_t active(uint32_t now) const;
 private:
     bool expired(const Session&, uint32_t now) const;
     Session s_[SESSIONS];
 };
 
+// All times are 32-bit millis(), which wraps after 49.7 days: an age check alone would revive
+// expired material then. sweep() erases it once expired; the main loop calls every sweep()
+// continuously (setupweb::tick), so nothing survives anywhere near a wrap.
 // Global, not per address: addresses are cheap on a LAN.
 class Throttle {
 public:
     uint32_t waitMs(uint32_t now) const;                  // 0: an attempt may be made now
     void failure(uint32_t now);
-    void success() { fails_ = 0; until_ = 0; }
+    void success() { fails_ = 0; locked_ = false; }
+    void sweep(uint32_t now);                             // an expired lock is gone for good
     uint8_t failures() const { return fails_; }
 private:
     uint8_t fails_ = 0;
+    bool locked_ = false;
     uint32_t until_ = 0;
 };
 
@@ -66,6 +72,7 @@ public:
     const char* issueCode(uint32_t now, Rng);             // "ABCD-EFGH", replaces any earlier code
     enum class Check : uint8_t { Ok, None, Expired, Wrong, Exhausted };
     Check use(const char* code, uint32_t now);            // Ok consumes the code
+    void sweep(uint32_t now);                             // drop an expired nonce or code
 private:
     char nonce_[33] = ""; uint32_t nonceMs_ = 0;
     char code_[9] = ""; uint32_t codeMs_ = 0; uint8_t tries_ = 0;

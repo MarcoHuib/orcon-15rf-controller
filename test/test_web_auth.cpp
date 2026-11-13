@@ -77,6 +77,35 @@ int main() {
     for (int i = 0; i < 10; ++i) th.failure(T + 100000);
     CHECK(th.waitMs(T + 100000) == MAX_LOCK_MS);
     th.success(); CHECK(th.waitMs(T + 100000) == 0 && th.failures() == 0);
+    // millis() wraps after 2^32 ms (49.7 days). Codex SEC-02/SEC-03: an expired lock must not come
+    // back (signed deadline arithmetic flips after ~24.8 days), and swept material stays gone.
+    const uint32_t DAY = 86400000u;
+    Throttle lk;
+    for (int i = 0; i < 5; ++i) lk.failure(T);
+    CHECK(lk.waitMs(T) == 30000);
+    lk.sweep(T + DAY);                                                   // the main loop sweeps all the time
+    CHECK(lk.waitMs(T + DAY) == 0 && lk.waitMs(T + 26 * DAY) == 0 && lk.waitMs(T + 0x80000000u + 1000) == 0);
+    CHECK(lk.waitMs(T + 0xFFFFFFFFu) == 0 && lk.failures() == 5);        // the count stays: the next lock is 60 s
+    lk.failure(T + 27 * DAY); CHECK(lk.waitMs(T + 27 * DAY) == 60000);
+    Throttle unswept;                                                    // even without a sweep: never above the longest lock
+    for (int i = 0; i < 5; ++i) unswept.failure(T);
+    CHECK(unswept.waitMs(T + 26 * DAY) == 0);
+    Sessions sw;
+    const Session old = sw.create(T, rng);
+    sw.sweep(T + IDLE_MS);                                               // idle a week: erased, not just "looks expired"
+    CHECK(!sw.find(old.id, uint32_t(T + 0x100000001ull)) && sw.active(T + IDLE_MS) == 0);
+    const Session live = sw.create(T, rng);
+    sw.sweep(T + IDLE_MS - 1); CHECK(sw.find(live.id, T + IDLE_MS - 1));   // a used session is kept
+    Recovery rs;
+    std::string rn = rs.issueNonce(T, rng);
+    rs.sweep(T + NONCE_TTL_MS);
+    CHECK(!rs.takeNonce(rn.c_str(), uint32_t(T + 0x100000001ull)));        // 2^32 + 1 ms later: still dead
+    std::string rc = rs.issueCode(T, rng);
+    rs.sweep(T + CODE_TTL_MS);
+    CHECK(rs.use(rc.c_str(), uint32_t(T + 0x100000001ull)) == Recovery::Check::None);
+    rn = rs.issueNonce(T, rng); rc = rs.issueCode(T, rng);
+    rs.sweep(T + 1000);                                                  // fresh material survives a sweep
+    CHECK(rs.takeNonce(rn.c_str(), T + 2000) && rs.use(rc.c_str(), T + 2000) == Recovery::Check::Ok);
     // Recovery: one-time nonce with TTL, one-time code with 5 tries and 10 minutes.
     Recovery r;
     std::string n1 = r.issueNonce(T, rng);
