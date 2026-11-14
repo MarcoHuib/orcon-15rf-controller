@@ -73,6 +73,7 @@ public:
     enum class Check : uint8_t { Ok, None, Expired, Wrong, Exhausted };
     Check use(const char* code, uint32_t now);            // Ok consumes the code
     void sweep(uint32_t now);                             // drop an expired nonce or code
+    void clear();                                         // drop both (e.g. once an owner key exists)
 private:
     char nonce_[33] = ""; uint32_t nonceMs_ = 0;
     char code_[9] = ""; uint32_t codeMs_ = 0; uint8_t tries_ = 0;

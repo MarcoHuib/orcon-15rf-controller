@@ -12,7 +12,11 @@
   - At 300 s the image marks itself invalid (`esp_ota_mark_app_invalid_rollback_and_reboot`). That call refuses when otadata holds no usable previous entry. The image then restarts anyway, and the bootloader marks the unconfirmed image `ABORTED` and starts the other slot. A trial boot therefore never stays running unhealthy.
   - After the USB bootstrap, otadata is the pinned `boot_app0.bin`. Its entry 0 (seq 1, app0) is valid, so the first OTA can roll back to app0 through either path.
 - **The trial boot depends on one linker detail.** `verifyRollbackLater()` must be defined `extern "C"`. Otherwise the Arduino core's weak default stays linked, and `initArduino()` confirms every new image at boot, so there is no trial boot and no rollback. The evidence row `rollback-hook-<env>` checks the linked ELF. `orcon.py` treats an image that is already valid when first seen as a failure (`NO TRIAL BOOT`).
-- **Rollback test.** `POST /api/ota/hold` works only during a trial boot. It stops that boot from confirming itself, so the 300 s path runs on real hardware. It can only make an update fail; it never installs anything.
+- **Rollback test.** `POST /api/ota/hold` works only during a trial boot. It stops that boot from confirming itself, so the 300 s path runs on real hardware. It can only make an update fail; it never installs anything. It needs the owner's logged-in session (Codex review of PR #10, SEC-01).
+- **Owner consent (ownership-model firmware, `docs/PROVISIONING.md`).** The release key proves an image is official; it does not authorise installing it. Nonce, begin, upload and hold need the owner's session with its CSRF token. Two manifest forms exist:
+  - v1, targeted: this board plus a nonce. The CLI path below.
+  - v2, release: one signature for every board, never older than the running release, never the RF test image. The web page installs `.orconfw` bundles made by `orcon.py release`.
+  Every image must also carry `ORCON-OWNER-MODEL v1`, so firmware from before per-device owner keys cannot come back over the air.
 - **Data that survives.** NVS (WiFi, profiles, identities, OLED, MQTT) is never written by an update.
 
 ## What the device accepts (`src/ota_signed.cpp`, rules in `src/ota_policy.cpp`)
@@ -68,7 +72,9 @@
   2. signs a manifest for this board and uploads it;
   3. watches the trial boot and prints `CONFIRMED` or `ROLLED BACK`;
   4. appends the image hash to `~/.orcon/installed.txt` (0600), which `heltec_v2.sh recover` uses to identify slots.
-- `ota-install ... --test-rollback`: the same upload, then `POST /api/ota/hold` in the trial boot. It passes only if the previous image returns.
+- `ota-install ... --test-rollback`: the same upload, then `POST /api/ota/hold` in the trial boot. It passes only if the previous image returns. The CLI asks for the web password and logs in inside the trial boot.
+- On ownership-model firmware (`owner_model` in `/api/ota`) `ota-install` asks for the web password and sends the session with every step. Older firmware installs exactly as before.
+- `release --worktree <wt> --env <env> --version N --yes`: a signed v2 bundle for every board (`docs/RELEASES.md`).
 - **Host.** Signed-OTA builds answer on `orcon15rf.local` (mDNS). An IP address in `~/.orcon/config.json` also works.
 
 ## USB is still needed once

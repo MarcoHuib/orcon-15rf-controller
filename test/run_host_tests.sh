@@ -47,7 +47,18 @@ run rf_console -Wall -Wextra -Werror -I src test/test_rf_console.cpp src/rf_cons
 AJ=.pio/libdeps/heltec_v2_sx1276/ArduinoJson/src
 run ota_policy -Wall -Wextra -Werror -I src -I $AJ test/test_ota_policy.cpp src/ota_policy.cpp
 run web_auth -Wall -Wextra -Werror -I src -I $AJ test/test_web_auth.cpp src/web_auth.cpp
-WEB="-Wall -Wextra -Werror -DARDUINOJSON_ENABLE_ARDUINO_STRING=1 -I test/shim_web -I src -I $AJ test/test_setup_web.cpp src/setup_web.cpp src/setup_flow.cpp src/remote_profiles.cpp src/rf_console.cpp src/web_auth.cpp $ORCON"
+run provision -Wall -Wextra -Werror -I src test/test_provision.cpp src/provision.cpp
+run reset_gesture -Wall -Wextra -Werror -I src test/test_reset_gesture.cpp
+# The owner key file against OpenSSL (primitives and the openssl CLI as the independent reader).
+OSSL="$( (brew --prefix openssl 2>/dev/null || true) | head -1)"
+if [ -n "$OSSL" ] && [ -f "$OSSL/include/openssl/evp.h" ]; then
+    run owner_key -Wall -Wextra -Werror -I src -I "$OSSL/include" test/test_owner_key.cpp src/owner_key.cpp -L "$OSSL/lib" -lcrypto
+elif pkg-config --exists libcrypto 2>/dev/null; then
+    run owner_key -Wall -Wextra -Werror -I src $(pkg-config --cflags libcrypto) test/test_owner_key.cpp src/owner_key.cpp $(pkg-config --libs libcrypto)
+else
+    echo "owner_key: NOT TESTED (no OpenSSL headers/libcrypto found)"
+fi
+WEB="-Wall -Wextra -Werror -DARDUINOJSON_ENABLE_ARDUINO_STRING=1 -I test/shim_web -I src -I $AJ test/test_setup_web.cpp src/setup_web.cpp src/setup_flow.cpp src/remote_profiles.cpp src/rf_console.cpp src/web_auth.cpp src/owner_key.cpp src/provision.cpp $ORCON"
 if [ -d "$AJ" ]; then
     run setup_web_rx -DRADIO_SX1276=1 -DRX_ONLY=1 $WEB
     run setup_web_rx_v2 -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 $WEB          # RX-only rollback image: web login
@@ -56,9 +67,15 @@ if [ -d "$AJ" ]; then
     run setup_web_webctl_rf -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 -DORCON_TX_RF_ENABLE=1 $WEB src/tx_poc.cpp
     run setup_web_rftest -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 -DORCON_TX_RF_ENABLE=1 -DORCON_TX_MAX_PER_BOOT=50 -DORCON_TX_PAIR=1 $WEB src/tx_poc.cpp
     run setup_web_control -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 -DORCON_TX_RF_ENABLE=1 -DORCON_TX_PAIR=1 -DORCON_TX_CONTROL=1 $WEB src/tx_poc.cpp
+    # A new device end to end (wizard, key, recovery, refusals): the control image and the RX-only rollback image.
+    run setup_web_provision -DPROVISION_SCENARIO=1 -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 -DORCON_TX_RF_ENABLE=1 -DORCON_TX_PAIR=1 -DORCON_TX_CONTROL=1 $WEB src/tx_poc.cpp
+    run setup_web_provision_rx -DPROVISION_SCENARIO=1 -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 $WEB
+    run setup_web_provision_ambiguous -DPROVISION_SCENARIO=3 -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 -DORCON_TX_RF_ENABLE=1 -DORCON_TX_PAIR=1 -DORCON_TX_CONTROL=1 $WEB src/tx_poc.cpp
+    run setup_web_provision_unreadable -DPROVISION_SCENARIO=2 -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 -DORCON_TX_RF_ENABLE=1 -DORCON_TX_PAIR=1 -DORCON_TX_CONTROL=1 $WEB src/tx_poc.cpp
 else
     echo "setup_web: NOT TESTED (no $AJ; run 'pio run -e heltec_v2_sx1276' once)"
 fi
+python3 tools/test_check_privacy.py | tail -1
 python3 tools/test_sx1276_tx.py
 python3 tools/gen_setup_page.py --check
 node test/test_setup_page.js | tail -1

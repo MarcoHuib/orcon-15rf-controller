@@ -13,8 +13,19 @@
        ota-install ... --test-rollback  rollback test: the trial boot is told not to confirm itself
                                         (POST /api/ota/hold, logged in); PASS only if the previous image returns
   orcon.py auth-code                    web login: a one-time code (10 min) to set or reset the
-                                        password, issued only for a request signed with the OTA key
+                                        password, issued only for a request signed with the OTA key.
+                                        Only on a device migrated from before the ownership model that
+                                        has no owner key yet; afterwards recovery uses the owner's key
+                                        file in the PRG recovery mode (docs/PROVISIONING.md)
+  orcon.py release --worktree DIR --env ENV --version N --yes [--tx-ack PHRASE] [--out DIR]
+                                        a signed release bundle (.orconfw) for every board: the image
+                                        plus a v2 manifest signed with the release key. Owners install
+                                        it in the web page (Systeem > Firmware); the board checks the
+                                        signature, the version and its own owner's session
   orcon.py keygen                       create the signing key (once) and src/ota_pubkey.h
+
+Owner-model firmware (it reports "owner_model" in /api/ota) only installs with the owner's session:
+ota-install then asks for the web password. Older firmware installs as before.
 
 Host: --host, $ORCON_HOST, ~/.orcon/config.json {"host": ...}, else orcon15rf.local.
 Captures hold real device IDs: they go to captures/ (git-ignored), directories 0700, files 0600.
@@ -113,6 +124,27 @@ def sign(text, key=KEY):
     return r.stdout.hex()
 
 
+def release_manifest(env, commit, firmware, version):
+    """v2: one signature for every board. The board checks it against the release key, refuses an
+    older release than its own and installs only with its owner's logged-in session."""
+    if env not in ('heltec_v2_sx1276', 'heltec_v2_sx1276_control'): raise ValueError(f'{env} is not a released variant')
+    if not isinstance(version, int) or not 0 <= version < 2 ** 32: raise ValueError('version must be a non-negative integer')
+    variant, allow_tx = ENV_VARIANT[env]
+    data = Path(firmware).read_bytes()
+    if f'ORCON-RELEASE {version};'.encode() not in data:
+        raise ValueError(f'the image is not built as release {version} (-DORCON_RELEASE_VERSION={version})')
+    m = {'v': 2, 'kind': 'orcon-release', 'env': env, 'variant': variant, 'allow_tx': allow_tx, 'commit': commit,
+         'version': version, 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+    return json.dumps(m, separators=(',', ':'))
+
+
+def write_bundle(path, manifest, sig, firmware):
+    """.orconfw: one ASCII JSON line {"manifest","sig"}, a newline, then the image (the web page splits it)."""
+    head = json.dumps({'manifest': manifest, 'sig': sig}, separators=(',', ':'))
+    assert head.isascii() and '\n' not in head
+    Path(path).write_bytes(head.encode() + b'\n' + Path(firmware).read_bytes())
+
+
 def rf_gate(env, ack):
     """An image that can transmit needs its own explicit phrase, the same as the USB flash path."""
     if ENV_VARIANT.get(env, (None, False))[1]:
@@ -204,21 +236,24 @@ def cmd_ota_install(args):
     v = subprocess.run(['bash', 'tools/heltec_v2.sh', 'verify', commit], cwd=wt, env=venv, capture_output=True, text=True)
     if v.returncode or 'VERIFIED' not in v.stdout: raise SystemExit('package verification failed:\n' + v.stdout[-800:] + v.stderr[-800:])
     mac = (wt / '.flashtools' / 'board.mac').read_text().strip()
-    # Asked before anything is written: the hold is sent minutes later, inside the trial boot.
-    password = getpass.getpass('Webwachtwoord van de controller (rollbacktest): ') if args.test_rollback else ''
     st, before = http(h, '/api/ota')
     if st != 200 or before.get('signed_ota') != 'ORCON-SIGNED-OTA v1': raise SystemExit(f'board has no signed OTA (HTTP {st}); USB bootstrap first')
     if before.get('running_state') == 'pending-verify': raise SystemExit('board is still confirming its running image; wait')
-    st, n = http(h, '/api/ota/nonce', {})
+    # Owner-model firmware installs only with its owner's session; the rollback hold is sent minutes
+    # later inside the trial boot (a fresh boot, so it logs in again). Asked before anything is written.
+    owner = bool(before.get('owner_model'))
+    password = getpass.getpass('Webwachtwoord van de controller: ') if owner or args.test_rollback else ''
+    hdr = login(h, password) if owner else {}
+    st, n = http(h, '/api/ota/nonce', {}, headers=hdr)
     if st != 200: raise SystemExit(f'nonce refused: {n}')
     text = build_manifest(mac, env, commit, pkg / 'firmware.bin', n['nonce'])
-    st, b = http(h, '/api/ota/begin', {'manifest': text, 'sig': sign(text)})
+    st, b = http(h, '/api/ota/begin', {'manifest': text, 'sig': sign(text)}, headers=hdr)
     if st != 200: raise SystemExit(f'begin refused: {b}')
     print(f"upload {commit[:7]} {env} -> {b['partition']} ({b['size']} B)")
     boundary = uuid.uuid4().hex
     body = (f'--{boundary}\r\nContent-Disposition: form-data; name="firmware"; filename="firmware.bin"\r\n'
             f'Content-Type: application/octet-stream\r\n\r\n').encode() + (pkg / 'firmware.bin').read_bytes() + f'\r\n--{boundary}--\r\n'.encode()
-    st, u = http(h, '/api/ota/upload', body, timeout=180, ctype=f'multipart/form-data; boundary={boundary}')
+    st, u = http(h, '/api/ota/upload', body, timeout=180, ctype=f'multipart/form-data; boundary={boundary}', headers=hdr)
     if st != 200: raise SystemExit(f'upload refused, boot partition unchanged: {u}')
     record_install(INSTALLED, pkg / 'firmware.bin', f'{commit[:7]}-{env} ota {datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}')
     print('written and verified on the board; restarting into a trial boot')
@@ -273,12 +308,32 @@ def cmd_auth_code(args):
     h = host(args)
     st, n = http(h, '/api/auth/nonce', {})
     if st == 404: raise SystemExit('this firmware has no web login (no /api/auth)')
+    if st == 403 and n.get('error') == 'owner-key-required':
+        raise SystemExit('this board has an owner key: recover the password with the key file in the PRG recovery mode (docs/INSTALLATIE.md)')
     if st != 200 or 'mac' not in n: raise SystemExit(f'nonce refused (HTTP {st}): {n}')
     text = reset_request(n['mac'], n['nonce'])
     st, r = http(h, '/api/auth/reset', {'manifest': text, 'sig': sign(text)})
     if st != 200: raise SystemExit(f'recovery request refused (HTTP {st}): {r.get("error", r)}')
     print(f"Herstelcode: {r['code']}   (eenmalig, {r['ttl_s'] // 60} minuten geldig)")
     print('Open de webinterface, kies "Wachtwoord vergeten" (of het instelscherm) en stel een nieuw wachtwoord in.')
+
+
+def cmd_release(args):
+    """A release bundle for every board, from a verified local package (same verification as USB/OTA)."""
+    wt, env = Path(args.worktree).resolve(), args.env
+    rf_gate(env, args.tx_ack)
+    if not args.yes: raise SystemExit('refusing without --yes (explicit approval to sign a public release)')
+    commit = subprocess.run(['git', '-C', str(wt), 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
+    pkg = wt / '.flashtools' / 'local' / f'{commit}-{env}'
+    venv = dict(os.environ, LOCAL_ENV=env, **({ENV_ACK[env][0]: ENV_ACK[env][1]} if env in ENV_ACK else {}))
+    v = subprocess.run(['bash', 'tools/heltec_v2.sh', 'verify', commit], cwd=wt, env=venv, capture_output=True, text=True)
+    if v.returncode or 'VERIFIED' not in v.stdout: raise SystemExit('package verification failed:\n' + v.stdout[-800:] + v.stderr[-800:])
+    try: text = release_manifest(env, commit, pkg / 'firmware.bin', args.version)
+    except ValueError as e: raise SystemExit(str(e))
+    out = Path(args.out or wt / 'release').resolve(); out.mkdir(parents=True, exist_ok=True)
+    name = out / f'orcon-{ENV_VARIANT[env][0]}-{args.version}-{commit[:7]}.orconfw'
+    write_bundle(name, text, sign(text), pkg / 'firmware.bin')
+    print(f'{name}  ({name.stat().st_size} B, sha256 {hashlib.sha256(name.read_bytes()).hexdigest()})')
 
 
 def cmd_keygen(args):
@@ -300,9 +355,12 @@ def main(argv=None):
     oi = sub.add_parser('ota-install'); oi.add_argument('--worktree', required=True); oi.add_argument('--env', required=True)
     oi.add_argument('--yes', action='store_true'); oi.add_argument('--tx-ack', '--rf-ack', dest='tx_ack', default='')
     oi.add_argument('--test-rollback', action='store_true')
+    rl = sub.add_parser('release'); rl.add_argument('--worktree', required=True); rl.add_argument('--env', required=True)
+    rl.add_argument('--version', type=int, required=True); rl.add_argument('--yes', action='store_true')
+    rl.add_argument('--tx-ack', dest='tx_ack', default=''); rl.add_argument('--out')
     a = p.parse_args(argv)
     {'status': cmd_status, 'logs': cmd_logs, 'capture': cmd_capture, 'ota-install': cmd_ota_install, 'keygen': cmd_keygen,
-     'auth-code': cmd_auth_code}[a.cmd](a)
+     'auth-code': cmd_auth_code, 'release': cmd_release}[a.cmd](a)
 
 
 if __name__ == '__main__':

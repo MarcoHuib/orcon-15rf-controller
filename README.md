@@ -16,6 +16,12 @@ path, not the motor).
 > yet, and the SX1276 build is freshly brought up. See
 > [Project status](#project-status) before relying on it.
 
+> 📱 **Heltec WiFi LoRa 32 V2: plug-and-play installation.** Flash once, then set up everything
+> from your phone. Covers the setup access point, password, WiFi, profile and a personal
+> recovery key, plus button-based recovery and factory reset. Dutch guide:
+> [`docs/INSTALLATIE.md`](docs/INSTALLATIE.md). Design and security: [`docs/PROVISIONING.md`](docs/PROVISIONING.md).
+> Not yet validated on hardware.
+
 ---
 
 ## What it does
