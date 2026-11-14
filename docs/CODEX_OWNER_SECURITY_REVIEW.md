@@ -17,13 +17,13 @@
 | 4 | 830b603 | NO-GO | 01–09 FIXED, 05 ACCEPTED; 10 PARTIAL; nieuw: OWNER-11 MAJOR, OWNER-12 MINOR |
 | 5 | 6605be6 | NO-GO | 02–09 FIXED, 05 ACCEPTED; 01, 10, 11, 12 PARTIAL; nieuw: OWNER-13 MINOR, OWNER-14 INFO |
 | 6 | f79a97f | NO-GO | 02–04, 06–14 FIXED, 05 ACCEPTED; 01 PARTIAL (leesfout tijdens de noodreset) |
-| 7 | volgt | — | moet OWNER-01 expliciet beoordelen |
+| 7 | 2edb423 | **GO** | 01–04, 06–14 FIXED, 05 ACCEPTED; geen nieuwe bevindingen |
 
 ## Bevindingen en herstel
 
 | ID | Ernst | Probleem | Herstel | Status |
 |---|---|---|---|---|
-| OWNER-01 | MAJOR | Een onleesbare resetmarker gold als "geen reset"; daardoor kon Legacy-herstel terugkomen. R5: een onderbroken noodreset liet "beschadigd + leeg" achter, en dat gold als "geen marker" | De marker wordt in drie toestanden gelezen; onleesbaar stopt het normale opstarten. Wisvolgorde: eerst `orconauth`, dan `orconown`. R5: beschadigd naast leeg is onleesbaar, nooit afwezig; de noodreset schrijft eerst de onbeschadigde sector. R6: na een leesfout weigert de noodreset (wissen op een gok kon het enige beschadigde record weghalen); elk record wordt teruggelezen voordat de andere sector wordt aangeraakt | FIXED (r2, r3); r5, r6 PARTIAL; gerepareerd, **ronde 7 nodig** |
+| OWNER-01 | MAJOR | Een onleesbare resetmarker gold als "geen reset"; daardoor kon Legacy-herstel terugkomen. R5: een onderbroken noodreset liet "beschadigd + leeg" achter, en dat gold als "geen marker" | De marker wordt in drie toestanden gelezen; onleesbaar stopt het normale opstarten. Wisvolgorde: eerst `orconauth`, dan `orconown`. R5: beschadigd naast leeg is onleesbaar, nooit afwezig; de noodreset schrijft eerst de onbeschadigde sector. R6: na een leesfout weigert de noodreset (wissen op een gok kon het enige beschadigde record weghalen); elk record wordt teruggelezen voordat de andere sector wordt aangeraakt | FIXED (r2, r3); r5, r6 PARTIAL; FIXED (r7) |
 | OWNER-02 | MAJOR | Een onleesbaar wachtwoord heropende stap 1 | `authstore::status()` geeft drie toestanden; onleesbaar telt als "gezet" | FIXED (r3) |
 | OWNER-03 | MAJOR | Herstelcodes van de releasesleutel overleefden de registratie van een eigenaarssleutel | `/api/auth/setup` werkt alleen nog in Legacy; codes vervallen bij registratie | FIXED (r3) |
 | OWNER-04 | MINOR | De herstelmodus kwam terug na de wrap van `millis()` | `provision::PhysicalTimer` blijft na afloop uit | FIXED (r2) |
@@ -40,11 +40,15 @@
 
 ## Open
 
-**Ronde 7**
-- Verplicht vóór een merge.
-- Te beoordelen:
-  - OWNER-01 expliciet (leesfouten en stil mislukte schrijfacties tijdens de noodreset);
-  - geen terugkeer van OWNER-02–14.
+**Securityreview: groen.** Ronde 7 (2edb423) gaf GO (security), zonder nieuwe bevindingen.
+- Codex simuleerde 10.334.708 onderbrekingspunten van de eigendomsmarkering, ook met leesfouten en stil mislukte schrijfacties. Geen enkele gaf een onveilige uitkomst.
+- Ook opnieuw beoordeeld: aanmelden, de AP- en STA-poorten, CSRF/origin, de registratie van de herstelsleutel en de OTA-toestemming van de eigenaar. Codex vond geen route waarmee iemand alleen via het netwerk het eigendom overneemt.
+- Niet getest door Codex (alleen hostsimulatie): echte flash en stroomonderbrekingen, de rollback van de bootloader, live WiFi/HTTP, HTTPS en de migratie van de releasesleutel.
+
+**Nog vóór een merge**
+- Hardwarevalidatie: [`HW_VALIDATIE_PROVISIONING.md`](HW_VALIDATIE_PROVISIONING.md).
+- Akkoord van de eigenaar.
+- Elke latere wijziging aan eigendom, opslag, OTA of authenticatie vraagt een nieuwe reviewronde.
 
 **Geaccepteerd en gedocumenteerd**
 - OWNER-05: de WebServer buffert POST-bodies; alleen een DoS.
