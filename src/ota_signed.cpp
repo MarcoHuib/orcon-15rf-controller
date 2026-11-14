@@ -55,6 +55,10 @@ static RTC_NOINIT_ATTR Crumb g_crumb;
 static uint32_t g_prevUptimeS = 0;
 static bool g_prevKnown = false, g_pending = false;
 static bool g_hold = false;   // rollback test: this trial boot refuses to confirm itself (RAM only)
+#define ORCON_STR2(x) #x
+#define ORCON_STR(x) ORCON_STR2(x)
+// The release number as text in the image: tools/orcon.py release refuses a bundle whose version differs.
+static const char RELEASE_STAMP[] = "ORCON-RELEASE " ORCON_STR(ORCON_RELEASE_VERSION) ";";
 
 static const char* variantOfThisBuild() {
 #if ORCON_TX_MAX_PER_BOOT
@@ -123,12 +127,12 @@ static void handleInfo() {
     snprintf(b, sizeof(b),
              "{\"signed_ota\":\"%s\",\"fw\":\"%s\",\"variant\":\"%s\",\"running\":\"%s\",\"running_state\":\"%s\","
              "\"boot\":\"%s\",\"next\":\"%s\",\"next_state\":\"%s\",\"slot_size\":%lu,\"session\":\"%s\",\"last_error\":\"%s\","
-             "\"nonce_active\":%s,\"hold\":%s,\"owner_model\":\"%s\",\"release\":%lu}",
+             "\"nonce_active\":%s,\"hold\":%s,\"owner_model\":\"%s\",\"release\":%lu,\"release_stamp\":\"%s\"}",
              otap::SIGNED_OTA_MARKER, FW_VERSION, variantOfThisBuild(), run ? run->label : "?", stateName(run),
              boot ? boot->label : "?", next ? next->label : "?", stateName(next), (unsigned long)(next ? next->size : 0),
              g_st == St::Idle ? "idle" : g_st == St::Ready ? "ready" : g_st == St::Writing ? "writing" : g_st == St::Done ? "done" : "failed",
              g_err, g_nonce[0] && millis() - g_nonceMs < NONCE_TTL_MS ? "true" : "false", g_hold ? "true" : "false",
-             otap::OWNER_MODEL_MARKER, (unsigned long)ORCON_RELEASE_VERSION);
+             otap::OWNER_MODEL_MARKER, (unsigned long)ORCON_RELEASE_VERSION, RELEASE_STAMP);
     reply(200, b);
 }
 

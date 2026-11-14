@@ -114,6 +114,23 @@ check(seq == [], 'rollback test: nothing is sent before the trial boot')
 hold()
 check(seq == [('login', 'orcon15rf.local', 'pw-123456'), ('post', '/api/ota/hold', {}, hdr)],
       'rollback test: log in inside the trial boot, then hold with cookie, CSRF token and origin')
+# Release bundles (v2): one signature for every board; the image must be built as that release.
+with tempfile.TemporaryDirectory() as d:
+    fw = Path(d) / 'firmware.bin'; fw.write_bytes(b'\xe9' + os.urandom(3000) + b'ORCON-RELEASE 7;' + os.urandom(100))
+    m = json.loads(orcon.release_manifest('heltec_v2_sx1276_control', 'c' * 40, fw, 7))
+    check(m == {'v': 2, 'kind': 'orcon-release', 'env': 'heltec_v2_sx1276_control', 'variant': 'control', 'allow_tx': True, 'commit': 'c' * 40,
+                'version': 7, 'size': fw.stat().st_size, 'sha256': hashlib.sha256(fw.read_bytes()).hexdigest()},
+          'release manifest: no board, no nonce; variant, TX statement, version, size and hash of the exact image')
+    for bad, why in ((lambda: orcon.release_manifest('heltec_v2_sx1276_rftest', 'c' * 40, fw, 7), 'the RF test image is never released'),
+                     (lambda: orcon.release_manifest('heltec_v2_sx1276_control', 'c' * 40, fw, 8), 'an image built as another release is refused'),
+                     (lambda: orcon.release_manifest('heltec_v2_sx1276_control', 'c' * 40, fw, -1), 'a negative version is refused')):
+        try: bad(); check(False, why)
+        except ValueError: check(True, why)
+    b = Path(d) / 'x.orconfw'; text = json.dumps(m, separators=(',', ':'))
+    orcon.write_bundle(b, text, 'ab' * 40, fw)
+    raw = b.read_bytes(); nl = raw.index(b'\n'); head = json.loads(raw[:nl])
+    check(head == {'manifest': text, 'sig': 'ab' * 40} and raw[nl + 1:] == fw.read_bytes() and raw[:nl].isascii(),
+          'bundle: one ASCII JSON line {manifest, sig}, a newline, then exactly the image (what the web page splits)')
 # Install record for heltec_v2.sh recover: "<sha256 of the image> <label>", private file, appended
 with tempfile.TemporaryDirectory() as d:
     fw = Path(d) / 'fw.bin'; fw.write_bytes(b'\xe9image'); rec = Path(d) / 'o' / 'installed.txt'

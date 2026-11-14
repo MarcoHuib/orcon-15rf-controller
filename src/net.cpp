@@ -807,6 +807,12 @@ static void prgPoll(uint32_t now) {
             return;
         case Action::Wake: g_oledPower.wake(now); oledDraw(); return;
         case Action::Cancelled: notice("Herstelmenu", "geannuleerd", "", 2000); return;
+        default: break;
+    }
+    // Every menu action restarts the board. During an OTA trial boot that would roll the update
+    // back first, so all three wait until the new image has confirmed itself (at most 5 minutes).
+    if (ownerstore::trialBoot()) { notice("Even wachten:", "update nog niet", "bevestigd (5 min)", 6000); return; }
+    switch (a) {
         case Action::Recovery:
             setupweb::note(rfcon::WARN, "PRG-menu: herstelmodus (setup-accesspoint, 15 minuten)");
             ownerstore::armMode(ownerstore::Mode::Recovery); notice("Herstelmodus", "herstart...", "", 5000); restartIn(1500);
@@ -816,10 +822,11 @@ static void prgPoll(uint32_t now) {
             eraseWifi(); ownerstore::armMode(ownerstore::Mode::WifiReset); notice("WiFi gewist", "herstart...", "", 5000); restartIn(1500);
             return;
         case Action::FactoryReset:
-            if (!ownerstore::requestFactoryReset()) { notice("Reset geweigerd:", "update nog niet", "bevestigd (5 min)", 6000); return; }
+            if (!ownerstore::requestFactoryReset()) { notice("Reset mislukt:", "opslaan niet gelukt", "probeer opnieuw", 6000); return; }
             setupweb::note(rfcon::WARN, "PRG-menu: fabrieksreset bevestigd");
             notice("Fabrieksreset", "herstart en wist", "niet uitschakelen", 8000); restartIn(1500);
             return;
+        default: return;
     }
 }
 #elif defined(BOARD_HELTEC_V2)
