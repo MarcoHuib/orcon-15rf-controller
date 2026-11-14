@@ -95,6 +95,7 @@ static int g_restarts = 0, g_forgets = 0;
 static provision::State g_ownState = PROVISION_SCENARIO == 1 || PROVISION_SCENARIO == 3 ? provision::State::New :
                                      PROVISION_SCENARIO == 2 ? provision::State::Setup : provision::State::Legacy;
 static bool g_registerFails = false;
+static bool g_markFails = false;     // markSetup refuses: a write error, or a pending factory reset (Codex OWNER-13)
 static bool g_viaAp = false, g_staUp = false, g_apOnly = false, g_physical = false, g_cryptoOk = true;
 static uint8_t g_ownPub[65]; static bool g_ownPubSet = false;
 static std::string g_wtState = "idle", g_wtSsid, g_wtPass;
@@ -123,7 +124,7 @@ static void frnd(uint8_t* o, size_t n) { authstore::random(o, n); }
 namespace ownerstore {
 static const ownerkey::Crypto C{fpbkdf2, faes, frnd, fpub, fsha};
 provision::State state() { return g_ownState; }
-bool markSetup() { if (!provision::installing(g_ownState)) return false; g_ownState = provision::State::Setup; return true; }
+bool markSetup() { if (g_markFails || !provision::installing(g_ownState)) return false; g_ownState = provision::State::Setup; return true; }
 bool ownerKey(uint8_t q[65]) { if (g_ownPubSet) memcpy(q, g_ownPub, 65); return g_ownPubSet; }
 bool registerKey(const uint8_t q[65]) { if (g_registerFails) return false; memcpy(g_ownPub, q, 65); g_ownPubSet = true; g_ownState = provision::State::Done; return true; }
 const ownerkey::Crypto& crypto() { return C; }
@@ -378,6 +379,10 @@ static int provisionScenario() {
           "step 1 needs JSON (no cross-site form)");
     CHECK(call("POST", "/api/provision/password", "{\"password\":\"eerste-wachtwoord\"}", nullptr, "application/json", "http://203.0.113.9") == 403 &&
           !g_storeSet, "step 1 refuses a foreign origin");
+    g_markFails = true;
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"eerste-wachtwoord\"}", nullptr) == 503 && err("state-write-failed") &&
+          !g_storeSet && g_ownState == provision::State::New, "step 1: state not recorded (or a reset pending): no password stored");
+    g_markFails = false;
     CHECK(call("POST", "/api/provision/password", "{\"password\":\"eerste-wachtwoord\"}", nullptr) == 200 && !g_cookie.empty() &&
           g_storeSet && g_ownState == provision::State::Setup, "step 1: password set, state Setup, logged in");
     const std::string tok = jstr("token");

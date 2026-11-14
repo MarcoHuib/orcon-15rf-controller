@@ -30,6 +30,68 @@ struct Flash : ResetOps {
     bool untouched() const { return ns.size() == 6 && dump && preOwner && !marked; }
 };
 
+// The two sentinel sectors with power cuts: after `budget` byte steps the power fails. An erase clears byte by
+// byte, a write programs byte by byte; the byte being worked on at the cut is half done (`mask`: its bits that
+// made it). Reads fail while the power is off, and on request (`readErr`).
+struct SimFlash : SentinelFlash {
+    uint8_t sec[2][SENTINEL_LEN];
+    long budget = -1;                                     // -1: no cut
+    uint8_t mask = 0;
+    bool dead = false, readErr = false;
+    SimFlash() { memset(sec, 0xFF, sizeof(sec)); }
+    bool step() { if (dead || budget == 0) { dead = true; return false; } if (budget > 0) --budget; return true; }
+    bool read(uint8_t i, uint8_t out[SENTINEL_LEN]) override { if (dead || readErr) return false; memcpy(out, sec[i], SENTINEL_LEN); return true; }
+    bool erase(uint8_t i) override {
+        if (dead) return false;
+        for (size_t b = 0; b < SENTINEL_LEN; ++b) { if (!step()) { sec[i][b] |= mask; return false; } sec[i][b] = 0xFF; }
+        return true;
+    }
+    bool write(uint8_t i, const uint8_t in[SENTINEL_LEN]) override {
+        if (dead) return false;
+        for (size_t b = 0; b < SENTINEL_LEN; ++b) { if (!step()) { sec[i][b] &= uint8_t(in[b] | uint8_t(~mask)); return false; } sec[i][b] &= in[b]; }
+        return true;
+    }
+    void reboot() { dead = false; budget = -1; }
+};
+enum { UNOWNED = 0, OWNED = 1, PENDING = 3, ABSENT = 4, UNREADABLE = 5 };   // Ok: owned | pending << 1
+static int st(SimFlash& f) {
+    const SentinelView v = sentinelLoad(f);
+    if (v.read != SentinelRead::Ok) return v.read == SentinelRead::Absent ? ABSENT : UNREADABLE;
+    return (v.cur.owned ? 1 : 0) | (v.cur.resetPending ? 2 : 0);
+}
+static int g_cuts = 0;
+// `op` with the power cut at every step (and every half-programmed byte pattern). After the reboot the
+// storage reads one of `allowed`; once the op ran to its end, it reports success, reads `done`, redundantly.
+template <class Op> static bool cutsOk(const SimFlash& from, Op op, std::set<int> allowed, int done) {
+    bool ok = true;
+    for (uint8_t mask : {0x00, 0x0F, 0xF0, 0xA5}) for (long k = 0;; ++k) {
+        SimFlash f = from; f.budget = k; f.mask = mask;
+        const bool r = op(f), finished = !f.dead;
+        f.reboot(); ++g_cuts;
+        const int s = st(f);
+        ok = ok && allowed.count(s) && (!r || s == done);
+        if (finished) { ok = ok && r && s == done && sentinelLoad(f).redundant; break; }
+    }
+    return ok;
+}
+// After a completed write, damage to either sector (erased, any single bit, garbage) never changes the state.
+static bool survivesDamage(const SimFlash& d, int want) {
+    SimFlash a = d;
+    bool ok = st(a) == want && sentinelLoad(a).redundant;
+    for (int i = 0; i < 2; ++i) {
+        SimFlash e = d; memset(e.sec[i], 0xFF, SENTINEL_LEN); ok = ok && st(e) == want;
+        SimFlash g = d; for (size_t b = 0; b < SENTINEL_LEN; ++b) g.sec[i][b] = uint8_t(b * 37 + 11); ok = ok && st(g) == want;
+        for (size_t bit = 0; bit < SENTINEL_LEN * 8; ++bit) {
+            SimFlash x = d; x.sec[i][bit / 8] ^= uint8_t(1u << (bit % 8)); ok = ok && st(x) == want;
+        }
+    }
+    return ok;
+}
+static bool recordOwner(SimFlash& f) { return sentinelOwn(f); }
+static bool markReset(SimFlash& f) { return sentinelWrite(f, true, true); }
+static bool clearReset(SimFlash& f) { return sentinelWrite(f, false, false); }
+static bool forceReset(SimFlash& f) { return sentinelForce(f, true, true); }
+
 int main() {
     // ---- stored state and migration
     bool mig = true;
@@ -149,41 +211,68 @@ int main() {
             tornOk = tornOk && decodeSentinel(torn, out) != Slot::Valid;
         }
         CHECK(tornOk);
-        // Choosing between the sectors.
+        // Damaged magic is still ours (Codex OWNER-11): 1-2 bits off is a damaged record, more is foreign data.
+        uint8_t mg[SENTINEL_LEN];
+        memcpy(mg, rec, sizeof(mg)); mg[0] ^= 0x01; CHECK(decodeSentinel(mg, out) == Slot::Corrupt);
+        memcpy(mg, rec, sizeof(mg)); mg[1] ^= 0x10; mg[3] ^= 0x02; CHECK(decodeSentinel(mg, out) == Slot::Corrupt);
+        memcpy(mg, rec, sizeof(mg)); mg[0] ^= 0x07; CHECK(decodeSentinel(mg, out) == Slot::Empty);
+        // Choosing between the sectors: the newer sequence, across the wrap too (Codex OWNER-14).
         Sentinel a, b, cur; uint8_t next = 9;
         a.owned = true; a.seq = 1; b.owned = false; b.seq = 2;
         CHECK(chooseSentinel(Slot::Valid, a, Slot::Valid, b, cur, next) == SentinelRead::Ok && !cur.owned && cur.seq == 2 && next == 0);
         CHECK(chooseSentinel(Slot::Valid, a, Slot::Corrupt, b, cur, next) == SentinelRead::Ok && cur.owned && next == 1);
         CHECK(chooseSentinel(Slot::Corrupt, a, Slot::Corrupt, b, cur, next) == SentinelRead::Unreadable);   // flash damage: fail closed
-        CHECK(chooseSentinel(Slot::Corrupt, a, Slot::Empty, b, cur, next) == SentinelRead::Absent);        // a torn first write
+        CHECK(chooseSentinel(Slot::Corrupt, a, Slot::Empty, b, cur, next) == SentinelRead::Unreadable);     // never "absent" (Codex OWNER-01)
+        CHECK(chooseSentinel(Slot::Empty, a, Slot::Corrupt, b, cur, next) == SentinelRead::Unreadable);
         CHECK(chooseSentinel(Slot::Empty, a, Slot::Empty, b, cur, next) == SentinelRead::Absent && next == 0);
-        // Writes with a power cut at every point of the erase and of the write: the result is always the
-        // old state or the new one, never unreadable and never anything else.
-        struct Dev { uint8_t sec[2][SENTINEL_LEN]; };
-        auto read = [](const Dev& d, Sentinel& c, uint8_t& n) {
-            Sentinel ra, rb; const Slot sa = decodeSentinel(d.sec[0], ra), sb = decodeSentinel(d.sec[1], rb);
-            return chooseSentinel(sa, ra, sb, rb, c, n);
-        };
-        bool cutOk = true; int cuts = 0;
-        for (int from = 0; from < 2; ++from) {
-            Dev d; memset(&d, 0xFF, sizeof(d));
-            Sentinel first; first.owned = from == 1; first.seq = 1;
-            encodeSentinel(first, d.sec[0]); first.seq = 2; encodeSentinel(first, d.sec[1]);   // first write fills both
-            Sentinel was; uint8_t tgt = 0; read(d, was, tgt);
-            Sentinel want; want.owned = !was.owned; want.resetPending = true; want.seq = was.seq + 1;
-            uint8_t nrec[SENTINEL_LEN]; encodeSentinel(want, nrec);
-            for (size_t e = 0; e <= SENTINEL_LEN; ++e) for (size_t w = 0; w <= (e == SENTINEL_LEN ? SENTINEL_LEN : 0); ++w) {
-                Dev x = d;
-                for (size_t i = 0; i < e; ++i) x.sec[tgt][i] = 0xFF;          // the erase got this far
-                for (size_t i = 0; i < w; ++i) x.sec[tgt][i] = nrec[i];       // then the write
-                Sentinel c; uint8_t n;
-                const SentinelRead r = read(x, c, n); ++cuts;
-                const bool isOld = r == SentinelRead::Ok && c.owned == was.owned && c.resetPending == was.resetPending;
-                const bool isNew = r == SentinelRead::Ok && c.owned == want.owned && c.resetPending == want.resetPending;
-                cutOk = cutOk && (isOld || isNew) && (w < SENTINEL_LEN || isNew);
-            }
+        a.seq = 0xFFFFFFFFu; b.seq = 0;
+        CHECK(chooseSentinel(Slot::Valid, a, Slot::Valid, b, cur, next) == SentinelRead::Ok && cur.seq == 0 && next == 0);
+        CHECK(chooseSentinel(Slot::Valid, b, Slot::Valid, a, cur, next) == SentinelRead::Ok && cur.seq == 0 && next == 1);
+
+        // The whole life cycle with a power cut at every byte of every erase and write.
+        SimFlash fresh;
+        CHECK(st(fresh) == ABSENT);
+        // Wizard step 1 on a new device. A cut: still absent, the new owner, or (a torn first record) unreadable.
+        CHECK(cutsOk(fresh, recordOwner, {ABSENT, UNREADABLE, OWNED}, OWNED));
+        SimFlash owned = fresh; CHECK(recordOwner(owned) && survivesDamage(owned, OWNED));
+        SimFlash same = owned; CHECK(recordOwner(same) && !memcmp(same.sec, owned.sec, sizeof(same.sec)));   // already recorded: no write
+        // The PRG reset request, the completed reset, and a new installation (the Codex OWNER-11 case: after
+        // that, no "unowned" record is left to revive when the newest one is damaged).
+        CHECK(cutsOk(owned, markReset, {OWNED, PENDING}, PENDING));
+        SimFlash pending = owned; CHECK(markReset(pending) && survivesDamage(pending, PENDING));
+        CHECK(cutsOk(pending, clearReset, {PENDING, UNOWNED}, UNOWNED));
+        SimFlash cleared = pending; CHECK(clearReset(cleared) && survivesDamage(cleared, UNOWNED));
+        CHECK(cutsOk(cleared, recordOwner, {UNOWNED, OWNED}, OWNED));
+        SimFlash again = cleared; CHECK(recordOwner(again) && survivesDamage(again, OWNED));
+        // A pending reset is never cleared by a non-reset write (Codex OWNER-13).
+        SimFlash p2 = pending; CHECK(!recordOwner(p2) && !memcmp(p2.sec, pending.sec, sizeof(p2.sec)));
+        // The boot repair: one damaged sector is rewritten, a cut never loses the owner.
+        SimFlash half = owned; half.sec[0][13] ^= 0x10;
+        CHECK(st(half) == OWNED && !sentinelLoad(half).redundant && cutsOk(half, recordOwner, {OWNED}, OWNED));
+        SimFlash halfP = pending; memset(halfP.sec[1], 0xFF, SENTINEL_LEN);
+        CHECK(st(halfP) == PENDING && !recordOwner(halfP) && cutsOk(halfP, clearReset, {PENDING, UNOWNED}, UNOWNED));
+        // Unreadable storage (Codex OWNER-01): ordinary writes refuse; the PRG emergency reset rewrites it, and a
+        // cut at any point reads unreadable or the pending reset, never absent. One more outcome is real: a cut
+        // erase can restore a damaged bit first, which brings back the record from before the damage (here:
+        // owned). That is the state before the emergency reset, which then simply did not happen yet.
+        SimFlash bothBad = owned; bothBad.sec[0][14] ^= 1; bothBad.sec[1][2] ^= 4;
+        SimFlash badEmpty = owned; badEmpty.sec[0][15] ^= 0x80; memset(badEmpty.sec[1], 0xFF, SENTINEL_LEN);
+        SimFlash emptyBad = owned; memset(emptyBad.sec[0], 0xFF, SENTINEL_LEN); emptyBad.sec[1][0] ^= 0x01;   // damaged magic
+        for (SimFlash* u : {&bothBad, &badEmpty, &emptyBad}) {
+            SimFlash w = *u, o = *u;
+            CHECK(st(*u) == UNREADABLE && !markReset(w) && !clearReset(w) && !recordOwner(o));
+            CHECK(cutsOk(*u, forceReset, {UNREADABLE, PENDING, OWNED}, PENDING));
         }
-        CHECK(cutOk && cuts == 66);
+        CHECK(cutsOk(owned, forceReset, {OWNED, PENDING}, PENDING));   // readable: it continues the sequence
+        // Sequence wrap (Codex OWNER-14): clearing at UINT32_MAX really clears.
+        SimFlash wrap; Sentinel ws; ws.owned = true; ws.resetPending = true;
+        ws.seq = 0xFFFFFFFEu; encodeSentinel(ws, wrap.sec[0]); ws.seq = 0xFFFFFFFFu; encodeSentinel(ws, wrap.sec[1]);
+        CHECK(st(wrap) == PENDING && cutsOk(wrap, clearReset, {PENDING, UNOWNED}, UNOWNED));
+        SimFlash w2 = wrap; CHECK(clearReset(w2) && st(w2) == UNOWNED && recordOwner(w2) && st(w2) == OWNED && survivesDamage(w2, OWNED));
+        // A read error is unreadable, and nothing writes then.
+        SimFlash re = owned; re.readErr = true;
+        CHECK(st(re) == UNREADABLE && !recordOwner(re) && !clearReset(re) && !memcmp(re.sec, owned.sec, sizeof(re.sec)));
+        CHECK(g_cuts > 2000);
         // The boot decision: an owned device whose NVS lost everything is Locked, never New.
         Sentinel o; o.owned = true; Sentinel u;
         CHECK(withSentinel(State::New, SentinelRead::Ok, o) == State::Locked);

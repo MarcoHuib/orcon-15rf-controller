@@ -92,18 +92,43 @@ bool request(ResetOps&);   // the confirmed PRG gesture: only sets the marker (t
 // ---- the ownership sentinel (Codex OWNER-11) ----------------------------------------------------------
 // Two raw 4 KB sectors at the end of the spiffs partition (unused by this firmware; outside NVS, so an
 // NVS auto-format cannot touch them) hold "this device has an owner" and "a confirmed factory reset is
-// pending" (the reset marker lives here). A/B with a sequence number: a write only ever erases the sector
-// that does NOT hold the current record, so a power cut never loses the last state.
+// pending" (the reset marker lives here). Both sectors always hold the same state (sequence number + CRC);
+// a change goes to the sector without the current record first, so a power cut never loses the last state.
 struct Sentinel { bool owned = false; bool resetPending = false; uint32_t seq = 0; };
 constexpr size_t SENTINEL_LEN = 16;   // "ORCS", version, flags, 2 reserved, seq (LE), CRC-32 (LE) over 0..11
-enum class Slot : uint8_t { Empty, Valid, Corrupt };   // Empty: erased or not ours; Corrupt: ours, damaged
+// Empty: erased, or data that was never ours (magic more than 2 bits off: old SPIFFS content).
+// Corrupt: our record, damaged (magic within 2 bits, or a bad CRC/version/flag) - never read as Empty.
+enum class Slot : uint8_t { Empty, Valid, Corrupt };
 void encodeSentinel(const Sentinel&, uint8_t out[SENTINEL_LEN]);
 Slot decodeSentinel(const uint8_t in[SENTINEL_LEN], Sentinel& out);
 enum class SentinelRead : uint8_t { Absent, Ok, Unreadable };
-// The current record (the valid one with the higher sequence) and the sector to write next. Both damaged:
-// unreadable. One damaged next to an empty one is a torn FIRST write (the first write fills both sectors),
-// which only happens while the device is unowned: absent.
+// The current record (the valid one with the newer sequence, wrap-aware) and the sector to write next.
+// No valid record but a damaged one: unreadable (fail closed), never absent.
 SentinelRead chooseSentinel(Slot a, const Sentinel& ra, Slot b, const Sentinel& rb, Sentinel& out, uint8_t& next);
+// The storage behind it (two sectors; the device uses raw flash, the test a simulation with power cuts).
+struct SentinelFlash {
+    virtual bool read(uint8_t sector, uint8_t out[SENTINEL_LEN]) = 0;
+    virtual bool erase(uint8_t sector) = 0;
+    virtual bool write(uint8_t sector, const uint8_t in[SENTINEL_LEN]) = 0;
+    virtual ~SentinelFlash() {}
+};
+struct SentinelView {
+    SentinelRead read = SentinelRead::Unreadable;
+    Sentinel cur;
+    uint8_t next = 0;
+    Slot slot[2] = {Slot::Corrupt, Slot::Corrupt};
+    bool redundant = false;   // both sectors hold cur's state (no older state left to fall back to)
+};
+SentinelView sentinelLoad(SentinelFlash&);
+// A new state into BOTH sectors, the one holding the current record last, then verified. A power cut at any
+// point leaves the old state or the new one; afterwards no other state remains to revive. Refuses when unreadable.
+bool sentinelWrite(SentinelFlash&, bool owned, bool resetPending);
+// The same, also over unreadable storage (only the PRG factory reset): a non-damaged sector first, so until
+// that record is down the other stays damaged and the storage reads unreadable, never absent.
+bool sentinelForce(SentinelFlash&, bool owned, bool resetPending);
+// Records ownership (wizard step 1, the boot repair) and restores redundancy. Never clears a pending reset
+// (Codex OWNER-13): refuses then, and when unreadable. Writes nothing when both sectors already say so.
+bool sentinelOwn(SentinelFlash&);
 // NVS says New, but the sentinel says the device has an owner (or cannot be read): Locked, never New.
 State withSentinel(State nvs, SentinelRead r, const Sentinel& s);
 uint32_t crc32(const uint8_t* p, size_t n);

@@ -21,16 +21,17 @@ HOME = re.compile(r"(?:/Users|/home)/[A-Za-z][\w.-]*")   # personal absolute pat
 # markers and fake fixtures ("AAAA") are fine. docs/RELEASESLEUTEL.md, tests: tools/test_check_privacy.py.
 KEYBLOCK = re.compile(r"-----BEGIN ([A-Z ]*)PRIVATE KEY-----(.*?)-----END \1PRIVATE KEY-----", re.S)
 PEMHDR = re.compile(r"^[\s\"']*[A-Za-z-]+:[^\n]*$", re.M)   # Proc-Type / DEK-Info lines, also inside string literals
+GLUE = re.compile(r"[\"']\s*\+\s*[\"']")   # "..." + "...": only this '+' is glue; a base64 '+' stays (Codex OWNER-12)
 
 
 def key_material(text):
     """Line numbers of PEM private-key blocks whose payload is >= 64 base64 characters once the string
-    glue of source files (quotes, escaped newlines, '+', commas, whitespace) is removed."""
+    glue of source files (quotes, escaped newlines, '+' between literals, commas, whitespace) is removed."""
     hits = []
     for m in KEYBLOCK.finditer(text):
         body = PEMHDR.sub("", m.group(2).replace("\\r", "").replace("\\n", "\n"))   # headers before the glue
-        body = re.sub(r"[\"'\s,;+]+", "", body)
-        if len(body) >= 64 and re.fullmatch(r"[A-Za-z0-9/=]+", body):
+        body = re.sub(r"[\"'\s,;]+", "", GLUE.sub("", body))
+        if len(body) >= 64 and re.fullmatch(r"[A-Za-z0-9+/=]+", body):
             hits.append(text.count("\n", 0, m.start()) + 1)
     return hits
 SELF = "tools/check_privacy.py"

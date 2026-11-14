@@ -50,9 +50,15 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
 **Eigendomsmarkering buiten NVS (Codex OWNER-11)**
 - Twee 4 KB-sectoren aan het eind van de `spiffs`-partitie, die deze firmware niet gebruikt en die de Arduino-autoformat van NVS nooit raakt.
 - Ze bewaren twee dingen: "dit apparaat heeft een eigenaar" en "een bevestigde fabrieksreset staat klaar" (de resetmarker staat hier, niet in NVS).
-- Er wordt afwisselend geschreven (A/B, met een volgnummer en CRC). Er wordt alleen gewist in de sector zonder het huidige record. Een stroomonderbreking geeft daardoor altijd de oude of de nieuwe toestand, nooit iets anders (66 onderbrekingspunten getest).
-- Stap 1 schrijft "eigenaar" hier vóór de NVS-staat. Een apparaat dat bij het opstarten zijn eigenaar al in NVS heeft (bijvoorbeeld na migratie), krijgt de markering er ook bij.
-- Twee beschadigde sectoren betekenen onleesbaar: fail closed.
+- Elk record heeft een volgnummer en een CRC. Elke wijziging gaat in **beide** sectoren: eerst in de sector zonder het huidige record, dan in de andere, en daarna worden beide teruggelezen (Codex OWNER-11, ronde 5).
+  - Een stroomonderbreking geeft altijd de oude of de nieuwe toestand.
+  - Na een voltooide wijziging staat er nergens nog een oudere toestand. Raakt later één sector beschadigd, dan geldt de andere, met dezelfde toestand. Een oud record "geen eigenaar" kan dus nooit terugkomen.
+  - Het volgnummer wordt vergeleken met wrap-around (Codex OWNER-14).
+- Stap 1 schrijft "eigenaar" hier vóór de NVS-staat. Een apparaat dat bij het opstarten zijn eigenaar al in NVS heeft (bijvoorbeeld na migratie, of na schade aan één sector), krijgt de markering weer in beide sectoren.
+- Stap 1 en dat herstel bij het opstarten wissen nooit een klaarstaande fabrieksreset; ze weigeren dan (Codex OWNER-13). Na het bevestigen van de reset herstart het apparaat bovendien direct, zonder tussendoor nog webverzoeken te verwerken.
+- Een beschadigd record telt nooit als leeg, ook niet bij een beschadigde magic (1–2 bits afwijkend). Is er geen geldig record maar wel een beschadigd, dan is de opslag onleesbaar: fail closed, nooit "geen eigenaar" (Codex OWNER-01, ronde 5).
+- Onleesbaar betekent: geen normale start. Alleen de PRG-fabrieksreset herschrijft de opslag, eerst in de onbeschadigde sector. Een onderbreking daarbij geeft weer "onleesbaar", nooit "leeg".
+- Host-test: de hele levenscyclus met 2.860 onderbrekingspunten (elke byte van elk wissen en schrijven, ook half geprogrammeerde bytes), en schade aan elke bit van beide sectoren.
 
 **Schrijfvolgorde.** Stap 1 schrijft eerst `state=1` en pas dán het wachtwoord. Een wachtwoord zonder staat kan dus alleen van oude firmware komen, en alleen dat wordt Legacy. Een stroomonderbreking tijdens stap 1 laat nooit een toestand achter waarin het oude herstelpad (via de releasesleutel) opengaat.
 

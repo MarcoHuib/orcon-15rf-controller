@@ -64,18 +64,65 @@ void encodeSentinel(const Sentinel& s, uint8_t out[SENTINEL_LEN]) {
     out[5] = uint8_t((s.owned ? 1 : 0) | (s.resetPending ? 2 : 0)); out[6] = out[7] = 0;
     le32(out + 8, s.seq); le32(out + 12, crc32(out, 12));
 }
+static const uint8_t MAGIC[4] = {'O', 'R', 'C', 'S'};
 Slot decodeSentinel(const uint8_t in[SENTINEL_LEN], Sentinel& out) {
     out = Sentinel();
-    if (in[0] != 'O' || in[1] != 'R' || in[2] != 'C' || in[3] != 'S') return Slot::Empty;   // erased or foreign data
-    if (in[4] != 1 || in[6] || in[7] || (in[5] & ~3) || rd32(in + 12) != crc32(in, 12)) return Slot::Corrupt;
+    bool erased = true;
+    for (size_t i = 0; i < SENTINEL_LEN; ++i) erased = erased && in[i] == 0xFF;
+    if (erased) return Slot::Empty;
+    int off = 0;                                  // bits that differ from the magic
+    for (int i = 0; i < 4; ++i) for (uint8_t x = uint8_t(in[i] ^ MAGIC[i]); x; x &= uint8_t(x - 1)) ++off;
+    if (off > 2) return Slot::Empty;              // never ours (old SPIFFS data, a torn first bytes write)
+    if (off || in[4] != 1 || in[6] || in[7] || (in[5] & ~3) || rd32(in + 12) != crc32(in, 12)) return Slot::Corrupt;
     out.owned = in[5] & 1; out.resetPending = (in[5] & 2) != 0; out.seq = rd32(in + 8);
     return Slot::Valid;
 }
 SentinelRead chooseSentinel(Slot a, const Sentinel& ra, Slot b, const Sentinel& rb, Sentinel& out, uint8_t& next) {
     out = Sentinel(); next = 0;
-    if (a == Slot::Valid && (b != Slot::Valid || ra.seq >= rb.seq)) { out = ra; next = 1; return SentinelRead::Ok; }
+    if (a == Slot::Valid && (b != Slot::Valid || int32_t(ra.seq - rb.seq) >= 0)) { out = ra; next = 1; return SentinelRead::Ok; }
     if (b == Slot::Valid) { out = rb; next = 0; return SentinelRead::Ok; }
-    return a == Slot::Corrupt && b == Slot::Corrupt ? SentinelRead::Unreadable : SentinelRead::Absent;
+    return a == Slot::Corrupt || b == Slot::Corrupt ? SentinelRead::Unreadable : SentinelRead::Absent;
+}
+SentinelView sentinelLoad(SentinelFlash& f) {
+    SentinelView v;
+    uint8_t raw[2][SENTINEL_LEN];
+    Sentinel r[2];
+    for (uint8_t i = 0; i < 2; ++i) {
+        if (!f.read(i, raw[i])) return v;         // a read error: unreadable
+        v.slot[i] = decodeSentinel(raw[i], r[i]);
+    }
+    v.read = chooseSentinel(v.slot[0], r[0], v.slot[1], r[1], v.cur, v.next);
+    v.redundant = v.read == SentinelRead::Ok && v.slot[0] == Slot::Valid && v.slot[1] == Slot::Valid &&
+                  r[0].owned == r[1].owned && r[0].resetPending == r[1].resetPending;
+    return v;
+}
+static bool putRecord(SentinelFlash& f, uint8_t sector, bool owned, bool pending, uint32_t seq) {
+    Sentinel s; s.owned = owned; s.resetPending = pending; s.seq = seq;
+    uint8_t rec[SENTINEL_LEN];
+    encodeSentinel(s, rec);
+    return f.erase(sector) && f.write(sector, rec);
+}
+static bool holds(SentinelFlash& f, bool owned, bool pending) {
+    const SentinelView v = sentinelLoad(f);
+    return v.read == SentinelRead::Ok && v.redundant && v.cur.owned == owned && v.cur.resetPending == pending;
+}
+static bool store(SentinelFlash& f, const SentinelView& v, bool owned, bool pending) {
+    const bool ok = v.read == SentinelRead::Ok;
+    const uint32_t seq = ok ? v.cur.seq : 0;
+    const uint8_t first = ok ? v.next : v.slot[0] == Slot::Corrupt && v.slot[1] != Slot::Corrupt ? 1 : 0;
+    return putRecord(f, first, owned, pending, seq + 1) && putRecord(f, uint8_t(1 - first), owned, pending, seq + 2) &&
+           holds(f, owned, pending);
+}
+bool sentinelWrite(SentinelFlash& f, bool owned, bool pending) {
+    const SentinelView v = sentinelLoad(f);
+    return v.read != SentinelRead::Unreadable && store(f, v, owned, pending);
+}
+bool sentinelForce(SentinelFlash& f, bool owned, bool pending) { return store(f, sentinelLoad(f), owned, pending); }
+bool sentinelOwn(SentinelFlash& f) {
+    const SentinelView v = sentinelLoad(f);
+    if (v.read == SentinelRead::Unreadable || (v.read == SentinelRead::Ok && v.cur.resetPending)) return false;
+    if (v.read == SentinelRead::Ok && v.redundant && v.cur.owned) return true;
+    return store(f, v, true, false);
 }
 State withSentinel(State nvs, SentinelRead r, const Sentinel& s) {
     if (nvs != State::New) return nvs;            // NVS still knows its owner

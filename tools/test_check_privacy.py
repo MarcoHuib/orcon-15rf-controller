@@ -29,6 +29,13 @@ with tempfile.TemporaryDirectory() as d:
     enc8 = openssl('pkcs8', '-topk8', '-v2', 'aes-256-cbc', '-passout', 'pass:testzin123', input=pem)
     trad = openssl('ec', '-aes256', '-passout', 'pass:testzin123', input=pem)   # Proc-Type/DEK-Info headers
     pub = openssl('pkey', '-pubout', input=pem)
+    # The shortest PKCS#8 keys (Ed25519/X25519: exactly 64 base64 characters), with a '+' in the payload.
+    short = {}
+    for alg in ('ED25519', 'X25519'):
+        for _ in range(200):
+            k = openssl('genpkey', '-algorithm', alg)
+            if '+' in ''.join(k.strip().splitlines()[1:-1]): short[alg] = k; break
+    assert len(short) == 2, 'no short key with a + in 200 tries'
     cases = {
         'plain.pem': (pem, True),
         'compact.pem': (f'{lines[0]}\n{body}\n{lines[-1]}\n', True),
@@ -37,6 +44,10 @@ with tempfile.TemporaryDirectory() as d:
         'concat.js': ('const K = ' + ' +\n  '.join(json.dumps(l + '\n') for l in lines) + ';\n', True),
         'pkcs8enc.pem': (enc8, True),
         'traditional.pem': (trad, True),
+        **{f'{alg.lower()}{form}': (text, True) for alg, k in short.items() for form, text in (
+            ('.pem', k),
+            ('.h', 'static const char K[] =\n' + ''.join(f'    "{l}\\n"\n' for l in k.strip().splitlines()) + ';\n'),
+            ('.js', 'const K = ' + ' +\n  '.join(json.dumps(l + '\n') for l in k.strip().splitlines()) + ';\n'))},
         'markers.cpp': ('static const char BEGIN[] = "-----BEGIN ENCRYPTED PRIVATE KEY-----", END[] = "-----END ENCRYPTED PRIVATE KEY-----";\n', False),
         'fake.js': ("const PEM = '-----BEGIN ENCRYPTED PRIVATE KEY-----\\nAAAA\\n-----END ENCRYPTED PRIVATE KEY-----\\n';\n", False),
         'public.pem': (pub, False),

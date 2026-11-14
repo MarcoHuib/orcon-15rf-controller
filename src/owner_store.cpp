@@ -113,65 +113,32 @@ static bool writeState(uint8_t v) {
 provision::State state() { return g_state; }
 // ---- the ownership sentinel (provision.h; Codex OWNER-11): the last two 4 KB sectors of the spiffs
 // partition, which this firmware does not use and the Arduino NVS auto-format never touches.
-static const esp_partition_t* sentinelPart() {
-    return esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
-}
-static uint32_t sentinelOff(const esp_partition_t* p, uint8_t i) { return p->size - (2u - i) * 4096u; }
-static provision::SentinelRead sentinelLoad(provision::Sentinel& out, uint8_t& next) {
-    const esp_partition_t* p = sentinelPart();
-    out = provision::Sentinel(); next = 0;
-    if (!p || p->size < 3 * 4096u) return provision::SentinelRead::Unreadable;   // not the pinned layout: fail closed
-    uint8_t rec[2][provision::SENTINEL_LEN];
-    provision::Sentinel r[2];
-    provision::Slot slot[2];
-    for (uint8_t i = 0; i < 2; ++i) {
-        if (esp_partition_read(p, sentinelOff(p, i), rec[i], sizeof(rec[i])) != ESP_OK) return provision::SentinelRead::Unreadable;
-        slot[i] = provision::decodeSentinel(rec[i], r[i]);
+struct SentinelSectors : provision::SentinelFlash {
+    static const esp_partition_t* part() {
+        const esp_partition_t* p = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
+        return p && p->size >= 3 * 4096u ? p : nullptr;   // not the pinned layout: every access fails (fail closed)
     }
-    return provision::chooseSentinel(slot[0], r[0], slot[1], r[1], out, next);
-}
-static bool sentinelPut(const esp_partition_t* p, uint8_t i, const provision::Sentinel& s) {
-    uint8_t rec[provision::SENTINEL_LEN], back[provision::SENTINEL_LEN];
-    provision::encodeSentinel(s, rec);
-    provision::Sentinel chk;
-    return esp_partition_erase_range(p, sentinelOff(p, i), 4096) == ESP_OK && esp_partition_write(p, sentinelOff(p, i), rec, sizeof(rec)) == ESP_OK &&
-           esp_partition_read(p, sentinelOff(p, i), back, sizeof(back)) == ESP_OK && !memcmp(back, rec, sizeof(rec)) &&
-           provision::decodeSentinel(back, chk) == provision::Slot::Valid;
-}
-// Only the sector without the current record is erased; the very first write fills both sectors.
-static bool sentinelStore(bool owned, bool resetPending) {
-    provision::Sentinel cur, s;
-    uint8_t next = 0;
-    const provision::SentinelRead r = sentinelLoad(cur, next);
-    const esp_partition_t* p = sentinelPart();
-    if (r == provision::SentinelRead::Unreadable || !p) return false;
-    s.owned = owned; s.resetPending = resetPending;
-    if (r == provision::SentinelRead::Absent) {
-        s.seq = 1;
-        if (!sentinelPut(p, 0, s)) return false;
-        s.seq = 2;
-        return sentinelPut(p, 1, s);
+    static uint32_t off(const esp_partition_t* p, uint8_t i) { return p->size - (2u - i) * 4096u; }
+    bool read(uint8_t i, uint8_t out[provision::SENTINEL_LEN]) override {
+        const esp_partition_t* p = part();
+        return p && esp_partition_read(p, off(p, i), out, provision::SENTINEL_LEN) == ESP_OK;
     }
-    s.seq = cur.seq + 1;
-    return sentinelPut(p, next, s);
-}
+    bool erase(uint8_t i) override { const esp_partition_t* p = part(); return p && esp_partition_erase_range(p, off(p, i), 4096) == ESP_OK; }
+    bool write(uint8_t i, const uint8_t in[provision::SENTINEL_LEN]) override {
+        const esp_partition_t* p = part();
+        return p && esp_partition_write(p, off(p, i), in, provision::SENTINEL_LEN) == ESP_OK;
+    }
+};
+static SentinelSectors g_sentinel;
 
-// The PRG factory reset when the reset/ownership storage itself cannot be read (both sectors damaged): it is
-// rewritten from scratch with a pending reset. Physical presence authorises a reset in every state, so this
-// opens nothing new; the next boot then wipes everything (provision::resume) and the device is New.
-bool forceResetMarker() {
-    const esp_partition_t* p = sentinelPart();
-    if (!p || p->size < 3 * 4096u) return false;
-    provision::Sentinel s;
-    s.owned = true; s.resetPending = true; s.seq = 1;
-    if (!sentinelPut(p, 0, s)) return false;
-    s.seq = 2;
-    return sentinelPut(p, 1, s);
-}
+// The PRG factory reset when the reset/ownership storage itself cannot be read: it is rewritten with a
+// pending reset. Physical presence authorises a reset in every state, so this opens nothing new; the next
+// boot then wipes everything (provision::resume) and the device is New.
+bool forceResetMarker() { return provision::sentinelForce(g_sentinel, true, true); }
 
 bool markSetup() {
     if (!provision::installing(g_state)) return false;
-    if (!sentinelStore(true, false)) return false;           // ownership outside NVS first (Codex OWNER-11)
+    if (!provision::sentinelOwn(g_sentinel)) return false;   // ownership outside NVS first (OWNER-11); never during a reset (OWNER-13)
     if (!writeState(provision::STORED_SETUP)) return false;
     g_state = provision::State::Setup;
     return true;
@@ -231,13 +198,10 @@ void begin() {
     g_state = provision::fromStored(stored, cs == authstore::Status::Ok, pubPresent(), migrate);
     if (migrate && !writeState(provision::STORED_LEGACY))
         Serial.println("[owner] migration not stored; will repeat at the next boot");
-    provision::Sentinel sen;
-    uint8_t next = 0;
-    const provision::SentinelRead sr = sentinelLoad(sen, next);
-    g_state = provision::withSentinel(g_state, sr, sen);
-    // An owner that NVS knows (Setup/Done/Legacy, e.g. a migrated board) is recorded in the sentinel too.
-    if (g_state != provision::State::New && g_state != provision::State::Locked && !(sr == provision::SentinelRead::Ok && sen.owned) &&
-        !sentinelStore(true, false))
+    const provision::SentinelView sv = provision::sentinelLoad(g_sentinel);
+    g_state = provision::withSentinel(g_state, sv.read, sv.cur);
+    // Every owned device has its ownership in both sentinel sectors (a migrated board, a repair after damage).
+    if (g_state != provision::State::New && !provision::sentinelOwn(g_sentinel))
         Serial.println("[owner] ownership sentinel not written; will repeat at the next boot");
     const bool armed = g_arm.magic == ARM_MAGIC && g_arm.inv == uint8_t(~g_arm.mode) && g_arm.mode <= uint8_t(Mode::WifiReset);
     g_boot = armed ? Mode(g_arm.mode) : Mode::None;
@@ -261,13 +225,11 @@ struct Ops : provision::ResetOps {
     // The marker lives in the ownership sentinel, outside NVS: an NVS auto-format cannot swallow a pending
     // reset (Codex OWNER-11). Tri-state (Codex OWNER-01): only a confirmed absence means "no reset pending".
     provision::Marker marker() override {
-        provision::Sentinel s;
-        uint8_t next = 0;
-        const provision::SentinelRead r = sentinelLoad(s, next);
-        if (r == provision::SentinelRead::Unreadable) return provision::Marker::Unreadable;
-        return r == provision::SentinelRead::Ok && s.resetPending ? provision::Marker::Set : provision::Marker::Absent;
+        const provision::SentinelView v = provision::sentinelLoad(g_sentinel);
+        if (v.read == provision::SentinelRead::Unreadable) return provision::Marker::Unreadable;
+        return v.read == provision::SentinelRead::Ok && v.cur.resetPending ? provision::Marker::Set : provision::Marker::Absent;
     }
-    bool mark() override { return sentinelStore(true, true); }
+    bool mark() override { return provision::sentinelWrite(g_sentinel, true, true); }
     bool eraseNamespace(const char* ns) override {
         nvs_handle_t h;
         const esp_err_t e = nvs_open(ns, NVS_READWRITE, &h);
@@ -315,7 +277,7 @@ struct Ops : provision::ResetOps {
         }
         return esp_ota_end(h) == ESP_OK;                // ESP-IDF verifies the copy; the boot selection is unchanged
     }
-    bool clear() override { return sentinelStore(false, false); }   // last: the device is unowned again
+    bool clear() override { return provision::sentinelWrite(g_sentinel, false, false); }   // last: the device is unowned again
 };
 bool requestFactoryReset() {
     if (unsettledBoot()) return false;   // a restart now could roll the update back first; the user retries later

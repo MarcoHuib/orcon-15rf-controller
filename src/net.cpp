@@ -825,7 +825,8 @@ static void prgPoll(uint32_t now) {
         case Action::FactoryReset:
             if (!ownerstore::requestFactoryReset()) { notice("Reset mislukt:", "opslaan niet gelukt", "probeer opnieuw", 6000); return; }
             setupweb::note(rfcon::WARN, "PRG-menu: fabrieksreset bevestigd");
-            notice("Fabrieksreset", "herstart en wist", "niet uitschakelen", 8000); restartIn(1500);
+            notice("Fabrieksreset", "herstart en wist", "niet uitschakelen", 8000);
+            delay(1500); ESP.restart();                // blocking: no web request runs in between (Codex OWNER-13)
             return;
         default: return;
     }
@@ -1202,17 +1203,25 @@ void begin() {
         // rewrites that storage with a pending reset, so recovering never needs a computer.
         oledInit();
         pinMode(PIN_PRG_BTN, INPUT_PULLUP);
+        // Every restart obeys the OTA settlement rule (Codex OWNER-10): during an unconfirmed update a restart
+        // makes the bootloader return to the previous image first, which may predate the ownership model. So
+        // then this loop neither restarts by itself nor accepts the reset; the user decides with RST.
+        const bool settled = !ownerstore::unsettledBoot();
         const uint32_t until = millis() + 60000;
-        while (int32_t(millis() - until) < 0 || g_gesture.phase() != gesture::Phase::Idle) {   // never cut a menu short
+        while (!settled || int32_t(millis() - until) < 0 || g_gesture.phase() != gesture::Phase::Idle) {   // never cut a menu short
             const gesture::Action a = g_gesture.poll(digitalRead(PIN_PRG_BTN), millis());
-            if (a == gesture::Action::FactoryReset && ownerstore::forceResetMarker()) {
+            if (a == gesture::Action::FactoryReset && !settled) notice("Update onbevestigd:", "reset kan niet,", "RST = vorige versie", 8000);
+            else if (a == gesture::Action::FactoryReset && ownerstore::forceResetMarker()) {
                 notice("Fabrieksreset", "herstart en wist", "niet uitschakelen", 8000); delay(1500); ESP.restart();
             }
             if (g_gesture.visible(millis())) { g_msgUntil = 0; oledDraw(); }   // the countdown and menu come first
-            else if (!g_msgUntil || int32_t(millis() - g_msgUntil) >= 0) notice("Opslag onleesbaar:", "RST, PRG 15 s vast", "= fabrieksreset", 60000);
+            else if (!g_msgUntil || int32_t(millis() - g_msgUntil) >= 0) {
+                if (settled) notice("Opslag onleesbaar:", "RST, PRG 15 s vast", "= fabrieksreset", 60000);
+                else notice("Opslag onleesbaar,", "update onbevestigd:", "RST = vorige versie", 60000);
+            }
             delay(20);
         }
-        ESP.restart();                                 // and offer it again
+        ESP.restart();                                 // settled only: and offer it again
     }
     if (ran) { Serial.println("[reset] factory reset complete: restart as a new device"); delay(200); ESP.restart(); }
     ownerstore::begin();
