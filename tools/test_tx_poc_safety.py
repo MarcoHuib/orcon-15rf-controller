@@ -45,7 +45,17 @@ assert on(routes)=={'/','/api/tx-poc/state','/api/tx-poc/mode','/api/oled'},on(r
 legacy_routes=on(legacy); assert {'/api/cmd','/api/ids','/api/wifi','/api/log','/update','/api/state'}<=legacy_routes
 assert not (legacy_routes-{'/','/api/oled'})&on(routes)
 assert 'server.onNotFound([](){ server.send(403,' in routes
-assert on(webctl)=={'/log','/api/log','/api/state'},on(webctl)
+# Web control: read-only monitoring only; the control image adds its settings routes, each one
+# behind the web login (setupweb::authorize), nothing else.
+webctl_base,ctl_block=webctl.split('#if ORCON_TX_CONTROL\n',1)
+ctl_block,webctl_tail=ctl_block.split('#endif',1)
+assert on(webctl_base+webctl_tail)=={'/log','/api/log','/api/state'},on(webctl_base+webctl_tail)
+assert on(ctl_block)=={'/api/netcfg','/api/scan','/api/wifi','/api/oled'},on(ctl_block)
+assert all('setupweb::authorize(' in l for l in ctl_block.splitlines() if 'server.on(' in l),ctl_block
+# RX-only with the web login (the rollback image): settings behind the login, no identity or command route.
+auth_legacy=legacy.split('#if ORCON_WEB_AUTH\n',1)[1].split('#else\n',1)[0]
+assert on(auth_legacy)=={'/api/netcfg','/api/scan','/api/wifi','/api/oled'},on(auth_legacy)
+assert all('setupweb::authorize(' in l for l in auth_legacy.splitlines() if 'server.on(' in l),auth_legacy
 assert 'setupweb::begin(server)' in webctl
 rt=Path('src/tx_poc_runtime.cpp').read_text()
 # Pairing frames reach the RF backend only on the capped RF test image (ORCON_TX_PAIR).
@@ -76,7 +86,7 @@ def tx_paths_safe(web,net,radio,runtime,main):
     assert web.count('controller().submitCtl(')==1 and 'submitCtl' not in net+main
     send=fn(web,'static void handleRemoteSend() {')     # the web-control (first) definition
     order=['guard(d, K, 3)','"profile-storage-unavailable"','"profile-required"','"profile-protocol-unsupported"',
-           '"profile-unit-mismatch"','"identity-conflict"','controller().submitCtl(']
+           '"profile-unit-mismatch"','"identity-conflict"','"tx-budget"','controller().submitCtl(']
     pos=[send.find(x) for x in order]
     assert all(x>=0 for x in pos) and pos==sorted(pos),('send gate order',list(zip(order,pos)))
     assert 'identityClear' in send.split('submitCtl(',1)[1] and 'txpoc::rxReady()' in send.split('submitCtl(',1)[1]
@@ -86,6 +96,9 @@ def tx_paths_safe(web,net,radio,runtime,main):
     assert web.count('submitBind(')==2
     press=fn(web,'static void handlePairPress() {'); tick=fn(web,'void tick(uint32_t now) {')
     assert press.find('if (!CAN_PAIR)')>=0 and press.find('if (!CAN_PAIR)')<press.find('submitBind(')
+    assert 0<=press.find('budgetWaitMs(2, OFFER_ONAIR)')<press.find('submitBind(')   # room for offer + ack
+    # The RF budget is enforced in the RF backend itself, before the only transmit call.
+    assert 0<=runtime.find('if (txbudget::waitMs(g_budget, t, 1, est)) return false;')<runtime.find('radio::sx1276::txBegin(buf_, bytes_)')
     assert tick.find('if (CAN_PAIR &&')>=0 and tick.find('if (CAN_PAIR &&')<tick.find('submitBind(')
     assert 'CAN_PAIR = CAN_TX && CAN_RX && (!ORCON_TX_POC || SIMULATED || ORCON_TX_PAIR);' in web
     assert 'static const bool SIMULATED = !ORCON_TX_RF_ENABLE;' in web
@@ -100,7 +113,9 @@ for name,old,new in [('no-profile-gate','if(!profile){fail(409,"profile-required
                      ('no-unit-gate','if(!(profile->unit==orcon::ids().fan)){fail(409,"profile-unit-mismatch");return;}',''),
                      ('auto-ack-ungated','if (CAN_PAIR && g_pair.st','if (g_pair.st'),
                      ('pairing-on-rf','(!ORCON_TX_POC || SIMULATED || ORCON_TX_PAIR)','(true)'),
-                     ('second-send-path','static void handleRemoteState() { remoteBody(200); }','static void handleRemoteState() { txpoc::controller().submitCtl(1,4,orcon::ids(),true,true,true,0); }')]:
+                     ('second-send-path','static void handleRemoteState() { if (!authorize(false, true)) return; remoteBody(200); }','static void handleRemoteState() { txpoc::controller().submitCtl(1,4,orcon::ids(),true,true,true,0); }'),
+                     ('no-budget-gate','if(const uint32_t w=txpoc::budgetWaitMs(1,MODE_ONAIR)){failRetry(429,"tx-budget",w);return;}',''),
+                     ('no-pair-budget','if (const uint32_t w = txpoc::budgetWaitMs(2, OFFER_ONAIR)) { failRetry(429, "tx-budget", w); return; }','')]:
     mutated=web.replace(old,new,1); assert mutated!=web,name
     try: tx_paths_safe(mutated,net,radio,runtime,main_src)
     except AssertionError: print('PASS TX-path guard rejects mutation',name)
@@ -111,15 +126,21 @@ baseline=ini['env:heltec_v2_sx1276']['build_flags']
 assert 'ORCON_TX_POC' not in baseline and 'ORCON_TX_RF_ENABLE' not in baseline
 assert '-DORCON_TX_RF_ENABLE=0' in ini['env:heltec_v2_sx1276_tx_poc_dryrun']['build_flags']
 assert '-DORCON_TX_RF_ENABLE=1' in ini['env:heltec_v2_sx1276_tx_poc']['build_flags']
-# RF pairing is compiled into exactly one environment: the capped RF test image.
-assert [n for n in ini.sections() if 'ORCON_TX_PAIR=1' in ini[n].get('build_flags','')]==['env:heltec_v2_sx1276_rftest']
+# RF pairing is compiled into exactly two environments: the capped RF test image and the control image.
+assert [n for n in ini.sections() if 'ORCON_TX_PAIR=1' in ini[n].get('build_flags','')]==['env:heltec_v2_sx1276_rftest','env:heltec_v2_sx1276_control']
+assert [n for n in ini.sections() if 'ORCON_TX_CONTROL=1' in ini[n].get('build_flags','')]==['env:heltec_v2_sx1276_control']
+assert 'MAX_PER_BOOT' not in ini['env:heltec_v2_sx1276_control']['build_flags']
 
 base=['RADIO_SX1276=1','BOARD_HELTEC_V2=1']
 valid=[('rx-default',base,{'RX_ONLY':'1','ORCON_TX_POC':'0','ORCON_TX_RF_ENABLE':'0','MQTT_ENABLED':'1'}),
        ('dryrun',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=0'],{'RX_ONLY':'1','ORCON_TX_POC':'1','MQTT_ENABLED':'0'}),
        ('rf-web',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1'],{'RX_ONLY':'1','ORCON_TX_POC':'1','ORCON_TX_RF_ENABLE':'1','ORCON_WEB_CONTROL':'1','MQTT_ENABLED':'0'}),
        ('rf-test-cap',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_MAX_PER_BOOT=50'],{'ORCON_TX_RF_ENABLE':'1','ORCON_TX_MAX_PER_BOOT':'50','ORCON_TX_PAIR':'0','MQTT_ENABLED':'0'}),
-       ('rf-test-pair',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_MAX_PER_BOOT=50','ORCON_TX_PAIR=1'],{'ORCON_TX_PAIR':'1','ORCON_TX_MAX_PER_BOOT':'50'})]
+       ('rf-test-pair',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_MAX_PER_BOOT=50','ORCON_TX_PAIR=1'],{'ORCON_TX_PAIR':'1','ORCON_TX_MAX_PER_BOOT':'50'}),
+       ('control',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_PAIR=1','ORCON_TX_CONTROL=1'],
+        {'ORCON_TX_CONTROL':'1','ORCON_TX_PAIR':'1','ORCON_TX_MAX_PER_BOOT':'0','ORCON_WEB_AUTH':'1','MQTT_ENABLED':'0'}),
+       ('rx-default-login',base,{'ORCON_WEB_AUTH':'1','ORCON_TX_CONTROL':'0'}),
+       ('other-board-no-login',['RADIO_CC1101_ASYNC=1'],{'ORCON_WEB_AUTH':'0'})]
 for name,defs,wanted in valid:
     result=run([a.compiler,'-std=c++11','-I','src','-x','c++','-dM','-E','-']+['-D'+x for x in defs],input='#include "config.h"\n')
     assert result.returncode==0,(name,result.stderr)
@@ -144,9 +165,29 @@ invalid=[('rf-alone',['ORCON_TX_RF_ENABLE=1'],'RF TX requires'),
          ('pair-dryrun',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_WEB_CONTROL=1','ORCON_TX_PAIR=1'],'ORCON_TX_PAIR requires'),
          ('pair-without-web',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_TX_MAX_PER_BOOT=50','ORCON_TX_PAIR=1'],'ORCON_TX_PAIR requires'),
          ('invalid-pair',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_MAX_PER_BOOT=50','ORCON_TX_PAIR=2'],'ORCON_TX_PAIR requires'),
-         ('cap-above-limit',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_TX_MAX_PER_BOOT=101'],'ORCON_TX_MAX_PER_BOOT is 0, or 1..100')]
+         ('cap-above-limit',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_TX_MAX_PER_BOOT=101'],'ORCON_TX_MAX_PER_BOOT is 0, or 1..100'),
+         ('control-with-test-cap',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_PAIR=1','ORCON_TX_CONTROL=1','ORCON_TX_MAX_PER_BOOT=50'],'ORCON_TX_CONTROL is'),
+         ('control-without-pair',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_CONTROL=1'],'ORCON_TX_CONTROL is'),
+         ('control-dryrun',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_WEB_CONTROL=1','ORCON_TX_PAIR=1','ORCON_TX_CONTROL=1'],'ORCON_TX_PAIR requires'),
+         ('control-without-login',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_PAIR=1','ORCON_TX_CONTROL=1','ORCON_WEB_AUTH=0'],'requires the web login'),
+         ('login-without-signed-ota',['RADIO_CC1101_ASYNC=1','ORCON_WEB_AUTH=1'],'ORCON_WEB_AUTH needs ORCON_SIGNED_OTA')]
 for name,defs,diagnostic in invalid:
     result=run([a.compiler,'-std=c++11','-I','src','-x','c++','-fsyntax-only','-']+['-D'+x for x in defs],input='#include "config.h"\n')
     assert result.returncode!=0 and diagnostic in result.stderr,(name,result.returncode,result.stderr)
     print('PASS forbidden compile',name,'expected nonzero exit',result.returncode)
+bm=runtime.replace('if (txbudget::waitMs(g_budget, t, 1, est)) return false;','',1); assert bm!=runtime
+try: tx_paths_safe(web,net,radio,bm,main_src)
+except AssertionError: print('PASS TX-path guard rejects mutation no-backend-budget')
+else: raise AssertionError('TX-path guard accepted mutation no-backend-budget')
+# Codex SEC-01: the rollback-test route can undo an update, so its first act is the owner login
+# check (session, CSRF, origin), and it only exists where that login exists.
+def hold_safe(ota):
+    body=fn(ota,'static void handleHold() {')
+    assert body.lstrip().startswith('if (!setupweb::authorize(true)) return;'),'hold must authorize first'
+    reg=ota.split('s.on("/api/ota/hold"',1)[0].rsplit('\n',2)[-2]
+    assert reg.strip()=='#if !ORCON_TX_POC || ORCON_WEB_CONTROL',('hold registration guard',reg)
+ota_src=Path('src/ota_signed.cpp').read_text(); hold_safe(ota_src)
+try: hold_safe(ota_src.replace('if (!setupweb::authorize(true)) return;','',1))
+except AssertionError: print('PASS hold guard rejects mutation unauthenticated-hold')
+else: raise AssertionError('hold guard accepted mutation unauthenticated-hold')
 print('PASS local source safety, guard mutations and capability compiles')

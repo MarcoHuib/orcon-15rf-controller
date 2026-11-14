@@ -207,7 +207,7 @@ done
 L="$W/local"; mkdir -p "$L"
 cat > "$W/local.sh" <<EOF
 set -euo pipefail
-$(sed -n '/^die()/p; /^LOCAL_REQUIRED=/p; /^LOCAL_ENVS=/p; /^RF_TEST_ENV=/p; /^RF_TEST_ACK=/p; /^env_ok()/p; /^local_ok()/,/^}/p; /^markers()/,/^}/p' "$REPO/tools/heltec_v2.sh")
+$(sed -n '/^die()/p; /^LOCAL_REQUIRED=/p; /^LOCAL_ENVS=/p; /^RF_TEST_ENV=/p; /^RF_TEST_ACK=/p; /^CONTROL_ENV=/p; /^CONTROL_ACK=/p; /^env_ok()/p; /^local_ok()/,/^}/p; /^markers()/,/^}/p' "$REPO/tools/heltec_v2.sh")
 \${WHAT:-local_ok} "\$@"
 EOF
 mkpkg() {   # mkpkg <name> <mutation>: evidence dir + package dir, then one mutation
@@ -264,6 +264,21 @@ lexpect fail "dry-run env, RX-only image"      "$W/rx.bin" heltec_v2_sx1276_tx_p
 lexpect fail "image with OTA"                  "$W/ota.bin" heltec_v2_sx1276_tx_poc_dryrun
 lexpect fail "reserved RF env"                 "$W/dry.bin" heltec_v2_sx1276_tx_poc
 lexpect fail "V3 env"                          "$W/dry.bin" heltec_v3_cc1101_ota
+printf 'SX1276 direct RX + txpoc packet TX (CONTROL: max 10/min, 60/h) RX-ONLY TEST FIRMWARE' > "$W/ctl.bin"
+printf 'SX1276 direct RX + txpoc packet TX (RF TEST: max 50 packets per boot)' > "$W/rft.bin"
+printf 'SX1276 direct RX + txpoc packet TX (CONTROL: max 10/min, 60/h) RF TEST: max 50' > "$W/ctlrf.bin"
+printf 'SX1276 direct RX + txpoc packet TX' > "$W/unbudgeted.bin"
+LENV=(WHAT=markers ORCON_CONTROL_ACK="control firmware")
+lexpect pass "control image with its phrase"   "$W/ctl.bin" heltec_v2_sx1276_control
+lexpect fail "control env, RF test image"      "$W/rft.bin" heltec_v2_sx1276_control
+lexpect fail "control env, both RF markers"    "$W/ctlrf.bin" heltec_v2_sx1276_control
+lexpect fail "control env, unbudgeted RF image" "$W/unbudgeted.bin" heltec_v2_sx1276_control
+lexpect fail "control env, RX-only image"      "$W/rx.bin" heltec_v2_sx1276_control
+lexpect fail "RX-only env, control image"      "$W/ctl.bin" heltec_v2_sx1276
+LENV=(WHAT=markers ORCON_CONTROL_ACK="RF test image")
+lexpect fail "control image, wrong phrase"     "$W/ctl.bin" heltec_v2_sx1276_control
+LENV=(WHAT=markers)
+lexpect fail "control image without phrase"    "$W/ctl.bin" heltec_v2_sx1276_control
 
 echo; [ $fails -eq 0 ] && echo "ALL PASSED (0 failures)" || echo "FAILED ($fails failures)"
 exit $((fails > 0))

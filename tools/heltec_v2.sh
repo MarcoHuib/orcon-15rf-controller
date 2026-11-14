@@ -27,7 +27,10 @@ LOCAL_ENVS="heltec_v2_sx1276 heltec_v2_sx1276_tx_poc_dryrun"   # the only images
 # precheck/flash accept it only with ORCON_RF_TEST_ACK set to this exact phrase; flash asks again.
 RF_TEST_ENV="heltec_v2_sx1276_rftest"
 RF_TEST_ACK="RF test image"
-env_ok() { [[ " $LOCAL_ENVS " == *" $1 "* ]] || { [ "$1" = "$RF_TEST_ENV" ] && [ "${ORCON_RF_TEST_ACK:-}" = "$RF_TEST_ACK" ]; }; }
+# The daily-use control image (RF budget, web login) transmits too: its own, separate phrase.
+CONTROL_ENV="heltec_v2_sx1276_control"
+CONTROL_ACK="control firmware"
+env_ok() { [[ " $LOCAL_ENVS " == *" $1 "* ]] || { [ "$1" = "$RF_TEST_ENV" ] && [ "${ORCON_RF_TEST_ACK:-}" = "$RF_TEST_ACK" ]; } || { [ "$1" = "$CONTROL_ENV" ] && [ "${ORCON_CONTROL_ACK:-}" = "$CONTROL_ACK" ]; }; }
 # A local package needs these local checks PASS on the same clean commit (RESULTS.json).
 ROLLBACK_COMMIT="d5c39e1b4d1f0ed37defe69b51e3562c36058208"  # immutable local trust anchor
 # offset:image:slot size. NVS (0x9000-0xDFFF) is never written; the merged image is never used.
@@ -152,6 +155,11 @@ markers() {   # image contents per environment; network firmware update must be 
         env_ok "$env" || die "RF test image refused: ORCON_RF_TEST_ACK not given"
         grep -q -a -E "SX1276 direct RX \+ txpoc packet TX \(RF TEST: max [0-9]+ packets per boot\)" "$f" \
             || die "RF test marker missing (uncapped RF image?)"
+    elif [ "$env" = "$CONTROL_ENV" ]; then
+        env_ok "$env" || die "control image refused: ORCON_CONTROL_ACK not given"
+        grep -q -a "SX1276 direct RX + txpoc packet TX (CONTROL: max 10/min, 60/h)" "$f" \
+            || die "control marker missing (unbudgeted RF image?)"
+        if grep -q -a "RF TEST: max" "$f"; then die "control image contains the RF test marker"; fi
     else
         grep -q -a "SX1276 direct RX (TX disabled)" "$f" || die "not the SX1276 RX-only backend"
     fi
@@ -167,6 +175,9 @@ markers() {   # image contents per environment; network firmware update must be 
                 || die "dry-run markers missing" ;;
         "$RF_TEST_ENV")
             if grep -q -a "tx-poc-dryrun" "$f"; then die "RF test image contains the dry-run backend"; fi ;;
+        "$CONTROL_ENV")
+            if grep -q -a "tx-poc-dryrun" "$f"; then die "control image contains the dry-run backend"; fi
+            if grep -q -a "SX1276 direct RX (TX disabled)" "$f"; then die "control image contains the RX-only backend"; fi ;;
         *) die "env $env may not be flashed" ;;
     esac
 }
@@ -394,6 +405,11 @@ flash() {
         echo "WARNING: RF TEST image: the web page can put real 868 MHz packets on air (capped per boot, 2 s apart)."
         read -r -p "Type the RF test acknowledgement phrase: " ok
         [ "$ok" = "$RF_TEST_ACK" ] || die "RF test image not confirmed"
+    fi
+    if [ "$LOCAL_ENV" = "$CONTROL_ENV" ]; then
+        echo "WARNING: CONTROL image: logged-in users can put real 868 MHz packets on air (10 per minute, 60 per hour)."
+        read -r -p "Type the control acknowledgement phrase: " ok
+        [ "$ok" = "$CONTROL_ACK" ] || die "control image not confirmed"
     fi
     files_ok "$snapshot" "$sha"
     # The frozen bytes must still be the ones the ORIGINAL evidence recorded, not just

@@ -18,6 +18,7 @@
 #include "net.h"
 #if ORCON_TX_POC
 #include "tx_poc.h"
+#include "tx_poc_runtime.h"
 #endif
 #include <map>
 #include <string>
@@ -44,6 +45,33 @@ RxDiagnostics rxDiagnostics() {
     return d;
 }
 }
+#if ORCON_TX_POC
+namespace radio { uint32_t lastReceivedMs() { return g_ms; } }   // rx() delivers a frame at g_ms
+#endif
+#if ORCON_WEB_AUTH
+// Device side of the login (auth_store.cpp): NVS, PBKDF2, RNG and the OTA signature, faked.
+#include "auth_store.h"
+static webauth::Cred g_store;
+static bool g_storeSet = false, g_kdfOk = true;
+static uint32_t g_rng = 0x2468ACE1u;
+namespace authstore {
+bool load(webauth::Cred& c) { if (!g_storeSet) return false; c = g_store; return true; }
+bool save(const webauth::Cred& c) { g_store = c; g_storeSet = true; return true; }
+bool kdfReady() { return g_kdfOk; }
+bool kdf(const char* pw, size_t n, const uint8_t* salt, size_t sn, uint32_t it, uint8_t out[32]) {
+    uint32_t h = 2166136261u ^ it;
+    for (int r = 0; r < 32; ++r) {
+        for (size_t i = 0; i < n; ++i) h = (h ^ uint8_t(pw[i])) * 16777619u;
+        for (size_t i = 0; i < sn; ++i) h = (h ^ salt[i]) * 16777619u;
+        h = (h ^ uint32_t(r)) * 16777619u; out[r] = uint8_t(h >> 13);
+    }
+    return g_kdfOk;
+}
+void random(uint8_t* b, size_t n) { for (size_t i = 0; i < n; ++i) { g_rng ^= g_rng << 13; g_rng ^= g_rng >> 17; g_rng ^= g_rng << 5; b[i] = uint8_t(g_rng >> 24); } }
+void ownMac(char out[18]) { strcpy(out, "02:00:00:00:00:0a"); }
+bool verifySignature(const char*, size_t, const char* sig) { return !strcmp(sig, "a1b2"); }   // "a1b2": a valid signature
+}
+#endif
 #if ORCON_TX_RF_ENABLE
 static uint32_t g_restoreDiag = 0;
 namespace radio { namespace sx1276 { uint32_t restoreDiag() { return g_restoreDiag; } } }
@@ -82,6 +110,12 @@ bool rxReady() { return g_radioOk && s_rf.healthy; }
 bool ownerBusy() { return s_owner.step() != Step::Idle; }
 static uint32_t g_rfStarts = 0;                 // RF packets started this boot (set by the test)
 uint32_t rfTxStarts() { return g_rfStarts; }
+static uint32_t g_budgetWait = 0;                // RF budget (tx_poc_runtime.cpp), set by the test
+static BudgetView g_budgetView;
+uint32_t budgetWaitMs(uint8_t, size_t) { return g_budgetWait; }
+BudgetView budget() { return g_budgetView; }
+uint32_t lastAirUs() { return 11234; }
+uint32_t lastTxStartMs() { return s_rf.started; }
 }
 #endif
 
@@ -90,7 +124,8 @@ static int failures = 0;
 
 static WebServer srv;
 static JsonDocument J;
-static const char* TOKEN = "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5";
+static const char* TOKEN = "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5";   // the per-boot token; the session's CSRF token after login
+static std::string g_cookie, g_setCookie, g_csrf;                 // the browser's cookie jar
 static const DeviceId REM(29, 101), REM2(29, 303), UNIT(29, 202), US(37, 404), UNIT32(32, 202);
 
 // One request through the registered route. Returns the status code; J holds the JSON body.
@@ -119,9 +154,16 @@ static int call(const char* method, const char* path, const char* body = "{}", c
     if (token) srv.req["X-Orcon-Token"] = token;
     if (type) srv.req["Content-Type"] = type;
     if (origin) srv.req["Origin"] = origin;
+    if (!g_cookie.empty()) srv.req["Cookie"] = "theme=light; " + g_cookie;
     auto it = srv.routes.find(std::string(method) + " " + p);
     if (it == srv.routes.end()) return 404;
     it->second();
+    g_setCookie.clear();
+    if (auto sc = srv.sent.find("Set-Cookie"); sc != srv.sent.end()) {   // what a browser stores
+        g_setCookie = sc->second;
+        const std::string v = g_setCookie.substr(0, g_setCookie.find(';'));
+        g_cookie = v == "orcon_sid=" ? "" : v;
+    }
     J.clear();
     if (srv.type == "application/json") deserializeJson(J, srv.out);
     return srv.code;
@@ -136,14 +178,15 @@ static Frame fr(MsgType t, DeviceId src, DeviceId dst, uint16_t cmd, std::initia
 // What main.cpp does for every decoded frame: orcon first, then the wizard (and the
 // txpoc controller on web-control builds), same order. The RX task queues a sync note,
 // then the decoded frame; main.cpp drains frames in order.
-static void rx(const Frame& f) {
-    g_ms += 400; ++g_syncs; ++g_frames;
+static void rxAfter(const Frame& f, uint32_t dtMs) {     // a frame dtMs after the previous event
+    g_ms += dtMs; ++g_syncs; ++g_frames;
     radio::SyncInfo si; si.seq = g_syncs; si.ms = g_ms; si.rssi = -61; si.pre = 0x55; g_notes.push_back(si);
     orcon::onFrame(f); setupweb::onFrame(f, g_syncs, -61);
 #if ORCON_TX_POC
     txpoc::controller().onFrame(f, g_ms, g_ms, orcon::ids());
 #endif
 }
+static void rx(const Frame& f) { rxAfter(f, 400); }
 static void garbled(int16_t rssi) {                       // a sync whose frame never decodes
     g_ms += 400; ++g_syncs;
     radio::SyncInfo si; si.seq = g_syncs; si.ms = g_ms; si.rssi = rssi; si.pre = 0xFF; g_notes.push_back(si);
@@ -193,6 +236,105 @@ int main() {
       CHECK(srv.type == "text/html; charset=utf-8" && srv.sent.count("Content-Security-Policy") && srv.sent["X-Frame-Options"] == "DENY",
             "page has charset, CSP and frame protection"); }
 
+#if ORCON_WEB_AUTH
+    // ---- web login: no default password, a signed recovery code, sessions + CSRF, throttling --------
+    CHECK(call("GET", "/api/setup/state", "", nullptr) == 200 && J["auth"]["logged_in"] == false && J["auth"]["password_set"] == false &&
+          !J["token"].is<const char*>() && J["profiles"].isNull() && J["unit"].isNull() && J["caps"].isNull(),
+          "no session: the state only says how to log in (no token, profiles, unit or caps)");
+    for (const char* path : {"/api/profiles", "/api/setup/pair/state", "/api/setup/read/state"})
+        CHECK(call("GET", path, "", nullptr) == 401 && err("login-required"), "no session: session data refused");
+    CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\"}") == 401 && err("login-required"),
+          "no session: no mutation, not even with the old per-boot token");
+#if ORCON_TX_POC
+    CHECK(call("GET", "/api/remote/state", "", nullptr) == 401 && err("login-required"), "no session: control state refused");
+    CHECK(call("POST", "/api/remote/send", "{\"key\":\"2\"}") == 401 && txpoc::s_rf.sent[0] == 0, "no session: no RF command");
+#else
+    for (const char* path : {"/api/setup/restart", "/api/setup/wifi/forget"})
+        CHECK(call("POST", path) == 401 && !g_restarts && !g_forgets, "no session: no restart and no WiFi change");
+#endif
+    CHECK(call("GET", "/api/setup/console", "", nullptr) == 200, "diagnostics stay readable without a login (masked IDs)");
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"geheim-wachtwoord\"}", nullptr) == 409 && err("password-not-set"),
+          "no password stored: nothing to log in with (there is no default)");
+    CHECK(call("POST", "/api/auth/setup", "{\"code\":\"AAAA-AAAA\",\"password\":\"geheim-wachtwoord\"}", nullptr) == 409 &&
+          err("code-required") && !g_storeSet, "no code issued: no password can be set");
+    // CLI: a one-time nonce, then a request signed with the OTA key buys a 10-minute code.
+    auto nonceNow = []() { call("POST", "/api/auth/nonce", "{}", nullptr, "application/json", nullptr); return std::string(J["nonce"] | ""); };
+    auto resetBody = [](const std::string& n, const char* sig, const char* mac) {
+        JsonDocument b;
+        b["manifest"] = "{\"v\":1,\"kind\":\"orcon-auth-reset\",\"mac\":\"" + std::string(mac) + "\",\"nonce\":\"" + n + "\"}";
+        b["sig"] = sig; std::string out; serializeJson(b, out); return out;
+    };
+    const char* MAC = "02:00:00:00:00:0a";
+    std::string nonce = nonceNow();
+    CHECK(nonce.size() == 32 && J["mac"] == MAC, "CLI: a 128-bit nonce and the board to sign for");
+    CHECK(call("POST", "/api/auth/reset", resetBody(nonce, "dead", MAC).c_str(), nullptr, "application/json", nullptr) == 403 &&
+          err("bad-signature"), "request without a valid OTA-key signature: no code");
+    CHECK(call("POST", "/api/auth/reset", resetBody(nonce, "a1b2", MAC).c_str(), nullptr, "application/json", nullptr) == 403 &&
+          err("nonce-mismatch"), "the nonce was spent by the failed attempt (no replay)");
+    CHECK(call("POST", "/api/auth/reset", resetBody(nonceNow(), "a1b2", "02:00:00:00:00:09").c_str(), nullptr, "application/json", nullptr) == 403 &&
+          err("wrong-board"), "a request for another board: no code");
+    CHECK(call("POST", "/api/auth/reset", resetBody(nonceNow(), "a1b2", MAC).c_str(), nullptr, "text/plain", nullptr) == 403,
+          "the CLI route needs JSON too (no cross-site form posts)");
+    CHECK(call("POST", "/api/auth/reset", resetBody(nonceNow(), "a1b2", MAC).c_str(), nullptr, "application/json", nullptr) == 200 &&
+          std::string(J["code"] | "").size() == 9 && J["ttl_s"] == 600, "signed request: a one-time code, 10 minutes");
+    const std::string code = J["code"].as<const char*>();
+    { uint32_t cc = 0; const std::string all = console(&cc);
+      CHECK(has(all, "herstelcode uitgegeven") && !has(all, code.c_str()), "console notes the code, never shows it"); }
+    CHECK(call("POST", "/api/auth/setup", ("{\"code\":\"" + code + "\",\"password\":\"kort\"}").c_str(), nullptr) == 400 &&
+          err("password-weak") && !g_storeSet, "weak password refused before the code is spent");
+    CHECK(call("POST", "/api/auth/setup", "{\"code\":\"ZZZZ-ZZZZ\",\"password\":\"geheim-wachtwoord\"}", nullptr) == 401 &&
+          err("bad-code") && !g_storeSet, "wrong code refused");
+    CHECK(call("POST", "/api/auth/setup", ("{\"code\":\"" + code + "\",\"password\":\"geheim-wachtwoord\"}").c_str(), nullptr,
+               "application/json", "http://203.0.113.7") == 403 && !g_storeSet, "setting the password needs our own origin");
+    g_kdfOk = false;
+    CHECK(call("POST", "/api/auth/setup", ("{\"code\":\"" + code + "\",\"password\":\"geheim-wachtwoord\"}").c_str(), nullptr) == 503 &&
+          err("auth-unavailable") && !g_storeSet, "PBKDF2 self-test failed: fail closed, nothing stored");
+    g_kdfOk = true;
+    CHECK(call("POST", "/api/auth/setup", ("{\"code\":\"" + code + "\",\"password\":\"geheim-wachtwoord\"}").c_str(), nullptr) == 200 &&
+          J["ok"] == true && g_storeSet && !g_cookie.empty(), "code + password: stored as a salted hash, logged in");
+    g_csrf = J["token"] | ""; TOKEN = g_csrf.c_str();
+    CHECK(has(g_setCookie, "HttpOnly") && has(g_setCookie, "SameSite=Strict") && has(g_setCookie, "Path=/") && has(g_setCookie, "Max-Age=2592000"),
+          "session cookie: HttpOnly, SameSite=Strict, 30 days");
+    CHECK(!has(std::string((const char*)&g_store, sizeof(g_store)), "geheim-wachtwoord"), "the password itself is never stored");
+    CHECK(call("POST", "/api/auth/setup", ("{\"code\":\"" + code + "\",\"password\":\"ander-wachtwoord\"}").c_str(), nullptr) == 409 &&
+          err("code-required"), "the code works once");
+    CHECK(call("GET", "/api/setup/state") == 200 && J["auth"]["logged_in"] == true && J["token"] == g_csrf, "session: full state and its CSRF token");
+    CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000303\"}", "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5") == 403 && err("bad-token"),
+          "session cookie alone is not enough for a mutation (CSRF token required)");
+    const std::string firstCookie = g_cookie;
+    CHECK(call("POST", "/api/auth/logout") == 200 && g_cookie.empty(), "logout clears the cookie");
+    g_cookie = firstCookie;
+    CHECK(call("GET", "/api/profiles", "", nullptr) == 401, "a logged-out session is gone on the device too");
+    g_cookie.clear();
+    // Login throttle: four free attempts, then 30 s, doubling; the right password waits too.
+    for (int i = 0; i < 4; ++i)
+        CHECK(call("POST", "/api/auth/login", "{\"password\":\"fout-wachtwoord\"}", nullptr) == 401 && err("bad-password") && J["retry_s"] == 0,
+              "wrong password: 401, no wait yet");
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"fout-wachtwoord\"}", nullptr) == 401 && J["retry_s"] == 30, "fifth wrong password: 30 s lock");
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"geheim-wachtwoord\"}", nullptr) == 429 && err("login-locked") && J["retry_s"] == 30 &&
+          g_cookie.empty(), "locked: even the right password must wait (no guessing at full speed)");
+    call("GET", "/api/setup/state", "", nullptr);
+    CHECK(J["auth"]["login_wait_s"] == 30, "the login page is told how long to wait");
+    { uint32_t cc = 0; const std::string all = console(&cc);
+      CHECK(has(all, "onjuist wachtwoord (5 keer op rij)") && !has(all, "fout-wachtwoord") && !has(all, "geheim-wachtwoord"),
+            "console notes failures, never a password"); }
+    g_ms += 30000;
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"geheim-wachtwoord\"}", nullptr) == 200 && !g_cookie.empty(), "after the wait: logged in");
+    g_csrf = J["token"] | ""; TOKEN = g_csrf.c_str();
+    // Change the password: the current one is required; every other session ends.
+    CHECK(call("POST", "/api/auth/password", "{\"current\":\"geheim-wachtwoord\",\"password\":\"kort\"}") == 400 && err("password-weak"),
+          "change: weak new password refused");
+    CHECK(call("POST", "/api/auth/password", "{\"current\":\"verkeerd-oud\",\"password\":\"nieuw-wachtwoord\"}") == 401 && err("bad-password"),
+          "change: wrong current password refused");
+    const std::string before = g_cookie;
+    CHECK(call("POST", "/api/auth/password", "{\"current\":\"geheim-wachtwoord\",\"password\":\"nieuw-wachtwoord\"}") == 200 &&
+          g_cookie != before, "change: new password, a fresh session for this browser");
+    g_csrf = J["token"] | ""; TOKEN = g_csrf.c_str();
+    { const std::string now = g_cookie; g_cookie = before;
+      CHECK(call("GET", "/api/profiles", "", nullptr) == 401, "change: the old session no longer works"); g_cookie = now; }
+    CHECK(call("GET", "/api/setup/state") == 200 && J["auth"]["logged_in"] == true, "change: logged in with the new session");
+#endif
+
     // ---- capabilities ------------------------------------------------------------------------
     CHECK(call("GET", "/api/setup/state") == 200, "GET state");
 #if ORCON_TX_POC
@@ -207,18 +349,18 @@ int main() {
     CHECK(J["token"] == TOKEN && J["active"] == "none" && J["unit"]["id"] == "29:000202", "token, session and selected unit reported");
     CHECK(J["remotes"].size() == 0, "no remote heard yet");
     srv.req.clear(); srv.host = "attacker.example"; srv.routes["GET /api/setup/state"](); deserializeJson(J, srv.out);
-    CHECK(J["token"] == "", "DNS rebinding: a foreign Host never receives the token");
+    CHECK(!J["token"].is<const char*>() || J["token"] == "", "DNS rebinding: a foreign Host never receives the token");
     rx(press(0x01));                                          // the user presses a key: discovered
     rx(fr(MsgType::I, UNIT, UNIT, 0x31D9, {0x00, 0x00, 0x01}));
     call("GET", "/api/setup/state");
     CHECK(J["remotes"].size() == 1 && J["remotes"][0]["id"] == "29:000101", "remote discovered from its 22F1, unit not listed as remote");
-    CHECK(J["wifi"]["connected"] == true && J["wifi"]["ssid"] == "Thuis \"5G\"\x01" && J["caps"]["settings_pages"] == !ORCON_TX_POC,
+    CHECK(J["wifi"]["connected"] == true && J["wifi"]["ssid"] == "Thuis \"5G\"\x01" && J["caps"]["settings_pages"] == (!ORCON_TX_POC || ORCON_TX_CONTROL),
           "state: WiFi network (JSON-escaped) and whether the classic settings pages exist in this build");
     g_apModeFake = true; call("GET", "/api/setup/state");
     CHECK(J["wifi"]["connected"] == false && J["wifi"]["ssid"] == "", "setup AP: reported as not connected, no network name");
     CHECK(J["wifi"]["ap"] == true && J["wifi"]["ap_name"] == WIFI_AP_NAME && J["wifi"]["ip"] == "192.0.2.5", "setup AP: AP flag, AP name and address reported");
     g_apModeFake = false;
-#if ORCON_TX_POC
+#if ORCON_TX_POC && !ORCON_TX_CONTROL
     CHECK(!srv.routes.count("POST /api/setup/restart") && !srv.routes.count("POST /api/setup/wifi/forget"),
           "TX-PoC builds have no settings pages: no restart / forget-WiFi route");
 #else
@@ -383,7 +525,8 @@ int main() {
       CHECK(setupweb::takeLearnedFan(learned) && learned == UNIT32, "the confirming unit is handed over for NVS");
       uint32_t cc = 0; const std::string all = console(&cc);
       CHECK(has(all, "koppelen: 1FC9-aanbod verzonden (RF), fout none, RX-herstel ok") &&
-            has(all, "koppelen: unit bevestigde (W 1FC9 00 31D9)") && has(all, "koppelen: 1FC9-afsluiting verzonden (RF)"),
+            has(all, "koppelen: unit bevestigde (W 1FC9 00 31D9 aan ons ID)") && has(all, "koppelen: 1FC9-afsluiting verzonden (RF)") &&
+            has(all, ", TX-start t="),
             "console: offer, confirmation and ack each leave a line for remote diagnosis"); }
     // Realistic order: the unit answers within ms, BEFORE the owner has published the offer's
     // result. The W must still count; if the offer then turns out not sent, it must not.
@@ -396,12 +539,27 @@ int main() {
         snprintf(x, sizeof(x), "{\"sid\":%u,\"keys\":[\"auto\",\"1\"]}", unsigned(ps));
         const int offers = txpoc::s_rf.sent[1], acks = txpoc::s_rf.sent[2];
         CHECK(call("POST", "/api/setup/pair/press", x) == 200, "offer accepted");
-        rx(fr(MsgType::W, UNIT32, US, 0x1FC9, {0x00, 0x31, 0xD9, 0x80, 0, 0xCA}));   // queued before the owner runs
+        txpoc::s_owner.tick(g_ms, true); txpoc::s_owner.tick(g_ms, true);   // the owner starts the offer: TX on air
+        rxAfter(fr(MsgType::W, UNIT32, US, 0x1FC9, {0x00, 0x31, 0xD9, 0x80, 0, 0xCA}), 20);   // ~20 ms: before the result is out
         loopTick(); loopTick(); call("GET", "/api/setup/pair/state");
         if (sentOk) CHECK(txpoc::s_rf.sent[1] == offers + 1 && J["rf_confirmed"] == true && J["paired"] == true && txpoc::s_rf.sent[2] == acks + 1,
                           "W before the offer result is published: still confirmed, one ack, paired");
         else CHECK(J["status"] == "tx_failed" && J["rf_confirmed"] == false && txpoc::s_rf.sent[2] == acks,
                    "offer not on air: an early W is discarded and no ack is sent");
+        call("POST", "/api/setup/pair/cancel", (std::string("{\"sid\":") + std::to_string(ps) + "}").c_str());
+    }
+    {   // A W received after the press but BEFORE the radio started our offer cannot be its answer.
+        orcon::setIds(37, 404, 32, 0);
+        txpoc::s_rf.onair = true; g_ms += 200000;
+        CHECK(call("POST", "/api/setup/pair/start") == 201, "RF pairing: session for the early-W case");
+        const uint32_t ps = J["sid"]; char x[96];
+        snprintf(x, sizeof(x), "{\"sid\":%u,\"keys\":[\"auto\",\"1\"]}", unsigned(ps));
+        const int acks = txpoc::s_rf.sent[2];
+        CHECK(call("POST", "/api/setup/pair/press", x) == 200, "offer accepted, not started yet");
+        rx(fr(MsgType::W, UNIT32, US, 0x1FC9, {0x00, 0x31, 0xD9, 0x80, 0, 0xCA}));   // before the owner ran
+        loopTick(); loopTick(); call("GET", "/api/setup/pair/state");
+        CHECK(J["status"] == "bind_sent" && J["rf_confirmed"] == false && txpoc::s_rf.sent[2] == acks,
+              "a W from before our TX start is never the unit's answer: no confirmation, no ack");
         call("POST", "/api/setup/pair/cancel", (std::string("{\"sid\":") + std::to_string(ps) + "}").c_str());
     }
     txpoc::s_rf.onair = false;

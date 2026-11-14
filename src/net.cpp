@@ -13,6 +13,8 @@
 #endif
 #include "web_page.h"
 #include "setup_web.h"
+#include "rf_console.h"
+#include <esp_system.h>
 #include "ota_signed.h"
 #include "remote_profiles.h"
 #include "house_img.h"
@@ -61,6 +63,7 @@ static oledpower::Power g_oledPower;
 #endif
 
 static bool     g_apMode    = false;
+static const char* apPassword();          // the setup AP's password (below)
 static bool     g_dirty     = true;
 static uint32_t g_lastPub   = 0;
 static uint32_t g_lastMqtt  = 0;
@@ -649,6 +652,7 @@ static void mqttReconnect() {
 // ---------------------------------------------------------------------------
 static void oledTick() {
 #if defined(BOARD_HELTEC_V2)
+    if (g_apMode) g_oledPower.wake(millis());   // the setup AP's password must stay readable
     if (g_oledPower.sync(oled, millis())) g_dirty = true;
 #endif
 }
@@ -694,6 +698,16 @@ static void oledDraw() {
         oled.drawStr(0,56,g_pocBootToken+16); oled.sendBuffer(); return;
     }
 #endif
+    if (g_apMode) {   // the setup AP: exactly what someone standing at the board needs to connect
+        char a[24], b[24];
+        snprintf(a, sizeof(a), "Ww: %s", apPassword());
+        snprintf(b, sizeof(b), "http://%s", g_ip);
+        oled.clearBuffer();
+        oled.drawStr(0, 11, "WiFi-instelmodus"); oled.drawStr(0, 26, WIFI_AP_NAME);
+        oled.drawStr(0, 41, a); oled.drawStr(0, 56, b);
+        oled.sendBuffer();
+        return;
+    }
     oled.clearBuffer();
     oled.drawStr(0, 11, l1); oled.drawStr(0, 26, l2);
     oled.drawStr(0, 41, l3); oled.drawStr(0, 56, l4);
@@ -768,6 +782,28 @@ static void handleOledSave() {
 // ---------------------------------------------------------------------------
 // WiFi
 // ---------------------------------------------------------------------------
+// Setup-AP password. Boards with an OLED: random per device (stored once), shown on the OLED while
+// the setup AP runs and nowhere else (no serial, HTTP or MQTT). The OLED-less 4848 keeps the
+// configured WIFI_AP_PASS (it has no screen to show a random one on).
+#if defined(NO_OLED)
+static const char* apPassword() { return WIFI_AP_PASS; }
+#else
+static char g_apPass[11] = "";
+static const char* apPassword() {
+    if (g_apPass[0]) return g_apPass;
+    prefs.begin("orcon", true);
+    String stored = prefs.getString("appw", "");
+    prefs.end();
+    if (stored.length() == 10) { memcpy(g_apPass, stored.c_str(), 10); g_apPass[10] = 0; return g_apPass; }
+    static const char A[] = "abcdefghjkmnpqrstuvwxyz23456789";   // 31 symbols: no 0/o, 1/l/i
+    uint8_t r[10];
+    esp_fill_random(r, sizeof(r));
+    for (int i = 0; i < 10; ++i) g_apPass[i] = A[r[i] % 31];
+    g_apPass[10] = 0;
+    prefs.begin("orcon", false); prefs.putString("appw", g_apPass); prefs.end();   // once per device
+    return g_apPass;
+}
+#endif
 static void wifiConnect() {
     g_apMode = (g_ssid.length() == 0);
     if (!g_apMode) {
@@ -782,9 +818,34 @@ static void wifiConnect() {
     } else {
         g_apMode = true;
         WiFi.mode(WIFI_AP_STA);
-        WiFi.softAP(WIFI_AP_NAME, WIFI_AP_PASS);
+        WiFi.softAP(WIFI_AP_NAME, apPassword());
         snprintf(g_ip, sizeof(g_ip), "%s", WiFi.softAPIP().toString().c_str());
     }
+}
+
+// The stored network was not there at boot (e.g. the router starts slower after a power cut):
+// keep trying it in the background and leave the setup AP as soon as it connects. Never while
+// someone is connected to the setup AP, so a user configuring WiFi is not disturbed.
+static void apRecovery(uint32_t now) {
+    static uint32_t last = 0;
+    if (!g_apMode || g_ssid.length() == 0) return;
+    if (WiFi.status() == WL_CONNECTED) {
+        g_apMode = false;
+        WiFi.softAPdisconnect(true);
+        WiFi.mode(WIFI_STA);
+        snprintf(g_ip, sizeof(g_ip), "%s", WiFi.localIP().toString().c_str());
+#if ORCON_SIGNED_OTA
+        MDNS.begin("orcon15rf");
+#endif
+#if !ORCON_TX_POC || ORCON_WEB_CONTROL
+        setupweb::note(rfcon::INFO, "WiFi: thuisnetwerk weer bereikbaar, accesspoint uitgeschakeld");
+#endif
+        g_dirty = true;
+        return;
+    }
+    if (uint32_t(now - last) < 60000 || WiFi.softAPgetStationNum() > 0) return;
+    last = now;
+    WiFi.begin(g_ssid.c_str(), g_pass.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -939,6 +1000,13 @@ void begin() {
     server.on("/log", HTTP_GET, handleLogPg);
     server.on("/api/log", HTTP_GET, handleLog);
     server.on("/api/state", HTTP_GET, handleState);
+#if ORCON_TX_CONTROL
+    // The setup page's WiFi and OLED settings: logged in only (WiFi also from the setup AP).
+    server.on("/api/netcfg", HTTP_GET,  [](){ if (setupweb::authorize(false, true)) handleNetCfg(); });
+    server.on("/api/scan",   HTTP_GET,  [](){ if (setupweb::authorize(false, true)) handleScan(); });
+    server.on("/api/wifi",   HTTP_POST, [](){ if (setupweb::authorize(true, true)) handleWifiSave(); });
+    server.on("/api/oled",   HTTP_POST, [](){ if (setupweb::authorize(true)) handleOledSave(); });
+#endif
     server.onNotFound([](){ server.send(403,"application/json","{\"error\":\"route-disabled-in-web-control\"}"); });
 #else
     setupweb::begin(server);            // "/" = setup wizard + /api/setup/*, /api/remote/*
@@ -955,14 +1023,23 @@ void begin() {
     server.on("/update",    HTTP_POST, handleUpdateDone, handleUpdateUpload);
 #endif
     server.on("/api/state", handleState);
+    server.on("/api/log",   handleLog);
+#if ORCON_WEB_AUTH
+    // Heltec V2 RX-only (the rollback image): settings need the web login. Identity editing and
+    // the command route are gone (receive-only; pairing and profiles live in the setup page).
+    server.on("/api/netcfg", HTTP_GET,  [](){ if (setupweb::authorize(false, true)) handleNetCfg(); });
+    server.on("/api/scan",   HTTP_GET,  [](){ if (setupweb::authorize(false, true)) handleScan(); });
+    server.on("/api/wifi",   HTTP_POST, [](){ if (setupweb::authorize(true, true)) handleWifiSave(); });
+    server.on("/api/oled",   HTTP_POST, [](){ if (setupweb::authorize(true)) handleOledSave(); });
+#else
     server.on("/api/netcfg", handleNetCfg);
     server.on("/api/cmd",   HTTP_POST, handleCmd);
-    server.on("/api/log",   handleLog);
     server.on("/api/ids",   HTTP_POST, handleIds);
     server.on("/api/scan",  handleScan);
     server.on("/api/wifi",  HTTP_POST, handleWifiSave);
 #if defined(BOARD_HELTEC_V2)
     server.on("/api/oled",  HTTP_POST, handleOledSave);
+#endif
 #endif
 #endif // ORCON_TX_POC routes
 #if ORCON_SIGNED_OTA
@@ -1014,6 +1091,7 @@ void loop() {
     g_pocSecurity.expire(millis());
 #endif
     oledTick();  // runs independently of state publishing and RF activity
+    apRecovery(millis());
 #if defined(BOARD_HELTEC_V2)
     prgPoll(millis());   // OLED wake button; a plain GPIO read, no RF/WiFi impact
 #endif

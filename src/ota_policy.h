@@ -12,7 +12,7 @@ namespace otap {
 static const char SIGNED_OTA_MARKER[] = "ORCON-SIGNED-OTA v1";
 
 // Only explicitly approved firmware variants can be installed over the air.
-enum class Variant : uint8_t { None, RxOnly, RfTest };
+enum class Variant : uint8_t { None, RxOnly, RfTest, Control };
 const char* variantName(Variant v);
 
 struct Manifest {
@@ -41,6 +41,7 @@ public:
     bool rxRadio = false;     // "SX1276 direct RX (TX disabled)"
     bool rxBanner = false;    // "RX-ONLY TEST FIRMWARE"
     bool rfTest = false;      // capped RF test marker
+    bool control = false;     // daily-use control image marker ("txpoc packet TX (CONTROL: ")
     bool txCode = false;      // "txpoc packet TX": the RF backend is linked
     bool dryRun = false;      // "tx-poc-dryrun"
     bool legacyOta = false;   // unauthenticated HTTP/Arduino OTA strings

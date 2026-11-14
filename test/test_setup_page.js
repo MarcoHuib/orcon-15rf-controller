@@ -582,5 +582,86 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.equal(ccalls().length, away); ok('leaving the read page stops polling even when open');
     }
 
+    // ---- web login: no default password, recovery code, login, logout, account, RF budget messages -------
+    {
+        const st = { fw: 'test', auth: { enabled: true, logged_in: false, password_set: false, login_wait_s: 0 }, wifi: { ap: false } };
+        const full = state({ ...CAPS_TX, profile_control_supported: true, settings_pages: true, tx_per_minute: 10, tx_per_hour: 60, dashboard: false, mqtt_supported: false },
+                           { profiles: PF([PI(2, 'Thuis', '29:000101')], 2), auth: { enabled: true, logged_in: true }, token: 'csrf1' });
+        let logged = false, rs = { id: 0, phase: 'idle', confirm: 'none', budget: { minute: 3, minute_max: 10, hour: 9, hour_max: 60, air_ms_hour: 120, retry_s: 0 } };
+        const routes = {
+            'GET /api/setup/state': () => [200, logged ? full : st],
+            'POST /api/auth/setup': c => { if (c.body.code !== 'ABCD-EFGH') return [401, { error: 'bad-code' }]; logged = true; st.auth.password_set = true; return [200, { ok: true, token: 'csrf1' }]; },
+            'POST /api/auth/login': c => { if (c.body.password !== 'juist-wachtwoord') return [401, { error: 'bad-password', retry_s: 30 }]; logged = true; return [200, { ok: true, token: 'csrf1' }]; },
+            'POST /api/auth/logout': () => { logged = false; return [200, { ok: true }]; },
+            'POST /api/auth/password': c => c.body.current === 'juist-wachtwoord' ? [200, { ok: true, token: 'csrf2' }] : [401, { error: 'bad-password', retry_s: 0 }],
+            'GET /api/remote/state': () => logged ? [200, rs] : [401, { error: 'login-required' }],
+            'POST /api/remote/send': () => [429, { error: 'tx-budget', retry_s: 42 }],
+            'GET /api/profiles': () => [200, full.profiles],
+        };
+        const p = await page(routes, 'control');
+        assert.equal(p.location.hash, '#login'); assert.equal(p.$('authP').hidden, false); assert.equal(p.$('ctlP').hidden, true);
+        assert.equal(p.$('aSet').hidden, false); assert.equal(p.$('aLogin').hidden, true); assert.equal(p.$('aBack').hidden, true);
+        assert.equal(p.$('logout').hidden, true); assert.equal(p.$('title').textContent, 'Aanmelden');
+        assert.match(html, /id="aHint">[^]*?python3 tools\/orcon\.py auth-code/);
+        ok('no password yet: only the set-password form, with how to get a recovery code');
+        assert.ok(!p.calls.some(c => c.key.includes('/api/remote/') || c.key.includes('/api/profiles')));
+        ok('no session data is requested before login');
+        p.$('aCode').value = 'ABCD-EFGH'; p.$('aNew').value = 'nieuw-wachtwoord'; p.$('aNew2').value = 'anders';
+        p.$('aSetGo').click(); await flush();
+        assert.equal(p.posts().length, 0); assert.match(p.$('err').textContent, /verschillen/);
+        ok('two different new passwords: refused in the page, nothing sent');
+        p.$('aCode').value = 'ZZZZ-ZZZZ'; p.$('aNew').value = 'nieuw-wachtwoord'; p.$('aNew2').value = 'nieuw-wachtwoord';
+        p.$('aSetGo').click(); await flush();
+        assert.match(p.$('err').textContent, /Onjuiste herstelcode/); assert.equal(p.$('aNew').value, ''); assert.equal(p.$('aNew2').value, '');
+        ok('wrong code: message; the password fields are emptied, never kept');
+        p.$('aCode').value = 'ABCD-EFGH'; p.$('aNew').value = 'nieuw-wachtwoord'; p.$('aNew2').value = 'nieuw-wachtwoord';
+        p.$('aSetGo').click(); await flush(); await p.refresh();
+        const setCall = p.posts().find(c => c.key === 'POST /api/auth/setup' && c.body.code === 'ABCD-EFGH');
+        assert.deepEqual(setCall.body, { code: 'ABCD-EFGH', password: 'nieuw-wachtwoord' });
+        assert.equal(p.location.hash, '#control'); assert.equal(p.$('authP').hidden, true); assert.equal(p.$('logout').hidden, false);
+        ok('code + password: logged in, on to the dashboard; "Afmelden" in the header');
+        assert.equal(p.$('dashL').hidden, true); assert.equal(p.$('cInt').hidden, true); assert.equal(p.$('cAcct').hidden, false);
+        ok('control image: no classic-dashboard link, no MQTT card, an Account card');
+        assert.match(p.$('ctlM').textContent, /Zendbudget: nog 7 van 10 deze minuut, 51 van 60 dit uur/);
+        ok('control screen shows the remaining RF budget');
+        p.keys[4].click(); await flush();
+        assert.match(p.$('err').textContent, /Zendlimiet bereikt: maximaal 10 per minuut en 60 per uur\. Er is niets verzonden\. Opnieuw mogelijk om \d\d:\d\d:\d\d \(over 42 s\)/);
+        ok('budget used up: the page says nothing was sent and when it is possible again');
+        rs = { ...rs, budget: { ...rs.budget, minute: 10, retry_s: 15 } }; await p.refresh();
+        assert.match(p.$('ctlM').textContent, /Zendlimiet bereikt: opnieuw mogelijk om \d\d:\d\d:\d\d/);
+        ok('control screen shows when sending is possible again');
+        p.$('logout').click({ preventDefault() {} }); await flush(); await p.refresh();
+        assert.equal(p.location.hash, '#login'); assert.equal(p.$('aLogin').hidden, false); assert.equal(p.$('aSet').hidden, true);
+        assert.equal(p.$('logout').hidden, true);
+        ok('logout: back to the login form');
+        p.$('aPass').value = 'fout'; p.$('aGo').click(); await flush();
+        assert.match(p.$('err').textContent, /Onjuist wachtwoord\. Opnieuw mogelijk om \d\d:\d\d:\d\d \(over 30 s\)/); assert.equal(p.$('aPass').value, '');
+        ok('wrong password: message with the wait time; the field is emptied');
+        p.$('aForgot').click(); await flush();
+        assert.equal(p.$('aSet').hidden, false); assert.equal(p.$('aBack').hidden, false);
+        p.$('aBack').click(); await flush(); assert.equal(p.$('aLogin').hidden, false);
+        ok('"Wachtwoord vergeten" shows the recovery form and back');
+        st.auth.login_wait_s = 30; await p.refresh();
+        assert.equal(p.$('aGo').disabled, true); assert.match(p.$('err').textContent, /over 30 s/);
+        st.auth.login_wait_s = 0; await p.refresh(); assert.equal(p.$('aGo').disabled, false);
+        ok('locked by the controller: the login button waits');
+        p.$('aPass').value = 'juist-wachtwoord'; p.$('aPass').handlers.keydown.forEach(f => f({ key: 'Enter' })); await flush(); await p.refresh();
+        assert.equal(p.location.hash, '#control');
+        assert.deepEqual(p.posts().filter(c => c.key === 'POST /api/auth/login').pop().body, { password: 'juist-wachtwoord' });
+        ok('Enter logs in');
+        logged = false; await p.refresh(); await p.refresh();
+        assert.equal(p.location.hash, '#login'); ok('session ended on the controller: the page returns to the login form');
+        logged = true; p.$('aPass').value = 'juist-wachtwoord'; p.$('aGo').click(); await flush(); await p.refresh();
+        p.location.hash = '#account'; p.dom.all.find(e => e.dataset.open === 'account').click(); await flush(); await p.refresh();
+        assert.equal(p.$('acctP').hidden, false);
+        p.$('acCur').value = 'juist-wachtwoord'; p.$('acNew').value = 'ander-wachtwoord'; p.$('acNew2').value = 'ander-wachtwoord';
+        p.$('acGo').click(); await flush();
+        assert.match(p.$('acM').textContent, /Wachtwoord gewijzigd/); assert.equal(p.$('acCur').value, ''); assert.equal(p.$('acNew').value, '');
+        assert.deepEqual(p.posts().filter(c => c.key === 'POST /api/auth/password').pop().body, { current: 'juist-wachtwoord', password: 'ander-wachtwoord' });
+        ok('account: password change with the current password; fields emptied');
+        assert.ok(p.posts().every(c => !c.key.startsWith('POST /api/auth/') || c.headers['Content-Type'] === 'application/json'));
+        ok('every login request is JSON (the controller refuses simple cross-site posts)');
+    }
+
     console.log(`setup page: ${n} checks, 0 failures`);
 })().catch(e => { console.error(e); process.exit(1); });

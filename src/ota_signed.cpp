@@ -59,6 +59,8 @@ static bool g_hold = false;   // rollback test: this trial boot refuses to confi
 static const char* variantOfThisBuild() {
 #if ORCON_TX_MAX_PER_BOOT
     return "rf-test";
+#elif ORCON_TX_CONTROL
+    return "control";
 #elif RX_ONLY && !ORCON_TX_POC
     return "rx-only";
 #else
@@ -84,7 +86,7 @@ static const char* stateName(const esp_partition_t* p) {
         case ESP_OTA_IMG_ABORTED: return "aborted"; default: return "undefined";
     }
 }
-static void ownMac(char out[18]) {
+void ownMac(char out[18]) {
     uint8_t m[6] = {0};
     esp_read_mac(m, ESP_MAC_WIFI_STA);
     snprintf(out, 18, "%02x:%02x:%02x:%02x:%02x:%02x", m[0], m[1], m[2], m[3], m[4], m[5]);
@@ -131,14 +133,18 @@ static void handleInfo() {
 
 // ---- POST /api/ota/hold: rollback test. Only during a trial boot, and it can only make the
 // update FAIL (the previous image returns after ROLLBACK_AFTER_MS), never install anything.
+// Still a way to undo an update, so only a logged-in owner may use it (session, CSRF token,
+// same origin; never from the setup AP on web-control builds). Registered where the login exists.
+#if !ORCON_TX_POC || ORCON_WEB_CONTROL
 static void handleHold() {
-    if (!hostOk()) { fail(403, "forbidden-request"); return; }
+    if (!setupweb::authorize(true)) return;
     if (!g_pending) { fail(409, "not-a-trial-boot"); return; }
     g_hold = true;
     note(rfcon::WARN, "rollbacktest: bevestiging tegengehouden; vorige firmware terug na %lu s", (unsigned long)(ROLLBACK_AFTER_MS / 1000));
     char b[64]; snprintf(b, sizeof(b), "{\"ok\":true,\"rollback_in_s\":%ld}", long(ROLLBACK_AFTER_MS / 1000) - long(millis() / 1000));
     reply(200, b);
 }
+#endif
 
 // ---- POST /api/ota/nonce -----------------------------------------------------------------
 static void handleNonce() {
@@ -152,7 +158,7 @@ static void handleNonce() {
     reply(200, b);
 }
 
-static bool verifySignature(const char* text, size_t n, const char* sigHex) {
+bool verifySignature(const char* text, size_t n, const char* sigHex) {
     const size_t hexLen = strlen(sigHex);
     if (hexLen < 16 || hexLen > 2 * 80 || hexLen % 2) return false;
     uint8_t sig[80]; const size_t sigLen = hexLen / 2;
@@ -294,13 +300,16 @@ void begin(WebServer& s) {
     s.on("/api/ota/nonce",  HTTP_POST, handleNonce);
     s.on("/api/ota/begin",  HTTP_POST, handleBegin);
     s.on("/api/ota/upload", HTTP_POST, handleUploadDone, handleUploadData);
+#if !ORCON_TX_POC || ORCON_WEB_CONTROL
     s.on("/api/ota/hold",   HTTP_POST, handleHold);
+#endif
     s.on("/api/diag",       HTTP_GET,  handleDiag);
 }
 
 void tick(uint32_t now) {
     static uint32_t lastCrumb = 0;
     if (now - lastCrumb >= 5000) { lastCrumb = now; g_crumb.lastUptimeS = now / 1000; }
+    if (g_nonce[0] && now - g_nonceMs >= NONCE_TTL_MS) g_nonce[0] = 0;   // a 49.7-day millis() wrap must not revive it
     if (!g_pending) return;
     // Healthy = this image runs, joined the network (so a later OTA can still reach it) and
     // the receiver is up. Only then is it confirmed; otherwise the previous image returns.

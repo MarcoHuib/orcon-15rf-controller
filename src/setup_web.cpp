@@ -14,6 +14,11 @@
 #include "ramses_radio.h"
 #if ORCON_TX_POC
 #include "tx_poc_runtime.h"
+#include "tx_budget.h"
+#endif
+#if ORCON_WEB_AUTH
+#include "web_auth.h"
+#include "auth_store.h"
 #endif
 #include <Arduino.h>
 #include <WebServer.h>
@@ -45,6 +50,12 @@ static const bool SIMULATED = false;
 #endif
 static const bool CAN_PAIR = CAN_TX && CAN_RX && (!ORCON_TX_POC || SIMULATED || ORCON_TX_PAIR);
 
+#if ORCON_TX_POC
+static const uint8_t TXB_PER_MINUTE = txbudget::PER_MINUTE, TXB_PER_HOUR = txbudget::PER_HOUR;
+static const size_t MODE_ONAIR = 53, OFFER_ONAIR = 105;   // on-air bytes: a 22F1 command, the 1FC9 offer
+#else
+static const uint8_t TXB_PER_MINUTE = 0, TXB_PER_HOUR = 0;
+#endif
 static WebServer* g_srv = nullptr;
 static char     g_token[33] = "";
 static uint32_t g_sid = 0, g_ev = 0;
@@ -54,6 +65,7 @@ static Cmd      g_cmd;
 #if ORCON_TX_POC
 static bool     g_pairDryComplete = false;
 static bool     g_pendOffer = false, g_pendAck = false;   // bind sends awaiting their result
+static uint32_t g_offerAt = 0;                            // when the offer was admitted
 static ramses::DeviceId g_learnedFan;                     // pairing result to persist (net.cpp)
 #endif
 static char     g_out[3072];                  // one response at a time (loop task only)
@@ -76,6 +88,9 @@ static void reply(int code, const Out& o) {
     g_srv->send(code, "application/json", g_out);
 }
 static void fail(int code, const char* err) { Out o; o.add("{\"error\":\"%s\"}", err); reply(code, o); }
+[[maybe_unused]] static void failRetry(int code, const char* err, uint32_t waitMs) {   // tells the page when to try again
+    Out o; o.add("{\"error\":\"%s\",\"retry_s\":%lu}", err, (unsigned long)((waitMs + 999) / 1000)); reply(code, o);
+}
 
 static void idStr(const ramses::DeviceId& d, char (&out)[16]) { snprintf(out, sizeof(out), "%02u:%06lu", d.cls, (unsigned long)d.serial); }
 static uint32_t seqNow() { return radio::rxDiagnostics().coreSyncHits; }   // 0 on radios without sync numbers
@@ -90,16 +105,36 @@ static bool pairActive() { return g_pair.st == St::Active; }
 static bool fwPaired() { return orcon::pairState() == orcon::PairState::Paired; }
 #endif
 
-// ---- POST guard: JSON, same origin, per-boot token, bounded body, known keys only --------
+#if ORCON_WEB_AUTH
+// ---- web login (web_auth.h): sessions in RAM, the password record in NVS ----------------------
+static webauth::Sessions g_sessions;
+static webauth::Throttle g_throttle;
+static webauth::Recovery g_recovery;
+static webauth::Cred     g_cred;
+static bool              g_credSet = false;
+static webauth::Session* currentSession() {
+    char sid[33];
+    if (!webauth::cookieSid(g_srv->header("Cookie").c_str(), sid)) return nullptr;
+    return g_sessions.find(sid, millis());
+}
+#endif
+
+// ---- POST guard: JSON, same origin, a logged-in session and its CSRF token (the per-boot token
+// on builds without the web login), bounded body, known keys only ----------------------------------
 static bool hostOk() { return hostAllowed(g_srv->hostHeader().c_str(), net::ipAddr()); }
-static bool guard(JsonDocument& d, const char* const* keys, size_t nkeys) {
+static bool sameOrigin(bool allowAp) {
 #if ORCON_WEB_CONTROL
-    if (net::apMode() || g_srv->header("Origin").length() == 0) { fail(403, "forbidden-request"); return false; }
+    // The setup AP serves only settings and the login; RF control needs the home network.
+    if ((net::apMode() && !allowAp) || g_srv->header("Origin").length() == 0) { fail(403, "forbidden-request"); return false; }
+#else
+    (void)allowAp;
 #endif
     if (!hostOk() || !requestAllowed(g_srv->header("Content-Type").c_str(), g_srv->header("Origin").c_str(),
                         g_srv->hostHeader().c_str())) { fail(403, "forbidden-request"); return false; }
-    if (!tokenEqual(g_srv->header("X-Orcon-Token").c_str(), g_token)) { fail(403, "bad-token"); return false; }
-    if (g_srv->arg("plain").length() > 160) { fail(413, "body-too-large"); return false; }
+    return true;
+}
+static bool parseBody(JsonDocument& d, const char* const* keys, size_t nkeys, size_t maxBody) {
+    if (g_srv->arg("plain").length() > maxBody) { fail(413, "body-too-large"); return false; }
     if (!uniqueObjectKeys(g_srv->arg("plain").c_str(), keys, nkeys)) { fail(400, "bad-json"); return false; }
     if (deserializeJson(d, g_srv->arg("plain")) || !d.is<JsonObject>()) { fail(400, "bad-json"); return false; }   // same instantiation as net.cpp
     for (JsonPair kv : d.as<JsonObject>()) {
@@ -108,6 +143,30 @@ static bool guard(JsonDocument& d, const char* const* keys, size_t nkeys) {
         if (!ok) { fail(400, "unknown-field"); return false; }
     }
     return true;
+}
+static bool guard(JsonDocument& d, const char* const* keys, size_t nkeys, bool allowAp = false, size_t maxBody = 160) {
+    if (!sameOrigin(allowAp)) return false;
+#if ORCON_WEB_AUTH
+    webauth::Session* s = currentSession();
+    if (!s) { fail(401, "login-required"); return false; }
+    if (!webauth::equal(g_srv->header("X-Orcon-Token").c_str(), s->csrf)) { fail(403, "bad-token"); return false; }
+#else
+    if (!tokenEqual(g_srv->header("X-Orcon-Token").c_str(), g_token)) { fail(403, "bad-token"); return false; }
+#endif
+    return parseBody(d, keys, nkeys, maxBody);
+}
+bool authorize(bool mutation, bool allowAp) {
+#if ORCON_WEB_AUTH
+    if (mutation) { if (!sameOrigin(allowAp)) return false; }
+    else if (!hostOk()) { fail(403, "forbidden-request"); return false; }
+    webauth::Session* s = currentSession();
+    if (!s) { fail(401, "login-required"); return false; }
+    if (mutation && !webauth::equal(g_srv->header("X-Orcon-Token").c_str(), s->csrf)) { fail(403, "bad-token"); return false; }
+    return true;
+#else
+    (void)mutation; (void)allowAp;
+    return true;                                     // legacy builds: unchanged
+#endif
 }
 static bool sidOk(JsonDocument& d, uint32_t sid) { return d["sid"].is<uint32_t>() && d["sid"].as<uint32_t>() == sid; }
 
@@ -173,7 +232,7 @@ static bool profileResult(profiles::Error e) {
                    e==profiles::Error::Write||e==profiles::Error::Unavailable?503:409;
     fail(code,profiles::errorName(e));return false;
 }
-static void handleProfiles() {profileBody(200);}
+static void handleProfiles() {if(!authorize(false,true))return;profileBody(200);}
 static void handleProfileSave() {
     static const char* const K[]={"sid","name"};JsonDocument d;
     if(!guard(d,K,2))return;
@@ -187,12 +246,12 @@ static void handleProfileSave() {
         profileBody(201);
     }
 }
-#if !ORCON_TX_POC
+#if !ORCON_TX_POC || ORCON_TX_CONTROL
 // Systeem/WiFi page actions (builds with the settings pages only): the same POST guard
 // as every write, an empty body, and the reply goes out before the controller reboots.
 static void handleSystem(bool forgetWifi) {
     JsonDocument d;
-    if(!guard(d,nullptr,0))return;
+    if(!guard(d,nullptr,0,true))return;
     if(profileBusy()){fail(409,"session-busy");return;}
     if(forgetWifi)net::forgetWifi();else net::restartSoon();
     g_srv->send(200,"application/json","{\"ok\":true,\"restarting\":true}");
@@ -215,20 +274,39 @@ static void handleProfileEdit(const char* action) {
 
 // ---- /api/setup/state -------------------------------------------------------------
 static void handleState() {
+#if ORCON_WEB_AUTH
+    // Not logged in: only what the login page needs. No token, profiles, IDs or network details.
+    webauth::Session* sess = hostOk() ? currentSession() : nullptr;
+    if (!sess) {
+        Out o;
+        o.add("{\"fw\":\"%s\",\"auth\":{\"enabled\":true,\"logged_in\":false,\"password_set\":%s,\"login_wait_s\":%lu},"
+              "\"wifi\":{\"ap\":%s}}", FW_VERSION, g_credSet ? "true" : "false",
+              (unsigned long)((g_throttle.waitMs(millis()) + 999) / 1000), net::apMode() ? "true" : "false");
+        reply(200, o);
+        return;
+    }
+    const char* token = sess->csrf;
+#else
+    const char* token = hostOk() ? g_token : "";
+#endif
     const orcon::State& s = orcon::state();
     const uint32_t now = millis();
     Out o;
     o.add("{\"fw\":\"%s\",\"rx_only\":%s,\"caps\":{\"rx_supported\":%s,\"tx_supported\":%s,"
           "\"read_supported\":%s,\"pair_supported\":%s,\"control_supported\":%s,\"simulated\":%s,"
-          "\"timer_supported\":%s,\"profile_control_supported\":%s,\"settings_pages\":%s,\"tx_max_per_boot\":%d},"
-          "\"rf\":\"%s\",\"token\":\"%s\",\"mask_ids\":%s,\"active\":\"%s\"",
+          "\"timer_supported\":%s,\"profile_control_supported\":%s,\"settings_pages\":%s,\"tx_max_per_boot\":%d,"
+          "\"tx_per_minute\":%d,\"tx_per_hour\":%d,\"dashboard\":%s,\"mqtt_supported\":%s},"
+          "\"rf\":\"%s\",\"token\":\"%s\",\"mask_ids\":%s,\"active\":\"%s\","
+          "\"auth\":{\"enabled\":%s,\"logged_in\":true}",
           FW_VERSION, RX_ONLY ? "true" : "false", CAN_RX ? "true" : "false", CAN_TX ? "true" : "false",
           CAN_RX ? "true" : "false", CAN_PAIR ? "true" : "false", CAN_TX ? "true" : "false",
           SIMULATED ? "true" : "false", ORCON_TX_POC ? "false" : "true", ORCON_WEB_CONTROL ? "true" : "false",
-          ORCON_TX_POC ? "false" : "true",                         // /wifi and /dashboard exist (net.cpp)
+          !ORCON_TX_POC || ORCON_TX_CONTROL ? "true" : "false",    // WiFi/Systeem/OLED routes exist (net.cpp)
           ORCON_TX_MAX_PER_BOOT,
-          rfState(), hostOk() ? g_token : "", net::maskIds() ? "true" : "false",
-          g_read.st == St::Active ? "read" : pairActive() ? "pair" : "none");
+          ORCON_TX_RF_ENABLE ? int(TXB_PER_MINUTE) : 0, ORCON_TX_RF_ENABLE ? int(TXB_PER_HOUR) : 0,
+          ORCON_TX_POC ? "false" : "true", MQTT_ENABLED ? "true" : "false",   // /dashboard; MQTT settings
+          rfState(), token, net::maskIds() ? "true" : "false",
+          g_read.st == St::Active ? "read" : pairActive() ? "pair" : "none", ORCON_WEB_AUTH ? "true" : "false");
     char id[16] = "";
     if (s.fanKnown) idStr(orcon::ids().fan, id);
     o.add(",\"unit\":{\"known\":%s,\"id\":\"%s\",\"mode\":\"%s\",\"age_s\":%ld}",
@@ -275,7 +353,7 @@ static void readBody(int code) {
     o.add("]}");
     reply(code, o);
 }
-static void handleReadState() { readBody(200); }
+static void handleReadState() { if (!authorize(false, true)) return; readBody(200); }
 
 static void handleReadStart() {
     static const char* const K[] = { "remote" };
@@ -339,7 +417,7 @@ static void pairBody(int code) {
           (unsigned long)(g_pair.leftMs(millis()) / 1000), SIMULATED ? "true" : "false");
     reply(code, o);
 }
-static void handlePairState() { pairBody(200); }
+static void handlePairState() { if (!authorize(false, true)) return; pairBody(200); }
 
 static void handlePairStart() {
     JsonDocument d;
@@ -377,6 +455,7 @@ static void handlePairPress() {
     // Asynchronous: the owner transmits the offer; sent/tx_failed arrive with the
     // transaction result (setupweb::tick). Never a retry: one press, one offer.
     if (g_pair.sent || g_pair.txFailed || g_pendOffer) { fail(409, "already-sent"); return; }
+    if (const uint32_t w = txpoc::budgetWaitMs(2, OFFER_ONAIR)) { failRetry(429, "tx-budget", w); return; }
     const rlog::Device* heard = nullptr; const size_t heardN = rlog::devices(&heard);
     const bool identityClear = !txpoc::identityConflict(orcon::ids(), rlog::seen(), heard, heardN);
     const txpoc::Admission adm = txpoc::controller().submitBind((uint8_t)txpoc::FrameKind::BindOffer,
@@ -384,6 +463,7 @@ static void handlePairPress() {
     if (adm == txpoc::Admission::Busy || adm == txpoc::Admission::Limited) { fail(409, "session-busy"); return; }
     if (adm != txpoc::Admission::Accepted) { fail(502, "tx-failed"); return; }  // refused before radio work
     g_pendOffer = true;
+    g_offerAt = millis();
     pairBody(200);
 #else
     if (g_pair.sent || g_pair.txFailed) { fail(409, "already-sent"); return; }   // no retry
@@ -450,7 +530,7 @@ static void remoteBody(int code) {
           "\"accepted\":%s,\"sent\":%s,\"confirm\":\"%s\",\"age_s\":%lu,"
           "\"unit_mode\":\"%s\",\"unit_age_s\":%ld,"
           "\"phase\":\"%s\",\"error\":\"%s\",\"rf_sent\":%s,\"simulated\":%s,\"unit_confirmed\":%s,\"next_request\":%lu,"
-          "\"restore_diag\":\"%08lX\",\"tx_starts\":%lu}",
+          "\"restore_diag\":\"%08lX\",\"tx_starts\":%lu,",
           (unsigned long)(isCmd ? r.request.input.request : 0),
           isCmd ? keyOfMode(r.request.input.mode) : "",
           isCmd ? "true" : "false", isCmd && r.rfSent ? "true" : "false",
@@ -462,9 +542,13 @@ static void remoteBody(int code) {
           isCmd && r.rfSent ? "true" : "false", SIMULATED ? "true" : "false",
           isCmd && !strcmp(ctlConfirm(s), "confirmed") ? "true" : "false", (unsigned long)s.nextRequest,
           (unsigned long)restoreDiag, (unsigned long)txpoc::rfTxStarts());
+    const txpoc::BudgetView bv = txpoc::budget();
+    o.add("\"budget\":{\"minute\":%u,\"minute_max\":%u,\"hour\":%u,\"hour_max\":%u,\"air_ms_hour\":%lu,\"retry_s\":%lu}}",
+          bv.minute, unsigned(ORCON_TX_RF_ENABLE ? TXB_PER_MINUTE : 0), bv.hour, unsigned(ORCON_TX_RF_ENABLE ? TXB_PER_HOUR : 0),
+          (unsigned long)(bv.airUsHour / 1000), (unsigned long)((txpoc::budgetWaitMs(1, MODE_ONAIR) + 999) / 1000));
     reply(code, o);
 }
-static void handleRemoteState() { remoteBody(200); }
+static void handleRemoteState() { if (!authorize(false, true)) return; remoteBody(200); }
 static void ctlRefuse(txpoc::Admission a) {
     const char* e = "invalid"; int code = 400;
     switch (a) {
@@ -509,6 +593,7 @@ static void handleRemoteSend() {
     // RF test image: refuse cleanly once the RF backend has used its per-boot packets.
     if(txpoc::rfTxStarts()>=ORCON_TX_MAX_PER_BOOT){fail(409,"tx-limit-reached");return;}
 #endif
+    if(const uint32_t w=txpoc::budgetWaitMs(1,MODE_ONAIR)){failRetry(429,"tx-budget",w);return;}
     txpoc::Admission a = txpoc::controller().submitCtl(modeOfKey(k), tail, orcon::ids(),
                              true, txpoc::rxReady(), identityClear, millis(), d["request"].as<uint32_t>());
     if (a == txpoc::Admission::Duplicate) { remoteBody(200); return; }
@@ -528,7 +613,7 @@ static void remoteBody(int code) {
           s.modeMs ? long((now - s.modeMs) / 1000) : -1L);
     reply(code, o);
 }
-static void handleRemoteState() { remoteBody(200); }
+static void handleRemoteState() { if (!authorize(false, true)) return; remoteBody(200); }
 
 static void handleRemoteSend() {
     static const char* const K[] = { "key", "minutes" };
@@ -720,17 +805,143 @@ static void handleConsole() {
 }
 
 // ---- wiring ------------------------------------------------------------------------
+#if ORCON_WEB_AUTH
+// ---- web login routes --------------------------------------------------------------------------
+// Passwords and codes are never logged; console lines only say what happened.
+static void setCookie(const char* sid, uint32_t maxAgeS) {
+    char c[128];
+    snprintf(c, sizeof(c), "orcon_sid=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=%lu", sid, (unsigned long)maxAgeS);
+    g_srv->sendHeader("Set-Cookie", c);
+}
+static void sessionReply(const webauth::Session& s) {
+    setCookie(s.id, webauth::LIFETIME_MS / 1000);
+    Out o; o.add("{\"ok\":true,\"token\":\"%s\"}", s.csrf); reply(200, o);
+}
+static bool kdfBusy() {   // PBKDF2 holds the loop for a few hundred ms: never during an RF transaction
+#if ORCON_TX_POC
+    if (txpoc::controller().status().busy) { fail(409, "session-busy"); return true; }
+#endif
+    return false;
+}
+static bool setPassword(const char* pw) {
+    webauth::Cred c{};
+    if (!webauth::makeCred(pw, authstore::kdf, authstore::random, c)) { fail(503, "auth-unavailable"); return false; }
+    if (!authstore::save(c)) { fail(503, "auth-write-failed"); return false; }
+    g_cred = c; g_credSet = true;
+    return true;
+}
+static const char* str(JsonDocument& d, const char* k) { return d[k].is<const char*>() ? d[k].as<const char*>() : ""; }
+static void badPassword() {
+    g_throttle.failure(millis());
+    g_con.add(rfcon::WARN, millis(), "aanmelden: onjuist wachtwoord (%u keer op rij)", g_throttle.failures());
+    failRetry(401, "bad-password", g_throttle.waitMs(millis()));
+}
+static void handleLogin() {
+    static const char* const K[] = { "password" };
+    JsonDocument d;
+    if (!sameOrigin(true) || !parseBody(d, K, 1, 400)) return;
+    if (!g_credSet) { fail(409, "password-not-set"); return; }
+    if (const uint32_t w = g_throttle.waitMs(millis())) { failRetry(429, "login-locked", w); return; }
+    if (!authstore::kdfReady()) { fail(503, "auth-unavailable"); return; }
+    if (kdfBusy()) return;
+    const uint32_t t0 = millis();
+    if (!webauth::verify(g_cred, str(d, "password"), authstore::kdf)) { badPassword(); return; }
+    g_throttle.success();
+    const webauth::Session& s = g_sessions.create(millis(), authstore::random);
+    g_con.add(rfcon::INFO, millis(), "aangemeld (wachtwoordcontrole %lu ms)", (unsigned long)(millis() - t0));
+    sessionReply(s);
+}
+static void handleLogout() {
+    JsonDocument d;
+    if (!guard(d, nullptr, 0, true)) return;
+    char sid[33];
+    if (webauth::cookieSid(g_srv->header("Cookie").c_str(), sid)) g_sessions.remove(sid);
+    setCookie("", 0);
+    Out o; o.add("{\"ok\":true}"); reply(200, o);
+}
+static void handlePassword() {   // change, while logged in: the current password is required
+    static const char* const K[] = { "current", "password" };
+    JsonDocument d;
+    if (!guard(d, K, 2, true, 400)) return;
+    if (!webauth::passwordOk(str(d, "password"))) { fail(400, "password-weak"); return; }
+    if (const uint32_t w = g_throttle.waitMs(millis())) { failRetry(429, "login-locked", w); return; }
+    if (kdfBusy()) return;
+    if (!webauth::verify(g_cred, str(d, "current"), authstore::kdf)) { badPassword(); return; }
+    g_throttle.success();
+    if (!setPassword(str(d, "password"))) return;
+    g_sessions.clear();                                // every other device must log in again
+    g_con.add(rfcon::INFO, millis(), "wachtwoord gewijzigd; andere sessies afgemeld");
+    sessionReply(g_sessions.create(millis(), authstore::random));
+}
+static void handleSetup() {      // first password, or a forgotten one: needs the one-time code
+    static const char* const K[] = { "code", "password" };
+    JsonDocument d;
+    if (!sameOrigin(true) || !parseBody(d, K, 2, 400)) return;
+    if (!webauth::passwordOk(str(d, "password"))) { fail(400, "password-weak"); return; }   // before a try is spent
+    if (!authstore::kdfReady()) { fail(503, "auth-unavailable"); return; }
+    if (kdfBusy()) return;
+    const webauth::Recovery::Check c = g_recovery.use(str(d, "code"), millis());
+    if (c != webauth::Recovery::Check::Ok) {
+        g_con.add(rfcon::WARN, millis(), "wachtwoord instellen: herstelcode geweigerd (%s)", webauth::checkName(c));
+        fail(c == webauth::Recovery::Check::Wrong ? 401 : 409, webauth::checkName(c));
+        return;
+    }
+    if (!setPassword(str(d, "password"))) return;
+    g_sessions.clear();
+    g_throttle.success();
+    g_con.add(rfcon::WARN, millis(), "wachtwoord ingesteld met herstelcode; alle sessies afgemeld");
+    sessionReply(g_sessions.create(millis(), authstore::random));
+}
+// CLI routes (tools/orcon.py auth-code): no browser, no Origin; JSON on our own host only.
+static bool cliOk() {
+    if (!hostOk() || !requestAllowed(g_srv->header("Content-Type").c_str(), g_srv->header("Origin").c_str(),
+                        g_srv->hostHeader().c_str())) { fail(403, "forbidden-request"); return false; }
+    return true;
+}
+static void handleAuthNonce() {
+    if (!cliOk()) return;
+    const char* n = g_recovery.issueNonce(millis(), authstore::random);
+    char mac[18]; authstore::ownMac(mac);           // the CLI signs for exactly this board
+    Out o; o.add("{\"nonce\":\"%s\",\"mac\":\"%s\",\"ttl_s\":%lu}", n, mac, (unsigned long)(webauth::NONCE_TTL_MS / 1000)); reply(200, o);
+}
+static void handleAuthReset() {  // a request signed with the OTA key buys one 10-minute code
+    static const char* const K[] = { "manifest", "sig" };
+    JsonDocument d;
+    if (!cliOk() || !parseBody(d, K, 2, 600)) return;
+    char mac[18]; authstore::ownMac(mac);
+    const char* text = str(d, "manifest");
+    if (const char* e = webauth::checkResetRequest(text, mac, g_recovery, millis())) { fail(403, e); return; }
+    if (!authstore::verifySignature(text, strlen(text), str(d, "sig"))) {
+        g_con.add(rfcon::WARN, millis(), "herstelverzoek geweigerd: ongeldige handtekening");
+        fail(403, "bad-signature");
+        return;
+    }
+    const char* code = g_recovery.issueCode(millis(), authstore::random);
+    g_con.add(rfcon::WARN, millis(), "herstelcode uitgegeven (eenmalig, 10 minuten geldig)");
+    Out o; o.add("{\"code\":\"%s\",\"ttl_s\":%lu}", code, (unsigned long)(webauth::CODE_TTL_MS / 1000)); reply(200, o);
+}
+#endif
+
 void begin(WebServer& s) {
     g_srv = &s;
     uint8_t b[16]; esp_fill_random(b, sizeof(b));
     static const char HEX_[] = "0123456789abcdef";
     for (int i = 0; i < 16; i++) { g_token[2 * i] = HEX_[b[i] >> 4]; g_token[2 * i + 1] = HEX_[b[i] & 15]; }
     g_token[32] = 0;
-    static const char* headers[] = { "Origin", "Content-Type", "X-Orcon-Token", "Accept-Encoding" };
+    static const char* headers[] = { "Origin", "Content-Type", "X-Orcon-Token", "Accept-Encoding", "Cookie" };
     s.collectHeaders(headers, sizeof(headers) / sizeof(headers[0]));
     s.on("/", HTTP_GET, handlePage);
     s.on("/api/setup/state",       HTTP_GET,  handleState);
-#if !ORCON_TX_POC
+#if ORCON_WEB_AUTH
+    g_credSet = authstore::load(g_cred);
+    s.on("/api/auth/login",    HTTP_POST, handleLogin);
+    s.on("/api/auth/logout",   HTTP_POST, handleLogout);
+    s.on("/api/auth/password", HTTP_POST, handlePassword);
+    s.on("/api/auth/setup",    HTTP_POST, handleSetup);
+    s.on("/api/auth/nonce",    HTTP_POST, handleAuthNonce);
+    s.on("/api/auth/reset",    HTTP_POST, handleAuthReset);
+#endif
+#if !ORCON_TX_POC || ORCON_TX_CONTROL
     s.on("/api/setup/restart",     HTTP_POST, [](){handleSystem(false);});
     s.on("/api/setup/wifi/forget", HTTP_POST, [](){handleSystem(true);});
 #endif
@@ -769,7 +980,11 @@ void onFrame(const ramses::Frame& f, uint32_t seq, int16_t rssi) {
     consoleFrame(f, seq, rssi, w, othersBefore);
     captureFrame(f, seq, rssi);
 #if ORCON_TX_POC
-    if (!SIMULATED) g_pair.onFrame(f, orcon::ids().us, true, g_pendOffer);
+    // While the offer's result is pending, a W 1FC9 counts only if it was received after the
+    // radio actually started this offer (the owner pass of start(), not the admission).
+    const uint32_t started = txpoc::lastTxStartMs();
+    const bool inFlight = g_pendOffer && started && txpoc::due(started, g_offerAt) && txpoc::due(radio::lastReceivedMs(), started + 1);
+    if (!SIMULATED) g_pair.onFrame(f, orcon::ids().us, true, inFlight);
 #else
     g_pair.onFrame(f, orcon::ids().us);
 #endif
@@ -804,6 +1019,15 @@ void consumeTxResults(uint32_t now) {
         else if (ts.result.rfSent)
             g_con.add(rfcon::INFO, now, "TX #%lu %s: TX-start t=%lu, geen bruikbare unitmelding",
                       (unsigned long)loggedReq, txpoc::phaseName(ts.phase), (unsigned long)ts.result.startedMs);
+#if ORCON_TX_RF_ENABLE
+        if (ts.result.touched) {                      // measured airtime and the rolling budget
+            const txpoc::BudgetView bv = txpoc::budget();
+            const uint32_t air = txpoc::lastAirUs();
+            g_con.add(rfcon::INFO, now, "TX #%lu zendtijd %lu.%lu ms; budget %u/%u per minuut, %u/%u per uur",
+                      (unsigned long)loggedReq, (unsigned long)(air / 1000), (unsigned long)(air % 1000 / 100),
+                      bv.minute, unsigned(TXB_PER_MINUTE), bv.hour, unsigned(TXB_PER_HOUR));
+        }
+#endif
     }
     const bool sentOk = ts.result.error == txpoc::Error::None && (ts.result.rfSent || SIMULATED);
     if ((g_pendOffer || g_pendAck) && !ts.busy && ts.result.request.kind != (uint8_t)txpoc::FrameKind::Mode) {
@@ -812,11 +1036,17 @@ void consumeTxResults(uint32_t now) {
 #else
         const unsigned long diag = 0;
 #endif
-        g_con.add(sentOk ? rfcon::INFO : rfcon::WARN, now, "koppelen: %s %s, fout %s, RX-herstel %s%08lX, %u B on-air, pakketten deze boot %lu",
-                  ts.result.request.kind == (uint8_t)txpoc::FrameKind::BindOffer ? "1FC9-aanbod" : "1FC9-afsluiting",
-                  ts.result.rfSent ? "verzonden (RF)" : SIMULATED ? "dry-run, niet verzonden" : "niet verzonden",
-                  txpoc::errorName(ts.result.error), diag ? "mislukt 0x" : "ok ", diag, unsigned(ts.result.bytes),
-                  (unsigned long)txpoc::rfTxStarts());
+        // TX-start t= correlates with the RX line of the unit's W 1FC9 (its sync time).
+        if (diag)
+            g_con.add(rfcon::WARN, now, "koppelen: %s %s, fout %s, RX-herstel mislukt 0x%08lX, TX-start t=%lu",
+                      ts.result.request.kind == (uint8_t)txpoc::FrameKind::BindOffer ? "1FC9-aanbod" : "1FC9-afsluiting",
+                      ts.result.rfSent ? "verzonden (RF)" : SIMULATED ? "dry-run, niet verzonden" : "niet verzonden",
+                      txpoc::errorName(ts.result.error), diag, (unsigned long)ts.result.startedMs);
+        else
+            g_con.add(sentOk ? rfcon::INFO : rfcon::WARN, now, "koppelen: %s %s, fout %s, RX-herstel ok, %u B on-air, TX-start t=%lu",
+                      ts.result.request.kind == (uint8_t)txpoc::FrameKind::BindOffer ? "1FC9-aanbod" : "1FC9-afsluiting",
+                      ts.result.rfSent ? "verzonden (RF)" : SIMULATED ? "dry-run, niet verzonden" : "niet verzonden",
+                      txpoc::errorName(ts.result.error), unsigned(ts.result.bytes), (unsigned long)ts.result.startedMs);
     }
     if (g_pendOffer && !ts.busy && ts.result.request.kind == (uint8_t)txpoc::FrameKind::BindOffer) {
         if (SIMULATED && sentOk) {
@@ -836,16 +1066,18 @@ void consumeTxResults(uint32_t now) {
 void tick(uint32_t now) {
     g_read.tick(now);
     consoleTick(now);
+#if ORCON_WEB_AUTH
+    g_sessions.sweep(now); g_throttle.sweep(now); g_recovery.sweep(now);   // before a millis() wrap revives them
+#endif
 #if ORCON_TX_POC
     consumeTxResults(now); // settle completions before expiry or any follow-up
     g_pair.tick(now, pairDone(), pairFan());
     static bool confirmLogged = false;
     if (g_pair.st == St::Active && g_pair.sent && g_pair.confirmed && !confirmLogged)
-        g_con.add(rfcon::INFO, now, "koppelen: unit bevestigde (W 1FC9 00 31D9) %lu ms na het aanbod; afsluiting volgt",
-                  (unsigned long)(now - g_pair.sentAtMs()));
+        g_con.add(rfcon::INFO, now, "koppelen: unit bevestigde (W 1FC9 00 31D9 aan ons ID); afsluiting volgt");
     confirmLogged = g_pair.st == St::Active && g_pair.sent && g_pair.confirmed;
     // The only automatic TX: compiled out wherever pairing is unsupported (RF builds without
-    // ORCON_TX_PAIR). One closing ack per session, inside the per-boot packet cap.
+    // ORCON_TX_PAIR). One closing ack per session, inside the RF budget (the press reserved it).
     if (CAN_PAIR && g_pair.st == St::Active && g_pair.sent && g_pair.confirmed && !g_pair.ackSent &&
         !g_pair.txFailed && !g_pendAck) {
         orcon::Ids ids = orcon::ids(); ids.fan = g_pair.from;

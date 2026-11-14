@@ -27,6 +27,19 @@ with tempfile.TemporaryDirectory() as t:
     except SystemExit: check(True, 'RF image needs the phrase')
     orcon.rf_gate('heltec_v2_sx1276_rftest', orcon.RF_ACK); orcon.rf_gate('heltec_v2_sx1276', '')
     check(True, 'phrase accepted; RX-only needs none')
+    ctl = json.loads(orcon.build_manifest('02:00:00:00:00:0a', 'heltec_v2_sx1276_control', 'a' * 40, fw, 'b' * 32))
+    check(ctl['variant'] == 'control' and ctl['allow_tx'] is True and ctl['env'] == 'heltec_v2_sx1276_control',
+          'control manifest: its own variant, states TX explicitly')
+    for env, phrase in (('heltec_v2_sx1276_control', orcon.CONTROL_ACK), ('heltec_v2_sx1276_rftest', orcon.RF_ACK)):
+        other = orcon.RF_ACK if phrase == orcon.CONTROL_ACK else orcon.CONTROL_ACK
+        try: orcon.rf_gate(env, other); check(False, f'{env}: the phrase of the other image is refused')
+        except SystemExit: check(True, f'{env}: the phrase of the other image is refused')
+        orcon.rf_gate(env, phrase); check(True, f'{env}: its own phrase accepted')
+    check(orcon.ENV_ACK['heltec_v2_sx1276_control'] == ('ORCON_CONTROL_ACK', 'control firmware'), 'control phrase is passed to heltec_v2.sh')
+    req = json.loads(orcon.reset_request('02:00:00:00:00:0A', 'c' * 32))
+    check(req == {'v': 1, 'kind': 'orcon-auth-reset', 'mac': '02:00:00:00:00:0a', 'nonce': 'c' * 32},
+          'recovery request: exactly v, kind, this board (lower case) and the nonce')
+    check(set(req) & {'env', 'variant', 'size', 'sha256'} == set(), 'a recovery request is never an OTA manifest')
     # signature round trip with a throw-away key, verified the way the device does (SHA-256 ECDSA, DER)
     key = t / 'k.pem'
     subprocess.run(['openssl', 'ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', str(key)], check=True); os.chmod(key, 0o600)
@@ -78,6 +91,29 @@ check(run([OLD, NEW_P, NEW_P, NEW_P, OLD], on_trial=lambda: calls.append(1)).sta
       'rollback test: hold sent exactly once in the trial boot, then the old image is reported')
 calls.clear(); run([OLD, NEW_V], on_trial=lambda: calls.append(1))
 check(calls == [], 'rollback test: no hold for an image that is already confirmed')
+# Two images of ONE commit (RX-only rollback image in app0, control image written to app1): only the
+# slot tells them apart. Found on hardware 2026-11-13: a real rollback was reported as CONFIRMED.
+SAME_OLD = {'fw': 'n' * 40, 'variant': 'rx-only', 'running': 'app0', 'running_state': 'valid'}
+SAME_P = {'fw': 'n' * 40, 'variant': 'control', 'running': 'app1', 'running_state': 'pending-verify'}
+SAME_V = dict(SAME_P, running_state='valid')
+slot = dict(target='app1', old_slot='app0')
+check(run([SAME_OLD, SAME_P, SAME_P, SAME_OLD], **slot).startswith('ROLLED BACK'), 'same commit: back in the old slot is a rollback, not a success')
+check(run([SAME_OLD, SAME_P, SAME_V], **slot).startswith('CONFIRMED'), 'same commit: confirmed only from the target slot')
+check(run([SAME_OLD] * 30, **slot).startswith('ROLLED BACK'), 'same commit: never left the old slot -> rollback after the grace time')
+check(not run([SAME_OLD, SAME_OLD, SAME_OLD], limit=10, **slot).startswith('CONFIRMED'), 'same commit: the old slot is never taken for the new image')
+# Rollback test: the board accepts the hold only from a logged-in owner (Codex SEC-01). The trial boot is a
+# fresh boot, so the CLI logs in there first and sends the session cookie, its CSRF token and the origin.
+SID = '0123456789abcdef' * 2
+check(orcon.cookie_sid([f'orcon_sid={SID}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000']) == SID, 'login: session id from Set-Cookie')
+check(orcon.cookie_sid(['orcon_sid=; Max-Age=0', 'other=1']) == '' and orcon.cookie_sid([f'orcon_sid={SID}0']) == '', 'login: no or malformed cookie -> none')
+seq = []
+hdr = {'Cookie': f'orcon_sid={SID}', 'X-Orcon-Token': 'f' * 32, 'Origin': 'http://orcon15rf.local'}
+hold = orcon.rollback_hold('orcon15rf.local', 'pw-123456', login_fn=lambda h, pw: seq.append(('login', h, pw)) or hdr,
+                           post=lambda h, path, body, headers=None: seq.append(('post', path, body, headers)) or (200, {'ok': True}))
+check(seq == [], 'rollback test: nothing is sent before the trial boot')
+hold()
+check(seq == [('login', 'orcon15rf.local', 'pw-123456'), ('post', '/api/ota/hold', {}, hdr)],
+      'rollback test: log in inside the trial boot, then hold with cookie, CSRF token and origin')
 # Install record for heltec_v2.sh recover: "<sha256 of the image> <label>", private file, appended
 with tempfile.TemporaryDirectory() as d:
     fw = Path(d) / 'fw.bin'; fw.write_bytes(b'\xe9image'); rec = Path(d) / 'o' / 'installed.txt'
