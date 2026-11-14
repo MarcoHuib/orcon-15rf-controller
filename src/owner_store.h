@@ -3,7 +3,8 @@
 //   - the installation state and the owner's public key in NVS ("orconown");
 //   - the key-file primitives on mbedTLS and the hardware RNG, behind a known-answer self-test;
 //   - the button-started recovery mode (RTC memory: this boot only, a power cut cancels it);
-//   - the factory reset (marker in NVS "orconreset", then provision::resume at the next boot).
+//   - the ownership sentinel outside NVS (owned + factory-reset marker; Codex OWNER-11) and the factory
+//     reset (provision::request, then provision::resume at the next boot).
 #pragma once
 #include <stdint.h>
 #include "owner_key.h"
@@ -28,5 +29,6 @@ uint32_t physicalLeftMs();
 bool unsettledBoot();                            // in an OTA trial, or its state is unknown: no restarting actions
 bool requestFactoryReset();                      // the confirmed PRG gesture: sets the marker only
 bool resetPending();                             // a confirmed factory reset waits for this boot
+bool forceResetMarker();                         // PRG reset when that storage cannot be read: rewrite it, reset pending
 bool resumeFactoryReset(bool& ran);              // at boot, before anything else reads NVS
 }  // namespace ownerstore

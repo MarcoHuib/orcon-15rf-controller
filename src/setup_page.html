@@ -400,10 +400,10 @@ if(bg&&bg.minute_max)t+=(t?' ':'')+(bg.retry_s>0?'Zendlimiet bereikt: opnieuw mo
 'Zendbudget: nog '+(bg.minute_max-bg.minute)+' van '+bg.minute_max+' deze minuut, '+(bg.hour_max-bg.hour)+' van '+bg.hour_max+' dit uur.');
 $('ctlM').textContent=t;
 }
-function drawAuth(){const a=A||{},set=!a.password_set||forgot,own=!!(SU&&(SU.state==='done'||SU.state==='setup'));
-$('aLogin').hidden=set;$('aSet').hidden=!set;$('aBack').hidden=!a.password_set;
+function drawAuth(){const a=A||{},lk=!!(SU&&SU.state==='locked'),set=!a.password_set||forgot||lk,own=!!(SU&&(SU.state==='done'||SU.state==='setup'||lk));
+$('aLogin').hidden=set;$('aSet').hidden=!set;$('aBack').hidden=!a.password_set||lk;
 $('aHint').hidden=$('aCodeBox').hidden=own;$('aHintOwn').hidden=!own;
-$('aHintOwn').textContent=SU&&SU.state==='setup'?'Wachtwoord uit stap 1 vergeten? De installatie is nog niet klaar, dus er is nog geen herstelsleutel. Voer een fabrieksreset uit via het herstelmenu (RST, daarna PRG 15 seconden vasthouden) en begin opnieuw.':
+$('aHintOwn').textContent=lk?'Deze controller is zijn instellingen kwijtgeraakt, maar had een eigenaar. Uit veiligheid opent de installatie pas weer na een fabrieksreset met de knoppen: druk kort op RST, houd daarna binnen 20 seconden PRG 15 seconden ingedrukt en kies Fabrieksreset (bevestigen met 5 seconden vasthouden).':SU&&SU.state==='setup'?'Wachtwoord uit stap 1 vergeten? De installatie is nog niet klaar, dus er is nog geen herstelsleutel. Voer een fabrieksreset uit via het herstelmenu (RST, daarna PRG 15 seconden vasthouden) en begin opnieuw.':
 'Herstel je wachtwoord met je herstelsleutel. Druk kort op RST, houd daarna binnen 20 seconden PRG 15 seconden ingedrukt en kies op het scherm Herstelmodus (kort drukken = volgende, 2 seconden vasthouden = kiezen). Verbind je telefoon met Orcon15RF-Setup (wachtwoord op het scherm) en open http://192.168.4.1.';
 if(INST&&a.password_set&&!set)$('sub').textContent='Installatie hervatten: meld je aan met het wachtwoord uit stap 1.';
 $('aGo').disabled=busy||a.login_wait_s>0;$('aSetGo').disabled=busy;

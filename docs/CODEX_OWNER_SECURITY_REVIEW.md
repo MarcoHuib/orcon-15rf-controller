@@ -13,7 +13,9 @@
 | 1 | 8bbc2b3 | NO-GO | OWNER-01..03 MAJOR, OWNER-04 MINOR, OWNER-05 MINOR (geërfd) |
 | 2 | 1cd4581 | NO-GO | 01, 04 FIXED; 02, 03 PARTIAL; nieuw: OWNER-06/07 MAJOR |
 | 3 | 014e9e0 | NO-GO | 01–04, 06, 07 FIXED; nieuw: OWNER-08/09/10 MAJOR |
-| 4 | d5d2d9c | **niet afgerond**: gebruikslimiet van het Codex-account bereikt | geen uitslag; zie "Open" |
+| 4 (poging) | d5d2d9c | niet afgerond: gebruikslimiet van het Codex-account | geen uitslag |
+| 4 | 830b603 | NO-GO | 01–09 FIXED, 05 ACCEPTED; 10 PARTIAL; nieuw: OWNER-11 MAJOR, OWNER-12 MINOR |
+| 5 | volgt | — | moet OWNER-10/11/12 expliciet beoordelen |
 
 ## Bevindingen en herstel
 
@@ -26,27 +28,22 @@
 | OWNER-05 | MINOR | De Arduino-WebServer buffert hele POST-bodies vóór de handlers (geërfd) | Niet opgelost; gedocumenteerd (alleen DoS) | ACCEPTED |
 | OWNER-06 | MAJOR | Eerste wachtwoord opgeslagen, teruglezen mislukt: stap 1 bleef open | RAM neemt over wat in de opslag staat; stap 1 opent alleen als de opslag op dat moment bevestigt dat er geen wachtwoord is | FIXED (r3) |
 | OWNER-07 | MAJOR | Registratie dubbelzinnig mislukt: Legacy-herstel bleef open | Codes vervallen vóór het schrijven; Legacy sluit in RAM; een opgeslagen sleutel betekent altijd Done | FIXED (r3) |
-| OWNER-08 | MAJOR | Wachtwoordvervanging dubbelzinnig mislukt: het oude wachtwoord en oude sessies bleven geldig | Alle sessies afgemeld; niets meer gecachet | gerepareerd in d5d2d9c; hosttest met mutatie; **door Codex niet meer geverifieerd** |
-| OWNER-09 | MAJOR | Een leesfout op het rollbackimage gold als "geen image" | Alleen `ESP_ERR_IMAGE_INVALID` telt als niet opstartbaar; bij andere fouten blijft de marker staan | gerepareerd in d5d2d9c; alleen apparaatcode; **niet geverifieerd** |
-| OWNER-10 | MAJOR | Een onleesbare OTA-proefstaat stond een herstart vóór het wissen toe | `unsettledBoot()` faalt dicht; menu-acties wachten | gerepareerd in d5d2d9c; alleen apparaatcode; **niet geverifieerd** |
+| OWNER-08 | MAJOR | Wachtwoordvervanging dubbelzinnig mislukt: het oude wachtwoord en oude sessies bleven geldig | Alle sessies afgemeld; niets meer gecachet | FIXED (r4) |
+| OWNER-09 | MAJOR | Een leesfout op het rollbackimage gold als "geen image" | Alleen `ESP_ERR_IMAGE_INVALID` telt als niet opstartbaar; bij andere fouten blijft de marker staan | FIXED (r4) |
+| OWNER-10 | MAJOR | Een onleesbare OTA-proefstaat stond een herstart vóór het wissen toe; daarna (r4) ook een leesbare INVALID/ABORTED- of onbekende staat | `unsettledBoot()` met een allowlist: alleen VALID en UNDEFINED zijn stabiel | r4 PARTIAL; allowlist toegevoegd; **ronde 5 nodig** |
+| OWNER-11 | MAJOR | De Arduino-NVS-autoformat wiste eigendom en de resetmarker, waardoor de wizard weer openging | Eigendomsmarkering buiten NVS (twee sectoren in de ongebruikte `spiffs`-partitie, A/B, CRC). De resetmarker staat daar ook. NVS leeg terwijl de markering een eigenaar toont: staat **Locked**, en alleen de PRG-fabrieksreset helpt | gerepareerd; host: 34 extra checks (66 onderbrekingspunten); **ronde 5 nodig** |
+| OWNER-12 | MINOR | De controle op privésleutels miste compacte PEM en een PEM in één escaped string | Controle op hele PEM-blokken, ook over escaped regeleinden en string-lijm heen; `tools/test_check_privacy.py` met echte wegwerpsleutels in 7 vormen | gerepareerd; **ronde 5 nodig** |
 
 ## Open
 
-**Ronde 4**
-- Verplicht vóór een merge. Draait zodra het Codex-account weer beschikbaar is.
+**Ronde 5**
+- Verplicht vóór een merge.
 - Te beoordelen:
-  - OWNER-08–10 expliciet;
-  - geen terugkeer van eerdere bevindingen;
-  - de nieuwe stap "pre-owner-image vervangen door een kopie van de actieve firmware" (in plaats van wissen, voor behoud van rollback);
-  - de duurmetingen in de console;
-  - de controle op privésleutels in `check_privacy.py`.
+  - OWNER-10 (allowlist), OWNER-11 (eigendomsmarkering buiten NVS, staat Locked, resetmarker daar) en OWNER-12 (controle op privésleutels) expliciet;
+  - geen terugkeer van OWNER-01–09.
 
-**Platform: NVS-autoformat door Arduino-ESP32** (`esp32-hal-misc.c`, `initArduino`)
-- Bij `ESP_ERR_NVS_NO_FREE_PAGES` of `ESP_ERR_NVS_NEW_VERSION_FOUND` wist de core de hele NVS vóór `setup()`. Dat neemt de resetmarker en alle eigendomsgegevens tegelijk mee.
-- Het apparaat start dan als New. Er is geen eigendom meer en het setup-AP krijgt een nieuw wachtwoord.
-- **Opnieuw in bezit nemen** kan alleen met fysieke toegang (het wachtwoord staat alleen op het OLED). Op afstand kan dit niet worden uitgelokt: elke schrijfroute vraagt een sessie.
-- **Gat 1: de stap "pre-owner-image vervangen" van een fabrieksreset draait niet** als de marker zo verdwijnt. Dat is alleen relevant zolang er nog een image van vóór dit model in de andere sleuf staat, dus alleen tijdens de migratie. De migratievolgorde in `PROVISIONING.md` §7 (beide OTA's vóór de sleutelregistratie) voorkomt die situatie.
-- **Gat 2: de eigenaar verliest zijn configuratie** zonder knopbediening. Dat is gegevensverlies, geen toegangsverlies.
-- Als dit een harde eis wordt: een image van vóór dit model ook bij de overgang naar Done wissen, als de draaiende firmware bevestigd is. Dat is niet gebouwd, omdat de gedocumenteerde migratievolgorde het al voorkomt.
+**Geaccepteerd en gedocumenteerd**
+- OWNER-05: de WebServer buffert POST-bodies; alleen een DoS.
+- Na een NVS-autoformat is de configuratie van de eigenaar weg. Dat is gegevensverlies, geen toegangsverlies: het apparaat wordt Locked.
 
 **Hardware.** Alles hierboven is host- en probe-bewijs. Zie [`HW_VALIDATIE_PROVISIONING.md`](HW_VALIDATIE_PROVISIONING.md).

@@ -45,6 +45,14 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
 | Setup (1) | wachtwoord gezet, wizard bezig | alleen setup-AP; STA alleen tijdens de WiFi-test |
 | Done (2) | eigenaarssleutel geregistreerd | normaal; AP-fallback als het thuisnetwerk ontbreekt |
 | Legacy (3) | gemigreerd van firmware van vóór dit model | als Done; de oude ondertekende `auth-code` blijft tot er een eigenaarssleutel is |
+| Locked | NVS is zijn eigenaar kwijt zonder voltooide fabrieksreset (Arduino-autoformat), terwijl de eigendomsmarkering buiten NVS zegt dat er een eigenaar is | niets gaat open: geen wizard, geen aanmelden, geen herstel. Alleen de PRG-fabrieksreset helpt |
+
+**Eigendomsmarkering buiten NVS (Codex OWNER-11)**
+- Twee 4 KB-sectoren aan het eind van de `spiffs`-partitie, die deze firmware niet gebruikt en die de Arduino-autoformat van NVS nooit raakt.
+- Ze bewaren twee dingen: "dit apparaat heeft een eigenaar" en "een bevestigde fabrieksreset staat klaar" (de resetmarker staat hier, niet in NVS).
+- Er wordt afwisselend geschreven (A/B, met een volgnummer en CRC). Er wordt alleen gewist in de sector zonder het huidige record. Een stroomonderbreking geeft daardoor altijd de oude of de nieuwe toestand, nooit iets anders (66 onderbrekingspunten getest).
+- Stap 1 schrijft "eigenaar" hier vóór de NVS-staat. Een apparaat dat bij het opstarten zijn eigenaar al in NVS heeft (bijvoorbeeld na migratie), krijgt de markering er ook bij.
+- Twee beschadigde sectoren betekenen onleesbaar: fail closed.
 
 **Schrijfvolgorde.** Stap 1 schrijft eerst `state=1` en pas dán het wachtwoord. Een wachtwoord zonder staat kan dus alleen van oude firmware komen, en alleen dat wordt Legacy. Een stroomonderbreking tijdens stap 1 laat nooit een toestand achter waarin het oude herstelpad (via de releasesleutel) opengaat.
 
@@ -60,7 +68,7 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
   - Bij het opstarten betekent een opgeslagen (of onleesbare) eigenaarssleutel altijd Done, wat de staat ook zegt.
   - Een wachtwoordwijziging of -herstel waarvan het opslaan dubbelzinnig mislukt, meldt alle sessies af. Is de opslag daarna onleesbaar, dan werkt ook het oude wachtwoord niet meer tot hij weer leesbaar is; er blijft niets gecachet (Codex OWNER-08).
   - Een leesfout bij het controleren van het rollbackimage tijdens een fabrieksreset betekent nooit "geen image". De marker blijft staan en de reset probeert het bij de volgende start opnieuw (Codex OWNER-09).
-  - Is de OTA-proefstaat onleesbaar, dan telt hij als "nog in proef". Geen enkele menu-actie herstart dan het bord (Codex OWNER-10).
+  - De OTA-staat werkt met een allowlist: alleen VALID en UNDEFINED (een via USB geflasht image) tellen als stabiel. Onleesbaar, NEW, PENDING_VERIFY, INVALID, ABORTED en onbekende waarden tellen als "niet stabiel"; geen enkele menu-actie herstart dan het bord (Codex OWNER-10).
 
 ## 3. Eerste installatie via de directe WiFi-verbinding
 
@@ -188,7 +196,7 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
 - Een nieuwe sleutel maken kan alleen aangemeld én in deze modus. Een gestolen sessie kan de sleutel dus niet vervangen.
 
 **Fabrieksreset (`provision::resume`, met een stroomonderbreking getest op elke stap)**
-1. De bevestigde knopbediening schrijft alleen een marker (NVS `orconreset`) en herstart.
+1. De bevestigde knopbediening schrijft alleen een marker, in de eigendomsmarkering buiten NVS, en herstart.
 2. Bij de volgende start, vóór alles wat NVS leest, wist het apparaat in deze volgorde:
    1. `orconauth` (wachtwoord);
    2. `orconown` (eigenaarssleutel en staat). Na het wachtwoord: een reset die hiertussen stopt, laat een geïnstalleerd apparaat zonder wachtwoord achter (op slot), nooit "wachtwoord zonder staat" (zoals Legacy);
@@ -198,10 +206,10 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
 3. Daarna:
    - de crashdump (die kan RAM-inhoud bevatten);
    - een image van vóór dit model in de andere OTA-sleuf: dat wordt overschreven met een kopie van de draaiende, bevestigde firmware, niet gewist (§6);
-   - als laatste de marker.
+   - als laatste de marker: de eigendomsmarkering wordt "geen eigenaar".
 4. Daarna een schone herstart als nieuw apparaat.
 
-Bij een stroomonderbreking gaat de reset bij de volgende start verder. Zonder marker gebeurt niets. Is de marker onleesbaar, dan start het apparaat niet normaal: het toont een melding en probeert het over 10 s opnieuw. Onleesbaar betekent nooit "geen reset" (Codex OWNER-01). Een crash, update of stroomonderbreking kan dus nooit zelf een reset veroorzaken, en een gestarte reset wordt altijd afgemaakt.
+Bij een stroomonderbreking gaat de reset bij de volgende start verder. Zonder marker gebeurt niets. Is de marker onleesbaar, dan start het apparaat niet normaal. Onleesbaar betekent nooit "geen reset" (Codex OWNER-01). Het OLED toont dan "Opslag onleesbaar". De PRG-fabrieksreset (RST, PRG 15 s, bevestigen met 5 s) blijft beschikbaar: die schrijft de markering opnieuw met een openstaande reset en wist daarna alles. Herstel vraagt dus nooit een computer. Een crash, update of stroomonderbreking kan dus nooit zelf een reset veroorzaken, en een gestarte reset wordt altijd afgemaakt.
 
 **Intrekking van de vorige eigenaar**
 - Zijn publieke sleutel is weg, dus zijn sleutelbestand verifieert niets meer.
@@ -309,10 +317,11 @@ Deze punten zijn bewust niet als oplossing gebouwd.
 - Een oplossing vraagt een aangepaste of andere webserver met limieten vóór het bufferen. Dat is een aparte wijziging, buiten deze opdracht.
 - Gevolg: hooguit een DoS (geheugen, herstart). Geen toegang.
 
-**NVS-autoformat door de Arduino-core (platform)**
-- Bij een volle of nieuwere NVS (`NO_FREE_PAGES` of `NEW_VERSION_FOUND`) wist Arduino-ESP32 de hele NVS vóór `setup()`.
-- Het apparaat start dan als New, zonder eigenaar. Opnieuw in bezit nemen kan alleen met fysieke toegang.
-- De stap "pre-owner-image vervangen" van een lopende fabrieksreset draait dan niet. De migratievolgorde (§7) voorkomt dat er zo'n image staat.
+**NVS-autoformat door de Arduino-core (platform, opgevangen)**
+- Bij een volle of nieuwere NVS (`NO_FREE_PAGES` of `NEW_VERSION_FOUND`) wist Arduino-ESP32 de hele NVS vóór `setup()`. Dat is niet uit te zetten zonder de vastgepinde core te patchen.
+- Opvang: de eigendomsmarkering buiten NVS (§2). Een apparaat met een eigenaar wordt dan Locked, niet New. Alleen de PRG-fabrieksreset opent de wizard weer.
+- Een fabrieksreset die al klaarstond, wordt gewoon afgemaakt, omdat de marker niet in NVS staat.
+- Wat de eigenaar wel kwijtraakt bij zo'n autoformat: de configuratie (WiFi, profielen, koppeling). Dat is gegevensverlies, geen toegangsverlies.
 - Details: [`CODEX_OWNER_SECURITY_REVIEW.md`](CODEX_OWNER_SECURITY_REVIEW.md).
 
 **Hardware**
@@ -346,7 +355,7 @@ Een LAN-IP of `.local` krijgt geen publiek certificaat.
 
 | Suite | Wat |
 |---|---|
-| `provision` (98) | staten, migratie, routebeleid, fabrieksreset met een stroomonderbreking op elke stap, onleesbare marker, vergrendelde herstelmodus-timer |
+| `provision` (132) | staten, migratie, routebeleid, fabrieksreset met een stroomonderbreking op elke stap, onleesbare marker, vergrendelde herstelmodus-timer |
 | `reset_gesture` (32) | gewone druk, korte reset, lange druk, annuleren, alle menukeuzes, bevestiging, vastzittende knop, dender, wrap |
 | `owner_key` (36) | KAT tegen OpenSSL (AES, P-256, SHA-256); in beide richtingen uitwisselbaar met de `openssl`-CLI; weigeren van SHA1, AES-128, weinig rondes, onversleuteld, P-384; mutatie-sweep |
 | `setup_web_provision` (54) en `_provision_rx` (53), plus de OWNER-03-test in elke owner-build | nieuw apparaat tot geïnstalleerd: LAN geweigerd, STA aan geweigerd, stap 1 eenmalig, onderbroken wizard, WiFi-test, sleutel maken en controleren, oude sleutel en verkeerde zin geweigerd, herstel met blokkade, sleutel vervangen, releasesleutel dicht, captive redirect, geen resetroute |

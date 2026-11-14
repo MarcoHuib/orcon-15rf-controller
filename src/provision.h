@@ -22,7 +22,10 @@
 #include <stdint.h>
 
 namespace provision {
-enum class State : uint8_t { New, Setup, Done, Legacy };
+// Locked: NVS lost its owner without a completed factory reset (the Arduino core formats a full or newer
+// NVS before setup(), Codex OWNER-11), while the ownership sentinel below says the device has an owner.
+// Nothing reopens: no wizard, no login, no recovery. Only the PRG factory reset clears it.
+enum class State : uint8_t { New, Setup, Done, Legacy, Locked };
 constexpr uint8_t STORED_SETUP = 1, STORED_DONE = 2, STORED_LEGACY = 3;
 constexpr uint32_t PHYSICAL_MS = 15u * 60u * 1000u;      // the button-started recovery mode lasts 15 minutes
 
@@ -85,6 +88,25 @@ struct ResetOps {
 constexpr const char* WIPE[] = {"orconauth", "orconown", "orconprofiles", "orcon", "nvs.net80211"};
 constexpr size_t WIPE_N = sizeof(WIPE) / sizeof(WIPE[0]);
 bool request(ResetOps&);   // the confirmed PRG gesture: only sets the marker (the work runs at the next boot)
+
+// ---- the ownership sentinel (Codex OWNER-11) ----------------------------------------------------------
+// Two raw 4 KB sectors at the end of the spiffs partition (unused by this firmware; outside NVS, so an
+// NVS auto-format cannot touch them) hold "this device has an owner" and "a confirmed factory reset is
+// pending" (the reset marker lives here). A/B with a sequence number: a write only ever erases the sector
+// that does NOT hold the current record, so a power cut never loses the last state.
+struct Sentinel { bool owned = false; bool resetPending = false; uint32_t seq = 0; };
+constexpr size_t SENTINEL_LEN = 16;   // "ORCS", version, flags, 2 reserved, seq (LE), CRC-32 (LE) over 0..11
+enum class Slot : uint8_t { Empty, Valid, Corrupt };   // Empty: erased or not ours; Corrupt: ours, damaged
+void encodeSentinel(const Sentinel&, uint8_t out[SENTINEL_LEN]);
+Slot decodeSentinel(const uint8_t in[SENTINEL_LEN], Sentinel& out);
+enum class SentinelRead : uint8_t { Absent, Ok, Unreadable };
+// The current record (the valid one with the higher sequence) and the sector to write next. Both damaged:
+// unreadable. One damaged next to an empty one is a torn FIRST write (the first write fills both sectors),
+// which only happens while the device is unowned: absent.
+SentinelRead chooseSentinel(Slot a, const Sentinel& ra, Slot b, const Sentinel& rb, Sentinel& out, uint8_t& next);
+// NVS says New, but the sentinel says the device has an owner (or cannot be read): Locked, never New.
+State withSentinel(State nvs, SentinelRead r, const Sentinel& s);
+uint32_t crc32(const uint8_t* p, size_t n);
 bool resume(ResetOps&);    // at boot, before anything reads NVS: true = nothing pending or completed now;
                            // false = not done (also an unreadable marker): do not start normally
 }  // namespace provision

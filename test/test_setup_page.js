@@ -746,6 +746,11 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.equal(r.location.hash, '#login'); assert.match(r.$('sub').textContent, /Installatie hervatten/);
         r.$('aForgot').click(); await flush(); assert.match(r.$('aHintOwn').textContent, /fabrieksreset/);
         ok('interrupted installation: log in with the step-1 password; forgotten -> factory reset (no key exists yet)');
+        st.setup = { state: 'locked', via_ap: true, physical: false }; st.auth.password_set = false;
+        const lq = await page({ 'GET /api/setup/state': () => [200, st] }); await lq.refresh();
+        assert.equal(lq.location.hash, '#login'); assert.equal(lq.$('aLogin').hidden, true); assert.equal(lq.$('aCodeBox').hidden, true);
+        assert.equal(lq.$('aBack').hidden, true); assert.match(lq.$('aHintOwn').textContent, /kwijtgeraakt.*Fabrieksreset/);
+        ok('locked (NVS lost its owner): no login, no setup, no code entry; only the PRG factory reset is explained');
     }
     console.log(`setup page: ${n} checks, 0 failures`);
 })().catch(e => { console.error(e); process.exit(1); });

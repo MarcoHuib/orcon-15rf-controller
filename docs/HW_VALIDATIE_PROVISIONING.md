@@ -59,6 +59,7 @@ Profiel, koppeling, eigen ID en WiFi blijven in alle stappen behouden.
 | S10 | OTA zonder sessie | `ota-install` met een fout wachtwoord | 401, niets geschreven | CLI-uitvoer |
 | S11 | Setup via het thuisnetwerk | `curl http://<LAN-IP>/api/provision/state` | 403 `setup-ap-only` | terminal |
 | S12 | Geen geheimen in logs | serial en console doorzoeken op wachtwoord, wachtwoordzin en PEM | niets | grep |
+| S13 | Eigendomsmarkering na de migratie | serieel log van de eerste start: `[owner] state legacy (migrated)`; daarna `done` | geen melding "ownership sentinel not written". Profielen en koppeling intact | serieel log |
 
 ## 3. Werkend board: kan de installatie verstoren (klasse V, herstelbaar, apart akkoord)
 
@@ -85,5 +86,7 @@ Profiel, koppeling, eigen ID en WiFi blijven in alle stappen behouden.
 | D8 | Oude eigenaarssleutel na overdracht | herstel met het oude bestand werkt niet; `auth-code` met de releasesleutel 403 |
 | D9 | Opnieuw installeren na de reset | wizard volledig; nieuwe RF-ID bij de eerste koppeling |
 | D10 | OTA-weigeringen | gewijzigde bundel → `bad-signature`/`hash-mismatch`; oudere release → `older-release` |
+| D11 | **NVS-autoformat nabootsen**: alleen de NVS-partitie wissen (`esptool erase_region 0x9000 0x5000`, USB, apart akkoord) | OLED "Reset nodig (PRG)", staat `locked`: geen wizard, geen aanmelden, geen herstel. Na de PRG-fabrieksreset: New, en de wizard werkt |
+| D12 | Eigendomsmarkering beschadigen (beide sectoren aan het eind van `spiffs` overschrijven, USB) | Fail closed: geen normale start; OLED "Opslag onleesbaar: RST, PRG 15 s vast = fabrieksreset". De knoppen werken: de fabrieksreset (met 5 s bevestiging) herschrijft de markering, wist alles, en daarna New. Zonder knopbediening blijft het apparaat in deze toestand; geen computer nodig |
 
 **Stopcriteria.** Bij elke afwijking stoppen en vastleggen. Terugval: de rollback van de bootloader, of `heltec_v2.sh recover` (USB, apart akkoord).

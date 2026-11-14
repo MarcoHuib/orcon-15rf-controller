@@ -1193,6 +1193,17 @@ int main() {
               "owner model: no release-key recovery once installed with an owner key");
         g_ownState = provision::State::Legacy;
     }
+    {   // Codex OWNER-11: NVS lost its owner (Arduino auto-format) while the sentinel says owned -> Locked.
+        g_ownState = provision::State::Locked; g_viaAp = true; g_physical = true;
+        CHECK(call("GET", "/api/provision/state", "", nullptr) == 200 && J["state"] == "locked", "locked: the state says so (on the AP)");
+        CHECK(call("POST", "/api/provision/password", "{\"password\":\"overname-poging\"}", nullptr) == 403 && err("factory-reset-required"),
+              "locked: no first password, even on the AP in the recovery mode");
+        CHECK(call("POST", "/api/provision/recover", "{\"pem\":\"x\",\"passphrase\":\"y\",\"password\":\"overname-poging\"}", nullptr) == 403 &&
+              err("factory-reset-required"), "locked: no recovery");
+        CHECK(call("POST", "/api/auth/nonce", "{}", nullptr, "application/json", nullptr) == 403 && err("owner-key-required"),
+              "locked: no release-key recovery");
+        g_ownState = provision::State::Legacy; g_viaAp = false; g_physical = false;
+    }
     {   // Codex OWNER-03: a release-key code issued on a Legacy device dies when the owner registers a key.
         g_viaAp = true; g_physical = true; g_cookie.clear();
         auto issue = []() {

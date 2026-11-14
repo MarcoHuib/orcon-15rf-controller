@@ -123,6 +123,79 @@ int main() {
         request(f); f.reboot();
         CHECK(!resume(f) && f.marked && !f.ns.count("orconauth") && !f.ns.count("orconown") && f.ns.count("orconprofiles"));
     }
+    // ---- the ownership sentinel (Codex OWNER-11) ----
+    {
+        const uint8_t kat[] = {'1','2','3','4','5','6','7','8','9'};
+        CHECK(crc32(kat, sizeof(kat)) == 0xCBF43926u);                       // CRC-32/IEEE check value
+        uint8_t rec[SENTINEL_LEN]; Sentinel out;
+        for (int f = 0; f < 4; ++f) for (uint32_t seq : {0u, 1u, 77u, 0xFFFFFFFEu}) {
+            Sentinel in; in.owned = f & 1; in.resetPending = (f & 2) != 0; in.seq = seq;
+            encodeSentinel(in, rec);
+            CHECK(decodeSentinel(rec, out) == Slot::Valid && out.owned == in.owned && out.resetPending == in.resetPending && out.seq == seq);
+        }
+        uint8_t ff[SENTINEL_LEN]; memset(ff, 0xFF, sizeof(ff));
+        CHECK(decodeSentinel(ff, out) == Slot::Empty);                        // erased flash
+        uint8_t foreign[SENTINEL_LEN] = {'h','s','p','i','f','f','s',0,1,2,3,4,5,6,7,8};
+        CHECK(decodeSentinel(foreign, out) == Slot::Empty);                   // old SPIFFS data: not ours
+        Sentinel own; own.owned = true; own.seq = 5; encodeSentinel(own, rec);
+        uint8_t bad[SENTINEL_LEN];
+        memcpy(bad, rec, sizeof(bad)); bad[9] ^= 1; CHECK(decodeSentinel(bad, out) == Slot::Corrupt);        // seq flipped
+        memcpy(bad, rec, sizeof(bad)); bad[4] = 2; CHECK(decodeSentinel(bad, out) == Slot::Corrupt);         // version
+        memcpy(bad, rec, sizeof(bad)); bad[5] |= 4; CHECK(decodeSentinel(bad, out) == Slot::Corrupt);        // unknown flag
+        // A torn write programs a prefix of the record onto erased flash: never a valid record.
+        bool tornOk = true;
+        for (size_t k = 0; k < SENTINEL_LEN; ++k) {
+            uint8_t torn[SENTINEL_LEN]; memset(torn, 0xFF, sizeof(torn)); memcpy(torn, rec, k);
+            tornOk = tornOk && decodeSentinel(torn, out) != Slot::Valid;
+        }
+        CHECK(tornOk);
+        // Choosing between the sectors.
+        Sentinel a, b, cur; uint8_t next = 9;
+        a.owned = true; a.seq = 1; b.owned = false; b.seq = 2;
+        CHECK(chooseSentinel(Slot::Valid, a, Slot::Valid, b, cur, next) == SentinelRead::Ok && !cur.owned && cur.seq == 2 && next == 0);
+        CHECK(chooseSentinel(Slot::Valid, a, Slot::Corrupt, b, cur, next) == SentinelRead::Ok && cur.owned && next == 1);
+        CHECK(chooseSentinel(Slot::Corrupt, a, Slot::Corrupt, b, cur, next) == SentinelRead::Unreadable);   // flash damage: fail closed
+        CHECK(chooseSentinel(Slot::Corrupt, a, Slot::Empty, b, cur, next) == SentinelRead::Absent);        // a torn first write
+        CHECK(chooseSentinel(Slot::Empty, a, Slot::Empty, b, cur, next) == SentinelRead::Absent && next == 0);
+        // Writes with a power cut at every point of the erase and of the write: the result is always the
+        // old state or the new one, never unreadable and never anything else.
+        struct Dev { uint8_t sec[2][SENTINEL_LEN]; };
+        auto read = [](const Dev& d, Sentinel& c, uint8_t& n) {
+            Sentinel ra, rb; const Slot sa = decodeSentinel(d.sec[0], ra), sb = decodeSentinel(d.sec[1], rb);
+            return chooseSentinel(sa, ra, sb, rb, c, n);
+        };
+        bool cutOk = true; int cuts = 0;
+        for (int from = 0; from < 2; ++from) {
+            Dev d; memset(&d, 0xFF, sizeof(d));
+            Sentinel first; first.owned = from == 1; first.seq = 1;
+            encodeSentinel(first, d.sec[0]); first.seq = 2; encodeSentinel(first, d.sec[1]);   // first write fills both
+            Sentinel was; uint8_t tgt = 0; read(d, was, tgt);
+            Sentinel want; want.owned = !was.owned; want.resetPending = true; want.seq = was.seq + 1;
+            uint8_t nrec[SENTINEL_LEN]; encodeSentinel(want, nrec);
+            for (size_t e = 0; e <= SENTINEL_LEN; ++e) for (size_t w = 0; w <= (e == SENTINEL_LEN ? SENTINEL_LEN : 0); ++w) {
+                Dev x = d;
+                for (size_t i = 0; i < e; ++i) x.sec[tgt][i] = 0xFF;          // the erase got this far
+                for (size_t i = 0; i < w; ++i) x.sec[tgt][i] = nrec[i];       // then the write
+                Sentinel c; uint8_t n;
+                const SentinelRead r = read(x, c, n); ++cuts;
+                const bool isOld = r == SentinelRead::Ok && c.owned == was.owned && c.resetPending == was.resetPending;
+                const bool isNew = r == SentinelRead::Ok && c.owned == want.owned && c.resetPending == want.resetPending;
+                cutOk = cutOk && (isOld || isNew) && (w < SENTINEL_LEN || isNew);
+            }
+        }
+        CHECK(cutOk && cuts == 66);
+        // The boot decision: an owned device whose NVS lost everything is Locked, never New.
+        Sentinel o; o.owned = true; Sentinel u;
+        CHECK(withSentinel(State::New, SentinelRead::Ok, o) == State::Locked);
+        CHECK(withSentinel(State::New, SentinelRead::Unreadable, u) == State::Locked);
+        CHECK(withSentinel(State::New, SentinelRead::Absent, u) == State::New && withSentinel(State::New, SentinelRead::Ok, u) == State::New);
+        CHECK(withSentinel(State::Done, SentinelRead::Unreadable, u) == State::Done && withSentinel(State::Legacy, SentinelRead::Ok, u) == State::Legacy);
+        // Locked: nothing but the read-only state on the setup AP.
+        Ctx k; k.viaAp = true; k.state = State::Locked; k.physical = true; k.loggedIn = true;
+        bool lockedOk = !strcmp(name(State::Locked), "locked") && !installing(State::Locked) && is(allow(Route::State, k), nullptr);
+        for (Route r : ALL) if (r != Route::State) lockedOk = lockedOk && is(allow(r, k), "factory-reset-required");
+        CHECK(lockedOk);
+    }
     printf("provision: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

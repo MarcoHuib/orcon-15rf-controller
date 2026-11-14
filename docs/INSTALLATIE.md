@@ -113,6 +113,7 @@ Een fabrieksreset maakt ook de herstelsleutel van de vorige eigenaar waardeloos.
 | Netwerk niet gevonden | Alleen 2,4 GHz-netwerken werken. Controleer de naam (hoofdletters tellen mee). |
 | Download van de sleutel lukt niet | Gebruik **Tekst kopiëren**, of open http://192.168.4.1 in Safari of Chrome. |
 | Wachtwoord vergeten, geen sleutel meer | Fabrieksreset en opnieuw installeren. |
+| Scherm toont **Reset nodig (PRG)** | De Heltec is zijn instellingen kwijt (zeldzame opslagfout) maar had een eigenaar. Uit veiligheid start de installatie pas na een fabrieksreset met de knoppen. |
 
 ## Veiligheid in het kort
 

@@ -768,6 +768,7 @@ static void oledDraw() {
         snprintf(b, sizeof(b), "http://%s", g_ip);
 #if ORCON_OWNER_MODEL
         if (provision::installing(ownerstore::state())) snprintf(t, sizeof(t), "Installatie");
+        else if (ownerstore::state() == provision::State::Locked) snprintf(t, sizeof(t), "Reset nodig (PRG)");
         else if (ownerstore::physicalActive()) snprintf(t, sizeof(t), "Herstelmodus  %lum", (unsigned long)(ownerstore::physicalLeftMs() / 60000 + 1));
 #endif
         oled.clearBuffer();
@@ -1196,8 +1197,22 @@ void begin() {
     bool ran = false;
     if (ownerstore::resetPending()) { oledInit(); notice("Fabrieksreset", "bezig: niet", "uitschakelen", 120000); }
     if (!ownerstore::resumeFactoryReset(ran)) {
-        oledInit(); notice("Fabrieksreset", "niet voltooid;", "opnieuw over 10 s", 10000);
-        delay(10000); ESP.restart();
+        // The reset/ownership storage cannot be read, or a pending reset could not finish: fail closed, no
+        // normal start. The PRG factory reset stays available (RST, then PRG 15 s, then confirm 5 s): it
+        // rewrites that storage with a pending reset, so recovering never needs a computer.
+        oledInit();
+        pinMode(PIN_PRG_BTN, INPUT_PULLUP);
+        const uint32_t until = millis() + 60000;
+        while (int32_t(millis() - until) < 0 || g_gesture.phase() != gesture::Phase::Idle) {   // never cut a menu short
+            const gesture::Action a = g_gesture.poll(digitalRead(PIN_PRG_BTN), millis());
+            if (a == gesture::Action::FactoryReset && ownerstore::forceResetMarker()) {
+                notice("Fabrieksreset", "herstart en wist", "niet uitschakelen", 8000); delay(1500); ESP.restart();
+            }
+            if (g_gesture.visible(millis())) { g_msgUntil = 0; oledDraw(); }   // the countdown and menu come first
+            else if (!g_msgUntil || int32_t(millis() - g_msgUntil) >= 0) notice("Opslag onleesbaar:", "RST, PRG 15 s vast", "= fabrieksreset", 60000);
+            delay(20);
+        }
+        ESP.restart();                                 // and offer it again
     }
     if (ran) { Serial.println("[reset] factory reset complete: restart as a new device"); delay(200); ESP.restart(); }
     ownerstore::begin();
