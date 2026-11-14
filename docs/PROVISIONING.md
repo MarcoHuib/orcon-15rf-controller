@@ -294,6 +294,8 @@ Een image van vóór dit model in de andere sleuf zou na een terugval het oude h
 
 Profielen, koppeling, ID en WiFi blijven in alle stappen. De andere sleuf terugzetten met `heltec_v2.sh recover` blijft mogelijk; dat schrijft het RX-only-pakket van de gekozen commit.
 
+Het draaiboek voor het eigen board, met de controles vooraf, de images en hun hashes, en de toestemmingen per stap: [`MIGRATIE_EIGEN_HELTEC.md`](MIGRATIE_EIGEN_HELTEC.md).
+
 ## 8. Wat niet veilig of niet haalbaar is
 
 Deze punten zijn bewust niet als oplossing gebouwd.

@@ -6,7 +6,9 @@
 - Bewijs komt lokaal in `build/` en `captures/` (git-ignored).
 - Wat niet getest is, heet **NOT TESTED**.
 
-**Uitgangspunt: er is misschien maar één Heltec V2.**
+**Besluit van 14-11-2026: er komt geen tweede board.** De migratie, de eerste tests en later de fabrieksreset met de volledige wizard gebeuren op het werkende board. Elke stap heeft een apart akkoord, en een nieuwe koppeling is geaccepteerd. Het draaiboek staat in [`MIGRATIE_EIGEN_HELTEC.md`](MIGRATIE_EIGEN_HELTEC.md); dit document blijft de lijst met controles.
+
+**Uitgangspunt: er is maar één Heltec V2.**
 - Het werkende board wordt nooit automatisch gereset, geflasht of opnieuw gekoppeld.
 - Elke handeling heeft daarom een klasse:
   - **S** (veilig op het werkende board);
@@ -72,7 +74,7 @@ Profiel, koppeling, eigen ID en WiFi blijven in alle stappen behouden.
 
 ## 4. Tweede board nodig, of beschadigt de installatie (klasse D)
 
-**Waarom deze klasse.** Een fabrieksreset op het werkende board wist ook de koppeling. Opnieuw koppelen vraagt een RF-zending en de unit in koppelmodus (stroom van de unit eraf). Daarom horen deze tests op een tweede board, of op het werkende board alleen met apart akkoord voor zowel de reset als de nieuwe koppeling.
+**Waarom deze klasse.** Een fabrieksreset op het werkende board wist ook de koppeling. Opnieuw koppelen vraagt een RF-zending en de unit in koppelmodus (stroom van de unit eraf). Daarom gebeuren deze tests op het werkende board alleen met apart akkoord, voor zowel de reset als de nieuwe koppeling. Zie het besluit van 14-11-2026 bovenaan. Tests die moedwillig schade aanbrengen (D11, D12) blijven optioneel; ze vragen USB en een eigen akkoord.
 
 | # | Controle | Verwacht |
 |---|---|---|
