@@ -221,11 +221,14 @@ struct Ops : provision::ResetOps {
         const esp_err_t e = esp_core_dump_image_erase();
         return e == ESP_OK || e == ESP_ERR_NOT_FOUND || e == ESP_ERR_INVALID_SIZE;
     }
-    // The other slot holds the rollback image. One that predates the ownership model would trust
-    // the release key for password recovery again, so it goes; a current image stays as rollback.
-    bool erasePreOwnerSlot() override {
+    // The other slot holds the rollback image. One from before the ownership model would trust the
+    // release key for password recovery again. It is not erased but overwritten with a copy of the
+    // running, confirmed image: no pre-owner firmware remains, and the device keeps two bootable
+    // owner-model images (bootloader fallback, and a rollback target for the next OTA, both intact).
+    bool retirePreOwnerSlot() override {
         const esp_partition_t* other = esp_ota_get_next_update_partition(nullptr);
-        if (!other) return true;
+        const esp_partition_t* run = esp_ota_get_running_partition();
+        if (!other || !run || other == run) return true;
         esp_image_metadata_t meta;
         const esp_partition_pos_t pos{other->address, other->size};
         const esp_err_t v = esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &pos, &meta);
@@ -238,9 +241,19 @@ struct Ops : provision::ResetOps {
             if (esp_partition_read(other, off, buf, n) != ESP_OK) return false;
             s.feed(buf, n);
         }
-        if (s.ownerModel) return true;
-        Serial.printf("[reset] %s holds firmware from before the ownership model: erasing it\n", other->label);
-        return esp_partition_erase_range(other, 0, other->size) == ESP_OK;
+        if (s.ownerModel) return true;                  // a current image: it stays as the rollback target
+        esp_image_metadata_t rm;
+        const esp_partition_pos_t rpos{run->address, run->size};
+        if (esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &rpos, &rm) != ESP_OK) return false;   // never copy a bad image
+        Serial.printf("[reset] %s holds firmware from before the ownership model: replacing it with a copy of %s\n",
+                      other->label, run->label);
+        esp_ota_handle_t h;
+        if (esp_ota_begin(other, rm.image_len, &h) != ESP_OK) return false;   // erases what the copy needs
+        for (uint32_t off = 0; off < rm.image_len; off += sizeof(buf)) {
+            const uint32_t n = rm.image_len - off < sizeof(buf) ? rm.image_len - off : sizeof(buf);
+            if (esp_partition_read(run, off, buf, n) != ESP_OK || esp_ota_write(h, buf, n) != ESP_OK) { esp_ota_abort(h); return false; }
+        }
+        return esp_ota_end(h) == ESP_OK;                // ESP-IDF verifies the copy; the boot selection is unchanged
     }
     bool clear() override {
         nvs_handle_t h;
@@ -255,6 +268,7 @@ bool requestFactoryReset() {
     Ops o;
     return provision::request(o);
 }
+bool resetPending() { Ops o; return o.marker() == provision::Marker::Set; }
 bool resumeFactoryReset(bool& ran) {
     Ops o;
     ran = o.marker() == provision::Marker::Set;

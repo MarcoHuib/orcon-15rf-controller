@@ -15,6 +15,11 @@ ID = re.compile(r"\b(\d\d):(\d{6})\b")
 MAC = re.compile(r"\b[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}\b")
 IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 HOME = re.compile(r"(?:/Users|/home)/[A-Za-z][\w.-]*")   # personal absolute paths
+# A private key block: a PEM header followed by real key material (also as C/JS string lines). The
+# release key, the dev OTA key or an owner key must never be committed; markers and fake fixtures
+# ("AAAA") are fine. docs/RELEASESLEUTEL.md.
+KEYHDR = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+B64RUN = re.compile(r"[A-Za-z0-9+/]{40,}")
 SELF = "tools/check_privacy.py"
 
 files = sys.argv[1:] or subprocess.run(["git", "ls-files"], capture_output=True, text=True, check=True).stdout.split()
@@ -28,7 +33,10 @@ for f in files:
         text = open(f, encoding="utf-8", errors="replace").read()
     except (IsADirectoryError, FileNotFoundError):
         continue
-    for n, line in enumerate(text.splitlines(), 1):
+    lines = text.splitlines()
+    for n, line in enumerate(lines, 1):
+        if KEYHDR.search(line) and sum(1 for l in lines[n:n + 4] if B64RUN.search(l)) >= 2:
+            problems.append(f"{f}:{n}: private key material (never commit a private key)")
         for m in ID.finditer(line):
             if m.group(0) not in ALLOWED_IDS and int(m.group(2)) > 999:
                 problems.append(f"{f}:{n}: device ID {m.group(1)}:****** is not synthetic")

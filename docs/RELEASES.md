@@ -46,7 +46,16 @@ Dit is een voorstel. Er is nog niets gepubliceerd. Publiceren gebeurt alleen na 
 - Nadelen: HTTPS met een CA-bundel (tientallen KB flash); het apparaat neemt contact op met GitHub (privacy); en een nieuwe afhankelijkheid.
 - Installeren blijft dan altijd een handeling van de aangemelde eigenaar.
 
-## Releasesleutel: open besluit
+## Releaseblokkades (vóór de eerste publieke release)
+
+1. **HTTPS op het LAN.** Een wachtwoord via HTTP is niet voldoende. Ontwerp: [`HTTPS_ONTWERP.md`](HTTPS_ONTWERP.md).
+2. **Hardwarevalidatie**: [`HW_VALIDATIE_PROVISIONING.md`](HW_VALIDATIE_PROVISIONING.md).
+3. **Een groene laatste onafhankelijke securityreview**: [`CODEX_OWNER_SECURITY_REVIEW.md`](CODEX_OWNER_SECURITY_REVIEW.md).
+4. **Een eigen offline releasesleutel**, ingevoerd met de migratie in [`RELEASESLEUTEL.md`](RELEASESLEUTEL.md). Alleen met apart akkoord.
+
+## Releasesleutel: besloten (aparte offline sleutel), migratie ontworpen
+
+Het ontwerp staat in [`RELEASESLEUTEL.md`](RELEASESLEUTEL.md). De tekst hieronder is de oorspronkelijke analyse.
 
 **Huidige situatie**
 - De publieke sleutel in `src/ota_pubkey.h` hoort bij `~/.orcon/ota-signing-key.pem` op de ontwikkel-Mac.

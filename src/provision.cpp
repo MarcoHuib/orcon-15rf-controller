@@ -55,7 +55,7 @@ bool resume(ResetOps& o) {
     if (m == Marker::Absent) return true;
     if (m == Marker::Unreadable) return false;
     for (size_t i = 0; i < WIPE_N; ++i) if (!o.eraseNamespace(WIPE[i])) return false;
-    return o.eraseCrashDump() && o.erasePreOwnerSlot() && o.clear();
+    return o.eraseCrashDump() && o.retirePreOwnerSlot() && o.clear();
 }
 
 }  // namespace provision

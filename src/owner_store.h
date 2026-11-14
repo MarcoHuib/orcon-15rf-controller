@@ -27,5 +27,6 @@ uint32_t physicalLeftMs();
 
 bool unsettledBoot();                            // in an OTA trial, or its state is unknown: no restarting actions
 bool requestFactoryReset();                      // the confirmed PRG gesture: sets the marker only
+bool resetPending();                             // a confirmed factory reset waits for this boot
 bool resumeFactoryReset(bool& ran);              // at boot, before anything else reads NVS
 }  // namespace ownerstore

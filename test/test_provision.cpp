@@ -23,7 +23,7 @@ struct Flash : ResetOps {
     bool mark() override { if (!step("mark")) return false; marked = true; return true; }
     bool eraseNamespace(const char* n) override { if (!step(std::string("erase ") + n)) return false; ns.erase(n); return true; }
     bool eraseCrashDump() override { if (!step("dump")) return false; dump = false; return true; }
-    bool erasePreOwnerSlot() override { if (!step("slot")) return false; preOwner = false; return true; }
+    bool retirePreOwnerSlot() override { if (!step("slot")) return false; preOwner = false; return true; }
     bool clear() override { if (!step("clear")) return false; marked = false; return true; }
     void reboot() { dead = false; budget = 1 << 30; }
     bool wiped() const { return ns.size() == 1 && ns.count("orconother") && !dump && !preOwner; }   // only a foreign namespace is left

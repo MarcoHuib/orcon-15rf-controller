@@ -1194,6 +1194,7 @@ void begin() {
     // A confirmed factory reset completes here, before anything reads NVS; interrupted, it resumes
     // at the next boot. Then a clean restart, so the device starts exactly as a new one.
     bool ran = false;
+    if (ownerstore::resetPending()) { oledInit(); notice("Fabrieksreset", "bezig: niet", "uitschakelen", 120000); }
     if (!ownerstore::resumeFactoryReset(ran)) {
         oledInit(); notice("Fabrieksreset", "niet voltooid;", "opnieuw over 10 s", 10000);
         delay(10000); ESP.restart();

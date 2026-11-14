@@ -33,13 +33,19 @@
 ## Open
 
 **Ronde 4**
-- Opnieuw draaien zodra het Codex-account weer beschikbaar is. Doel: OWNER-08–10 laten bevestigen en het platformgedrag hieronder laten beoordelen.
+- Verplicht vóór een merge. Draait zodra het Codex-account weer beschikbaar is.
+- Te beoordelen:
+  - OWNER-08–10 expliciet;
+  - geen terugkeer van eerdere bevindingen;
+  - de nieuwe stap "pre-owner-image vervangen door een kopie van de actieve firmware" (in plaats van wissen, voor behoud van rollback);
+  - de duurmetingen in de console;
+  - de controle op privésleutels in `check_privacy.py`.
 
 **Platform: NVS-autoformat door Arduino-ESP32** (`esp32-hal-misc.c`, `initArduino`)
 - Bij `ESP_ERR_NVS_NO_FREE_PAGES` of `ESP_ERR_NVS_NEW_VERSION_FOUND` wist de core de hele NVS vóór `setup()`. Dat neemt de resetmarker en alle eigendomsgegevens tegelijk mee.
 - Het apparaat start dan als New. Er is geen eigendom meer en het setup-AP krijgt een nieuw wachtwoord.
 - **Opnieuw in bezit nemen** kan alleen met fysieke toegang (het wachtwoord staat alleen op het OLED). Op afstand kan dit niet worden uitgelokt: elke schrijfroute vraagt een sessie.
-- **Gat 1: de stap "pre-owner-image wissen" van een fabrieksreset draait niet** als de marker zo verdwijnt. Dat is alleen relevant zolang er nog een image van vóór dit model in de andere sleuf staat, dus alleen tijdens de migratie. De migratievolgorde in `PROVISIONING.md` §7 (beide OTA's vóór de sleutelregistratie) voorkomt die situatie.
+- **Gat 1: de stap "pre-owner-image vervangen" van een fabrieksreset draait niet** als de marker zo verdwijnt. Dat is alleen relevant zolang er nog een image van vóór dit model in de andere sleuf staat, dus alleen tijdens de migratie. De migratievolgorde in `PROVISIONING.md` §7 (beide OTA's vóór de sleutelregistratie) voorkomt die situatie.
 - **Gat 2: de eigenaar verliest zijn configuratie** zonder knopbediening. Dat is gegevensverlies, geen toegangsverlies.
 - Als dit een harde eis wordt: een image van vóór dit model ook bij de overgang naar Done wissen, als de draaiende firmware bevestigd is. Dat is niet gebouwd, omdat de gedocumenteerde migratievolgorde het al voorkomt.
 

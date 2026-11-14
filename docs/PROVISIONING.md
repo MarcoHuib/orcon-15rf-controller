@@ -197,7 +197,7 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
    5. `nvs.net80211`.
 3. Daarna:
    - de crashdump (die kan RAM-inhoud bevatten);
-   - een image in de andere OTA-sleuf dat van vóór dit model is (§6);
+   - een image van vóór dit model in de andere OTA-sleuf: dat wordt overschreven met een kopie van de draaiende, bevestigde firmware, niet gewist (§6);
    - als laatste de marker.
 4. Daarna een schone herstart als nieuw apparaat.
 
@@ -240,8 +240,16 @@ Bij een stroomonderbreking gaat de reset bij de volgende start verder. Zonder ma
 Een image van vóór dit model in de andere sleuf zou na een terugval het oude herstel via de releasesleutel weer openen. De maatregelen:
 
 1. OTA installeert alleen images met de owner-model-marker.
-2. Een fabrieksreset wist zo'n image uit de andere sleuf. Een image van het nieuwe model blijft staan als rollbackdoel.
-3. Na de migratie in twee stappen (§7) bevatten beide sleuven het nieuwe model.
+2. Een fabrieksreset **vervangt** zo'n image door een kopie van de draaiende, bevestigde firmware. Er wordt niets gewist.
+   - Daardoor blijven er twee opstartbare images (owner-model) over.
+   - De terugval van de bootloader werkt dus nog als het actieve image beschadigd raakt.
+   - Een image van het nieuwe model in de andere sleuf blijft gewoon staan als rollbackdoel.
+3. Na de migratie in twee stappen (§7) bevatten beide sleuven het nieuwe model. Een fabrieksreset raakt de sleuven dan helemaal niet.
+
+**A/B-OTA en rollback na een fabrieksreset**
+- De bootkeuze verandert niet.
+- De volgende update komt in de andere sleuf, en het draaiende image is dan het rollbackdoel. Rollback blijft dus volledig werken.
+- Een kopie die door een stroomonderbreking halverwege stopt, laat de andere sleuf onbruikbaar achter. Ook dan staat er geen oude firmware meer. Bij de volgende update komt er weer een tweede image.
 
 **Wat overblijft**
 - USB-herstel: `heltec_v2.sh recover` zet bewust het RX-only-pakket terug. Dat is fysieke toegang; zie §8.
@@ -304,7 +312,7 @@ Deze punten zijn bewust niet als oplossing gebouwd.
 **NVS-autoformat door de Arduino-core (platform)**
 - Bij een volle of nieuwere NVS (`NO_FREE_PAGES` of `NEW_VERSION_FOUND`) wist Arduino-ESP32 de hele NVS vóór `setup()`.
 - Het apparaat start dan als New, zonder eigenaar. Opnieuw in bezit nemen kan alleen met fysieke toegang.
-- De stap "pre-owner-image wissen" van een lopende fabrieksreset draait dan niet. De migratievolgorde (§7) voorkomt dat er zo'n image staat.
+- De stap "pre-owner-image vervangen" van een lopende fabrieksreset draait dan niet. De migratievolgorde (§7) voorkomt dat er zo'n image staat.
 - Details: [`CODEX_OWNER_SECURITY_REVIEW.md`](CODEX_OWNER_SECURITY_REVIEW.md).
 
 **Hardware**
@@ -312,6 +320,8 @@ Deze punten zijn bewust niet als oplossing gebouwd.
 - Zie [`HW_VALIDATIE_PROVISIONING.md`](HW_VALIDATIE_PROVISIONING.md). Tot die tijd: **NOT TESTED**.
 
 ## 9. HTTPS en provisioning voor publieke distributie (onderzoek)
+
+Het uitgewerkte ontwerp staat in [`HTTPS_ONTWERP.md`](HTTPS_ONTWERP.md): een eigen CA per apparaat, `esp_https_server`, gemeten +136 KB flash. Volgens de maintainer is HTTP op het LAN niet voldoende voor een definitieve release, dus dit blokkeert de release.
 
 **Wanneer vertrouwt een browser HTTPS zonder waarschuwing?**
 1. Het certificaat hoort bij een publieke DNS-naam;

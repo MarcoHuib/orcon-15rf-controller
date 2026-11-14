@@ -1073,13 +1073,15 @@ static void handleProvKey() {                          // step 4: a new owner ke
     if (g_credSet && webauth::verify(g_cred, pass, authstore::kdf)) { fail(400, "passphrase-is-password"); return; }
     uint8_t dk[ownerkey::PRIV_LEN], q[ownerkey::PUB_LEN];
     dropPending();
+    const uint32_t t0 = millis();                     // logged: the hardware validation measures this (PBKDF2 50k)
     const bool ok = ownerstore::generate(dk, q) && ownerkey::encryptPem(dk, q, pass, ownerstore::crypto(), g_pendPem, sizeof(g_pendPem));
     ownerkey::wipe(dk, sizeof(dk));                    // from here the private key exists only inside the encrypted file
     if (!ok) { dropPending(); fail(503, "key-generation-failed"); return; }
     memcpy(g_pendQ, q, sizeof(q));
     ownerkey::fingerprint(q, ownerstore::crypto(), g_pendFp);
     g_pend = true;
-    g_con.add(rfcon::INFO, millis(), "herstelsleutel %s aangemaakt; wacht op controle van het opgeslagen bestand", g_pendFp);
+    g_con.add(rfcon::INFO, millis(), "herstelsleutel %s aangemaakt in %lu ms; wacht op controle van het opgeslagen bestand", g_pendFp,
+              (unsigned long)(millis() - t0));
     Out o; o.add("{\"ok\":true,\"fingerprint\":\"%s\",\"filename\":\"orcon-recovery-key.pem\"}", g_pendFp); reply(200, o);
 }
 static void handleProvKeyFile() {
@@ -1095,8 +1097,10 @@ static void handleProvKeyVerify() {                    // the owner proves the s
     if (!ownerstore::cryptoReady()) { fail(503, "crypto-unavailable"); return; }
     if (kdfBusy()) return;
     uint8_t dk[ownerkey::PRIV_LEN], q[ownerkey::PUB_LEN];
+    const uint32_t t0 = millis();
     const char* e = ownerkey::decryptPem(str(d, "pem"), str(d, "passphrase"), ownerstore::crypto(), dk, q);
     ownerkey::wipe(dk, sizeof(dk));
+    g_con.add(rfcon::INFO, millis(), "sleutelbestand gecontroleerd in %lu ms: %s", (unsigned long)(millis() - t0), e ? e : "ok");
     if (e) { fail(400, e); return; }
     if (!ownerkey::samePub(q, g_pendQ)) { fail(409, "key-mismatch"); return; }    // a file from an earlier attempt
     const bool installing = ownerstore::state() == provision::State::Setup;
@@ -1120,19 +1124,21 @@ static void handleProvRecover() {                      // forgotten password: th
     if (kdfBusy()) return;
     uint8_t owner[ownerkey::PUB_LEN], dk[ownerkey::PRIV_LEN], q[ownerkey::PUB_LEN];
     if (!ownerstore::ownerKey(owner)) { fail(503, "no-owner-key"); return; }
+    const uint32_t t0 = millis();
     const char* e = ownerkey::decryptPem(str(d, "pem"), str(d, "passphrase"), ownerstore::crypto(), dk, q);
     ownerkey::wipe(dk, sizeof(dk));
+    const unsigned long ms = (unsigned long)(millis() - t0);
     if (!e && !ownerkey::samePub(q, owner)) e = "key-mismatch";                    // a valid key, but not this owner's
     if (e) {
         g_throttle.failure(millis());
-        g_con.add(rfcon::WARN, millis(), "wachtwoordherstel geweigerd (%s, %u keer op rij)", e, g_throttle.failures());
+        g_con.add(rfcon::WARN, millis(), "wachtwoordherstel geweigerd (%s, %u keer op rij, %lu ms)", e, g_throttle.failures(), ms);
         failRetry(401, e, g_throttle.waitMs(millis()));
         return;
     }
     g_throttle.success();
     if (!setPassword(str(d, "password"))) return;
     g_sessions.clear();
-    g_con.add(rfcon::WARN, millis(), "wachtwoord hersteld met de herstelsleutel; alle sessies afgemeld");
+    g_con.add(rfcon::WARN, millis(), "wachtwoord hersteld met de herstelsleutel (%lu ms); alle sessies afgemeld", ms);
     sessionReply(g_sessions.create(millis(), authstore::random));
 }
 #endif
