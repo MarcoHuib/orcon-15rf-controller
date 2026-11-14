@@ -301,6 +301,12 @@ Deze punten zijn bewust niet als oplossing gebouwd.
 - Een oplossing vraagt een aangepaste of andere webserver met limieten vóór het bufferen. Dat is een aparte wijziging, buiten deze opdracht.
 - Gevolg: hooguit een DoS (geheugen, herstart). Geen toegang.
 
+**NVS-autoformat door de Arduino-core (platform)**
+- Bij een volle of nieuwere NVS (`NO_FREE_PAGES` of `NEW_VERSION_FOUND`) wist Arduino-ESP32 de hele NVS vóór `setup()`.
+- Het apparaat start dan als New, zonder eigenaar. Opnieuw in bezit nemen kan alleen met fysieke toegang.
+- De stap "pre-owner-image wissen" van een lopende fabrieksreset draait dan niet. De migratievolgorde (§7) voorkomt dat er zo'n image staat.
+- Details: [`CODEX_OWNER_SECURITY_REVIEW.md`](CODEX_OWNER_SECURITY_REVIEW.md).
+
 **Hardware**
 - Pas na hardwarevalidatie bewezen: de crypto op de ESP32 zelf en de duur van PBKDF2 (50 000 rondes, ongeveer 6 s geschat), het werkelijke knopgedrag, het kanaalwissel-gedrag van het AP en de captive portal per telefoon.
 - Zie [`HW_VALIDATIE_PROVISIONING.md`](HW_VALIDATIE_PROVISIONING.md). Tot die tijd: **NOT TESTED**.
