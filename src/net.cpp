@@ -811,7 +811,7 @@ static void prgPoll(uint32_t now) {
     }
     // Every menu action restarts the board. During an OTA trial boot that would roll the update
     // back first, so all three wait until the new image has confirmed itself (at most 5 minutes).
-    if (ownerstore::trialBoot()) { notice("Even wachten:", "update nog niet", "bevestigd (5 min)", 6000); return; }
+    if (ownerstore::unsettledBoot()) { notice("Even wachten:", "update nog niet", "bevestigd (5 min)", 6000); return; }
     switch (a) {
         case Action::Recovery:
             setupweb::note(rfcon::WARN, "PRG-menu: herstelmodus (setup-accesspoint, 15 minuten)");

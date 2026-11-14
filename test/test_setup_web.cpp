@@ -56,12 +56,13 @@ namespace radio { uint32_t lastReceivedMs() { return g_ms; } }   // rx() deliver
 // Device side of the login (auth_store.cpp): NVS, PBKDF2, RNG and the OTA signature, faked.
 #include "auth_store.h"
 static webauth::Cred g_store;
-static bool g_storeSet = false, g_kdfOk = true, g_storeUnreadable = PROVISION_SCENARIO == 2, g_saveAmbiguous = false;
+static bool g_storeSet = false, g_kdfOk = true, g_storeUnreadable = PROVISION_SCENARIO == 2, g_saveAmbiguous = false,
+            g_saveUnreadable = false;   // persisted, and from then on unreadable
 static uint32_t g_rng = 0x2468ACE1u;
 namespace authstore {
 Status status(webauth::Cred& c) { if (g_storeUnreadable) return Status::Unreadable; if (!g_storeSet) return Status::Absent; c = g_store; return Status::Ok; }
 bool load(webauth::Cred& c) { return status(c) == Status::Ok; }
-bool save(const webauth::Cred& c) { g_store = c; g_storeSet = true; g_storeUnreadable = false; return !g_saveAmbiguous; }   // ambiguous: persisted, read-back failed
+bool save(const webauth::Cred& c) { g_store = c; g_storeSet = true; g_storeUnreadable = g_saveUnreadable; return !g_saveAmbiguous && !g_saveUnreadable; }   // ambiguous: persisted, read-back failed
 bool kdfReady() { return g_kdfOk; }
 bool kdf(const char* pw, size_t n, const uint8_t* salt, size_t sn, uint32_t it, uint8_t out[32]) {
     uint32_t h = 2166136261u ^ it;
@@ -331,6 +332,17 @@ static int ambiguousScenario() {
     CHECK(call("POST", "/api/auth/setup", ("{\"code\":\"" + stale + "\",\"password\":\"aanvaller-wachtw\"}").c_str(), nullptr) == 409 &&
           err("code-required"), "the earlier release-key code is gone anyway (OWNER-07)");
     CHECK(call("POST", "/api/auth/login", "{\"password\":\"aanvaller-wachtw\"}", nullptr) == 401, "the attacker's password never took effect");
+    // OWNER-08: a password change that persists while storage turns unreadable: the old password and every
+    // old session stop working at once (no cached credential, no surviving session).
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"eerste-wachtwoord\"}", nullptr) == 200, "logged in again");
+    const std::string t2 = J["token"] | "";
+    g_saveUnreadable = true;
+    CHECK(call("POST", "/api/auth/password", "{\"current\":\"eerste-wachtwoord\",\"password\":\"nieuw-wachtwoord\"}", t2.c_str()) == 503 &&
+          err("auth-write-failed"), "the change persisted but storage reads back unreadable: 503");
+    CHECK(call("GET", "/api/profiles", "", nullptr) == 401, "the old session no longer authorises anything (OWNER-08)");
+    g_cookie.clear();
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"eerste-wachtwoord\"}", nullptr) == 503 && err("auth-unavailable"),
+          "the old password no longer logs in (nothing cached)");
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");
     return failures ? 1 : 0;
 }

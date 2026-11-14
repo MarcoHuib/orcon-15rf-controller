@@ -58,6 +58,9 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
   - Stap 1 opent alleen als de opslag op dat moment bevestigt dat er nog geen wachtwoord is.
   - Herstelcodes van de releasesleutel vervallen al vóór de eerste schrijfactie van een registratie, en het herstelpad sluit dan ook in RAM.
   - Bij het opstarten betekent een opgeslagen (of onleesbare) eigenaarssleutel altijd Done, wat de staat ook zegt.
+  - Een wachtwoordwijziging of -herstel waarvan het opslaan dubbelzinnig mislukt, meldt alle sessies af. Is de opslag daarna onleesbaar, dan werkt ook het oude wachtwoord niet meer tot hij weer leesbaar is; er blijft niets gecachet (Codex OWNER-08).
+  - Een leesfout bij het controleren van het rollbackimage tijdens een fabrieksreset betekent nooit "geen image". De marker blijft staan en de reset probeert het bij de volgende start opnieuw (Codex OWNER-09).
+  - Is de OTA-proefstaat onleesbaar, dan telt hij als "nog in proef". Geen enkele menu-actie herstart dan het bord (Codex OWNER-10).
 
 ## 3. Eerste installatie via de directe WiFi-verbinding
 

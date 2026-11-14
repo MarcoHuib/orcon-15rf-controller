@@ -181,9 +181,12 @@ void begin() {
 }
 
 // ---- factory reset --------------------------------------------------------------------------
-bool trialBoot() {
+// Fail closed (Codex OWNER-10): only an image known to be past its OTA trial is settled. An unreadable
+// state counts as unsettled: a restart during a trial would roll the update back to the other slot first.
+bool unsettledBoot() {
     esp_ota_img_states_t st;
-    return esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;
+    if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) != ESP_OK) return true;
+    return st == ESP_OTA_IMG_PENDING_VERIFY || st == ESP_OTA_IMG_NEW;
 }
 struct Ops : provision::ResetOps {
     // Tri-state (Codex OWNER-01): only a confirmed absence means "no reset pending".
@@ -225,7 +228,9 @@ struct Ops : provision::ResetOps {
         if (!other) return true;
         esp_image_metadata_t meta;
         const esp_partition_pos_t pos{other->address, other->size};
-        if (esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &pos, &meta) != ESP_OK) return true;   // nothing bootable there
+        const esp_err_t v = esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &pos, &meta);
+        if (v == ESP_ERR_IMAGE_INVALID) return true;    // nothing bootable there
+        if (v != ESP_OK) return false;                  // a read error is not "absent": keep the marker, retry (Codex OWNER-09)
         otap::Scanner s("");
         static uint8_t buf[4096];
         for (uint32_t off = 0; off < meta.image_len; off += sizeof(buf)) {
@@ -246,7 +251,7 @@ struct Ops : provision::ResetOps {
     }
 };
 bool requestFactoryReset() {
-    if (trialBoot()) return false;   // a restart now would roll the update back first; the user retries later
+    if (unsettledBoot()) return false;   // a restart now could roll the update back first; the user retries later
     Ops o;
     return provision::request(o);
 }

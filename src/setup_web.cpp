@@ -871,12 +871,15 @@ static bool setPassword(const char* pw) {
     webauth::Cred c{};
     if (!webauth::makeCred(pw, authstore::kdf, authstore::random, c)) { fail(503, "auth-unavailable"); return false; }
     if (!authstore::save(c)) {
-        // The write may have persisted although its read-back failed: mirror what storage now holds.
-        // Only a confirmed absence keeps "no password" (and so the first-password step) open (Codex OWNER-06).
+        // The write may have persisted although its read-back failed (Codex OWNER-06/08). A replacement may
+        // be durable, so every session ends; RAM then mirrors storage and nothing cached outlives that:
+        // unreadable = no login until it reads again; only a confirmed absence means "no password".
+        g_sessions.clear();
         webauth::Cred back{};
         const authstore::Status st = authstore::status(back);
-        if (st == authstore::Status::Ok) { g_cred = back; g_credSet = true; g_credUnreadable = false; }
-        else if (st == authstore::Status::Unreadable) g_credUnreadable = true;
+        g_credSet = st == authstore::Status::Ok;
+        g_credUnreadable = st == authstore::Status::Unreadable;
+        g_cred = g_credSet ? back : webauth::Cred{};
         fail(503, "auth-write-failed");
         return false;
     }

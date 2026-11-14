@@ -25,7 +25,7 @@ Mode bootMode();                                 // what the PRG menu started th
 bool physicalActive();                           // a PRG-menu boot, within provision::PHYSICAL_MS
 uint32_t physicalLeftMs();
 
-bool trialBoot();                                // the running image still awaits its OTA confirmation
+bool unsettledBoot();                            // in an OTA trial, or its state is unknown: no restarting actions
 bool requestFactoryReset();                      // the confirmed PRG gesture: sets the marker only
 bool resumeFactoryReset(bool& ran);              // at boot, before anything else reads NVS
 }  // namespace ownerstore
