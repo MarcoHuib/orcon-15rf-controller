@@ -20,6 +20,11 @@
 #include "web_auth.h"
 #include "auth_store.h"
 #endif
+#if ORCON_OWNER_MODEL
+#include "owner_key.h"
+#include "owner_store.h"
+#include "provision.h"
+#endif
 #include <Arduino.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
@@ -124,7 +129,12 @@ static webauth::Session* currentSession() {
 static bool hostOk() { return hostAllowed(g_srv->hostHeader().c_str(), net::ipAddr()); }
 static bool sameOrigin(bool allowAp) {
 #if ORCON_WEB_CONTROL
-    // The setup AP serves only settings and the login; RF control needs the home network.
+    // The setup AP serves only settings and the login; RF control needs the home network. Except
+    // during the installation: the device then runs the AP only (no home network at all), and the
+    // wizard's profile step (read, pair) has no other way in.
+#if ORCON_OWNER_MODEL
+    if (provision::installing(ownerstore::state()) && net::apOnly()) allowAp = true;
+#endif
     if ((net::apMode() && !allowAp) || g_srv->header("Origin").length() == 0) { fail(403, "forbidden-request"); return false; }
 #else
     (void)allowAp;
@@ -168,10 +178,28 @@ bool authorize(bool mutation, bool allowAp) {
     return true;                                     // legacy builds: unchanged
 #endif
 }
+bool uploadAuthorized() {
+#if ORCON_WEB_AUTH
+    if (!hostOk()) return false;
+    const String origin = g_srv->header("Origin");      // kept alive: c_str() of a temporary would dangle
+    if (origin.length() && !requestAllowed("application/json", origin.c_str(), g_srv->hostHeader().c_str())) return false;   // same origin when sent
+    webauth::Session* s = currentSession();
+    return s && webauth::equal(g_srv->header("X-Orcon-Token").c_str(), s->csrf);
+#else
+    return true;
+#endif
+}
 static bool sidOk(JsonDocument& d, uint32_t sid) { return d["sid"].is<uint32_t>() && d["sid"].as<uint32_t>() == sid; }
 
 // ---- page -----------------------------------------------------------------------
 static void handlePage() {
+#if ORCON_OWNER_MODEL
+    if (net::apMode() && !hostOk()) {                 // captive portal: a phone's check for another name
+        char loc[40]; snprintf(loc, sizeof(loc), "http://%s/", net::ipAddr());
+        g_srv->sendHeader("Location", loc); g_srv->sendHeader("Cache-Control", "no-store");
+        g_srv->send(302, "text/plain", ""); return;
+    }
+#endif
     if (g_srv->header("Accept-Encoding").indexOf("gzip") < 0) {   // stored gzip-only in flash
         g_srv->send(406, "text/plain", "gzip required"); return;
     }
@@ -280,8 +308,14 @@ static void handleState() {
     if (!sess) {
         Out o;
         o.add("{\"fw\":\"%s\",\"auth\":{\"enabled\":true,\"logged_in\":false,\"password_set\":%s,\"login_wait_s\":%lu},"
-              "\"wifi\":{\"ap\":%s}}", FW_VERSION, g_credSet ? "true" : "false",
+              "\"wifi\":{\"ap\":%s}", FW_VERSION, g_credSet ? "true" : "false",
               (unsigned long)((g_throttle.waitMs(millis()) + 999) / 1000), net::apMode() ? "true" : "false");
+#if ORCON_OWNER_MODEL
+        // What the page needs to choose between the wizard, the recovery screens and the login.
+        o.add(",\"setup\":{\"state\":\"%s\",\"via_ap\":%s,\"physical\":%s}", provision::name(ownerstore::state()),
+              net::fromSetupAp() ? "true" : "false", ownerstore::physicalActive() ? "true" : "false");
+#endif
+        o.add("}");
         reply(200, o);
         return;
     }
@@ -327,7 +361,13 @@ static void handleState() {
     }
     o.add("],\"wifi\":{\"connected\":%s,\"ap\":%s,\"ap_name\":\"%s\",\"ip\":",net::wifiConnected()?"true":"false",net::apMode()?"true":"false",WIFI_AP_NAME);
     quoted(o,net::ipAddr());o.add(",\"ssid\":");quoted(o,net::wifiConnected()?net::ssidName():"");
-    o.add("},\"profiles\":");profileFields(o);o.add("}");
+    o.add("},\"profiles\":");profileFields(o);
+#if ORCON_OWNER_MODEL
+    { uint8_t q[ownerkey::PUB_LEN];
+      o.add(",\"setup\":{\"state\":\"%s\",\"via_ap\":%s,\"physical\":%s,\"key\":%s}", provision::name(ownerstore::state()),
+            net::fromSetupAp() ? "true" : "false", ownerstore::physicalActive() ? "true" : "false", ownerstore::ownerKey(q) ? "true" : "false"); }
+#endif
+    o.add("}");
     reply(200, o);
 }
 
@@ -456,6 +496,9 @@ static void handlePairPress() {
     // transaction result (setupweb::tick). Never a retry: one press, one offer.
     if (g_pair.sent || g_pair.txFailed || g_pendOffer) { fail(409, "already-sent"); return; }
     if (const uint32_t w = txpoc::budgetWaitMs(2, OFFER_ONAIR)) { failRetry(429, "tx-budget", w); return; }
+#if ORCON_OWNER_MODEL
+    if (!net::ensureOwnIdentity()) { fail(503, "identity-unavailable"); return; }   // random, at the first pairing
+#endif
     const rlog::Device* heard = nullptr; const size_t heardN = rlog::devices(&heard);
     const bool identityClear = !txpoc::identityConflict(orcon::ids(), rlog::seen(), heard, heardN);
     const txpoc::Admission adm = txpoc::controller().submitBind((uint8_t)txpoc::FrameKind::BindOffer,
@@ -898,8 +941,17 @@ static bool cliOk() {
                         g_srv->hostHeader().c_str())) { fail(403, "forbidden-request"); return false; }
     return true;
 }
+#if ORCON_OWNER_MODEL
+static bool vendorRecoveryOk() {
+    if (ownerstore::state() == provision::State::Legacy) return true;
+    fail(403, "owner-key-required");                 // per-device owner keys: the release key grants no access
+    return false;
+}
+#else
+static bool vendorRecoveryOk() { return true; }
+#endif
 static void handleAuthNonce() {
-    if (!cliOk()) return;
+    if (!cliOk() || !vendorRecoveryOk()) return;
     const char* n = g_recovery.issueNonce(millis(), authstore::random);
     char mac[18]; authstore::ownMac(mac);           // the CLI signs for exactly this board
     Out o; o.add("{\"nonce\":\"%s\",\"mac\":\"%s\",\"ttl_s\":%lu}", n, mac, (unsigned long)(webauth::NONCE_TTL_MS / 1000)); reply(200, o);
@@ -907,7 +959,7 @@ static void handleAuthNonce() {
 static void handleAuthReset() {  // a request signed with the OTA key buys one 10-minute code
     static const char* const K[] = { "manifest", "sig" };
     JsonDocument d;
-    if (!cliOk() || !parseBody(d, K, 2, 600)) return;
+    if (!cliOk() || !vendorRecoveryOk() || !parseBody(d, K, 2, 600)) return;
     char mac[18]; authstore::ownMac(mac);
     const char* text = str(d, "manifest");
     if (const char* e = webauth::checkResetRequest(text, mac, g_recovery, millis())) { fail(403, e); return; }
@@ -919,6 +971,147 @@ static void handleAuthReset() {  // a request signed with the OTA key buys one 1
     const char* code = g_recovery.issueCode(millis(), authstore::random);
     g_con.add(rfcon::WARN, millis(), "herstelcode uitgegeven (eenmalig, 10 minuten geldig)");
     Out o; o.add("{\"code\":\"%s\",\"ttl_s\":%lu}", code, (unsigned long)(webauth::CODE_TTL_MS / 1000)); reply(200, o);
+}
+#endif
+
+#if ORCON_OWNER_MODEL
+// ---- installation wizard and recovery (/api/provision/*). Rules: provision.h; key file: owner_key.h.
+// The generated key waits in RAM (public key + its encrypted file) until the owner proves the saved
+// file opens with the passphrase; only then is the public key registered. The private key itself is
+// wiped right after encryption and never stored.
+static uint8_t g_pendQ[ownerkey::PUB_LEN];
+static char    g_pendPem[ownerkey::PEM_MAX];
+static char    g_pendFp[15] = "";
+static bool    g_pend = false;
+static void dropPending() { ownerkey::wipe(g_pendPem, sizeof(g_pendPem)); ownerkey::wipe(g_pendQ, sizeof(g_pendQ)); g_pendFp[0] = 0; g_pend = false; }
+static bool provGate(provision::Route r, bool mutation) {
+    if (mutation ? !sameOrigin(true) : !hostOk()) { if (!mutation) fail(403, "forbidden-request"); return false; }
+    provision::Ctx c;
+    c.state = ownerstore::state(); c.viaAp = net::fromSetupAp(); c.staUp = net::staUp(); c.physical = ownerstore::physicalActive();
+    webauth::Session* sess = currentSession();
+    c.loggedIn = sess && (!mutation || webauth::equal(g_srv->header("X-Orcon-Token").c_str(), sess->csrf));
+    c.passwordSet = g_credSet; c.keyPending = g_pend;
+    if (const char* e = provision::allow(r, c)) { fail(!strcmp(e, "login-required") ? 401 : 403, e); return false; }
+    return true;
+}
+static bool plainString(JsonDocument& d, const char* k) {   // a JSON string without embedded NUL
+    return d[k].is<const char*>() && d[k].as<JsonString>().size() == strlen(d[k].as<const char*>());
+}
+static void handleProvState() {
+    if (!provGate(provision::Route::State, false)) return;
+    webauth::Session* sess = currentSession();
+    uint8_t q[ownerkey::PUB_LEN];
+    char fp[15] = "";
+    const bool reg = ownerstore::ownerKey(q);
+    if (reg) ownerkey::fingerprint(q, ownerstore::crypto(), fp);
+    Out o;
+    o.add("{\"state\":\"%s\",\"physical\":%s,\"physical_left_s\":%lu,\"password_set\":%s,\"logged_in\":%s,\"crypto_ok\":%s,"
+          "\"sta_up\":%s,\"ap_name\":\"%s\",\"key\":{\"registered\":%s,\"fingerprint\":\"%s\",\"pending\":%s,\"pending_fingerprint\":\"%s\"},"
+          "\"wifi\":{\"test\":\"%s\",\"ip\":\"%s\",\"ssid\":",
+          provision::name(ownerstore::state()), ownerstore::physicalActive() ? "true" : "false",
+          (unsigned long)(ownerstore::physicalLeftMs() / 1000), g_credSet ? "true" : "false", sess ? "true" : "false",
+          ownerstore::cryptoReady() ? "true" : "false", net::staUp() ? "true" : "false", WIFI_AP_NAME, reg ? "true" : "false", fp,
+          g_pend ? "true" : "false", g_pendFp, net::wifiTestState(), net::wifiTestIp());
+    quoted(o, sess ? net::storedSsid() : "");          // the stored network name for the logged-in owner only
+    o.add("}}");
+    reply(200, o);
+}
+static void handleProvPassword() {                     // wizard step 1: the first password, over the setup AP
+    static const char* const K[] = { "password" };
+    JsonDocument d;
+    if (!provGate(provision::Route::Password, true) || !parseBody(d, K, 1, 400)) return;
+    if (!plainString(d, "password") || !webauth::passwordOk(str(d, "password"))) { fail(400, "password-weak"); return; }
+    if (!authstore::kdfReady()) { fail(503, "auth-unavailable"); return; }
+    if (kdfBusy()) return;
+    if (!ownerstore::markSetup()) { fail(503, "state-write-failed"); return; }   // the state BEFORE the password
+    if (!setPassword(str(d, "password"))) return;
+    g_sessions.clear();
+    g_con.add(rfcon::INFO, millis(), "installatie: beheerderswachtwoord ingesteld");
+    sessionReply(g_sessions.create(millis(), authstore::random));
+}
+static void handleProvWifi() {                         // step 2 (and network recovery): test, then store
+    static const char* const K[] = { "ssid", "password" };
+    JsonDocument d;
+    if (!provGate(provision::Route::WifiTest, true) || !parseBody(d, K, 2, 240)) return;
+    if (!plainString(d, "ssid") || !plainString(d, "password")) { fail(400, "bad-json"); return; }
+    const char* ssid = str(d, "ssid"); const char* pass = str(d, "password");
+    const size_t sn = strlen(ssid), pn = strlen(pass);
+    if (!sn || sn > 32) { fail(400, "bad-ssid"); return; }
+    if (pn && (pn < 8 || pn > 63)) { fail(400, "bad-wifi-password"); return; }   // WPA2: 8..63; empty = an open network
+    if (!net::wifiTestStart(ssid, pass)) { fail(409, "wifi-test-running"); return; }
+    g_con.add(rfcon::INFO, millis(), "WiFi-test gestart (accesspoint blijft aan)");
+    Out o; o.add("{\"ok\":true,\"test\":\"testing\"}"); reply(202, o);
+}
+static void handleProvKey() {                          // step 4: a new owner key, encrypted with the passphrase
+    static const char* const K[] = { "passphrase" };
+    JsonDocument d;
+    if (!provGate(provision::Route::Key, true) || !parseBody(d, K, 1, 240)) return;
+    const char* pass = str(d, "passphrase");
+    if (!plainString(d, "passphrase") || !ownerkey::passphraseOk(pass)) { fail(400, "passphrase-weak"); return; }
+    if (!ownerstore::cryptoReady()) { fail(503, "crypto-unavailable"); return; }
+    if (kdfBusy()) return;
+    if (g_credSet && webauth::verify(g_cred, pass, authstore::kdf)) { fail(400, "passphrase-is-password"); return; }
+    uint8_t dk[ownerkey::PRIV_LEN], q[ownerkey::PUB_LEN];
+    dropPending();
+    const bool ok = ownerstore::generate(dk, q) && ownerkey::encryptPem(dk, q, pass, ownerstore::crypto(), g_pendPem, sizeof(g_pendPem));
+    ownerkey::wipe(dk, sizeof(dk));                    // from here the private key exists only inside the encrypted file
+    if (!ok) { dropPending(); fail(503, "key-generation-failed"); return; }
+    memcpy(g_pendQ, q, sizeof(q));
+    ownerkey::fingerprint(q, ownerstore::crypto(), g_pendFp);
+    g_pend = true;
+    g_con.add(rfcon::INFO, millis(), "herstelsleutel %s aangemaakt; wacht op controle van het opgeslagen bestand", g_pendFp);
+    Out o; o.add("{\"ok\":true,\"fingerprint\":\"%s\",\"filename\":\"orcon-recovery-key.pem\"}", g_pendFp); reply(200, o);
+}
+static void handleProvKeyFile() {
+    if (!provGate(provision::Route::KeyFile, false)) return;
+    Out o; o.add("{\"filename\":\"orcon-recovery-key.pem\",\"fingerprint\":\"%s\",\"pem\":", g_pendFp); quoted(o, g_pendPem); o.add("}");
+    reply(200, o);
+}
+static void handleProvKeyVerify() {                    // the owner proves the saved file opens: then it is registered
+    static const char* const K[] = { "pem", "passphrase" };
+    JsonDocument d;
+    if (!provGate(provision::Route::KeyVerify, true) || !parseBody(d, K, 2, 1800)) return;
+    if (!plainString(d, "pem") || !plainString(d, "passphrase")) { fail(400, "bad-json"); return; }
+    if (!ownerstore::cryptoReady()) { fail(503, "crypto-unavailable"); return; }
+    if (kdfBusy()) return;
+    uint8_t dk[ownerkey::PRIV_LEN], q[ownerkey::PUB_LEN];
+    const char* e = ownerkey::decryptPem(str(d, "pem"), str(d, "passphrase"), ownerstore::crypto(), dk, q);
+    ownerkey::wipe(dk, sizeof(dk));
+    if (e) { fail(400, e); return; }
+    if (!ownerkey::samePub(q, g_pendQ)) { fail(409, "key-mismatch"); return; }    // a file from an earlier attempt
+    const bool installing = ownerstore::state() == provision::State::Setup;
+    if (!ownerstore::registerKey(q)) { fail(503, "key-write-failed"); return; }
+    g_con.add(rfcon::WARN, millis(), "eigenaarssleutel %s geregistreerd%s", g_pendFp, installing ? "; installatie voltooid" : "");
+    Out o; o.add("{\"ok\":true,\"fingerprint\":\"%s\",\"installed\":%s}", g_pendFp, installing ? "true" : "false");
+    dropPending();
+    reply(200, o);
+    if (installing) net::restartSoon();               // leave the setup AP: the device joins the home network
+}
+static void handleProvRecover() {                      // forgotten password: the owner's key file, physical mode only
+    static const char* const K[] = { "pem", "passphrase", "password" };
+    JsonDocument d;
+    if (!provGate(provision::Route::Recover, true) || !parseBody(d, K, 3, 1900)) return;
+    if (!plainString(d, "pem") || !plainString(d, "passphrase") || !plainString(d, "password")) { fail(400, "bad-json"); return; }
+    if (!webauth::passwordOk(str(d, "password"))) { fail(400, "password-weak"); return; }
+    if (const uint32_t w = g_throttle.waitMs(millis())) { failRetry(429, "login-locked", w); return; }
+    if (!ownerstore::cryptoReady() || !authstore::kdfReady()) { fail(503, "crypto-unavailable"); return; }
+    if (kdfBusy()) return;
+    uint8_t owner[ownerkey::PUB_LEN], dk[ownerkey::PRIV_LEN], q[ownerkey::PUB_LEN];
+    if (!ownerstore::ownerKey(owner)) { fail(503, "no-owner-key"); return; }
+    const char* e = ownerkey::decryptPem(str(d, "pem"), str(d, "passphrase"), ownerstore::crypto(), dk, q);
+    ownerkey::wipe(dk, sizeof(dk));
+    if (!e && !ownerkey::samePub(q, owner)) e = "key-mismatch";                    // a valid key, but not this owner's
+    if (e) {
+        g_throttle.failure(millis());
+        g_con.add(rfcon::WARN, millis(), "wachtwoordherstel geweigerd (%s, %u keer op rij)", e, g_throttle.failures());
+        failRetry(401, e, g_throttle.waitMs(millis()));
+        return;
+    }
+    g_throttle.success();
+    if (!setPassword(str(d, "password"))) return;
+    g_sessions.clear();
+    g_con.add(rfcon::WARN, millis(), "wachtwoord hersteld met de herstelsleutel; alle sessies afgemeld");
+    sessionReply(g_sessions.create(millis(), authstore::random));
 }
 #endif
 
@@ -940,6 +1133,15 @@ void begin(WebServer& s) {
     s.on("/api/auth/setup",    HTTP_POST, handleSetup);
     s.on("/api/auth/nonce",    HTTP_POST, handleAuthNonce);
     s.on("/api/auth/reset",    HTTP_POST, handleAuthReset);
+#endif
+#if ORCON_OWNER_MODEL
+    s.on("/api/provision/state",      HTTP_GET,  handleProvState);
+    s.on("/api/provision/password",   HTTP_POST, handleProvPassword);
+    s.on("/api/provision/wifi",       HTTP_POST, handleProvWifi);
+    s.on("/api/provision/key",        HTTP_POST, handleProvKey);
+    s.on("/api/provision/key/file",   HTTP_GET,  handleProvKeyFile);
+    s.on("/api/provision/key/verify", HTTP_POST, handleProvKeyVerify);
+    s.on("/api/provision/recover",    HTTP_POST, handleProvRecover);
 #endif
 #if !ORCON_TX_POC || ORCON_TX_CONTROL
     s.on("/api/setup/restart",     HTTP_POST, [](){handleSystem(false);});

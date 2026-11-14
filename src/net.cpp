@@ -18,6 +18,12 @@
 #include "ota_signed.h"
 #include "remote_profiles.h"
 #include "house_img.h"
+#if ORCON_OWNER_MODEL
+#include "owner_store.h"
+#include "reset_gesture.h"
+#include "setup_flow.h"
+#include <DNSServer.h>
+#endif
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -63,7 +69,21 @@ static oledpower::Power g_oledPower;
 #endif
 
 static bool     g_apMode    = false;
+static bool     g_apOnly    = false;      // setup AP without a station: installing, or a PRG recovery boot
 static const char* apPassword();          // the setup AP's password (below)
+#if ORCON_OWNER_MODEL
+static DNSServer g_dns;                   // captive portal: every name points at the setup AP while it runs
+static gesture::Gesture g_gesture;        // the PRG recovery menu (reset_gesture.h)
+static const char* g_msg[3] = {"", "", ""};   // a short OLED notice after a menu action
+static uint32_t g_msgUntil = 0;
+enum class WTest : uint8_t { Idle, Testing, Connected, WrongPassword, NotFound, Failed };
+static WTest    g_wt = WTest::Idle;       // the wizard's WiFi test (the AP stays up meanwhile)
+static uint32_t g_wtAt = 0;
+static volatile uint8_t g_wtReason = 0;   // last station disconnect reason (written by the WiFi event task)
+static String   g_wtSsid, g_wtPass;
+static char     g_wtIp[16] = "";
+static void restartIn(uint32_t ms);
+#endif
 static bool     g_dirty     = true;
 static uint32_t g_lastPub   = 0;
 static uint32_t g_lastMqtt  = 0;
@@ -129,8 +149,8 @@ static void loadConfig() {
 #endif
     bool freshId = (us == 0 && uc != 0);
 #if !ORCON_TX_POC || (ORCON_WEB_CONTROL && !ORCON_TX_RF_ENABLE)
-    if (freshId) {                               // first boot: a unique serial from the chip ID
-        us = (uint32_t)(ESP.getEfuseMac() & 0x3FFFFUL);   // 18-bit RAMSES serial space
+    if (freshId) {                               // first boot: a random serial (a factory reset gets a new one)
+        us = esp_random() & 0x3FFFFUL;          // 18-bit RAMSES serial space
         if (us == 0) us = 1;
         saveIds(uc, us, fc, fs);                 // lock the generated identity into NVS
     }
@@ -653,6 +673,9 @@ static void mqttReconnect() {
 static void oledTick() {
 #if defined(BOARD_HELTEC_V2)
     if (g_apMode) g_oledPower.wake(millis());   // the setup AP's password must stay readable
+#if ORCON_OWNER_MODEL
+    if (g_gesture.visible(millis()) || g_msgUntil) g_oledPower.wake(millis());   // the recovery menu and its notices
+#endif
     if (g_oledPower.sync(oled, millis())) g_dirty = true;
 #endif
 }
@@ -673,6 +696,44 @@ static void oledInit() {
     oledTick();
 #endif
 }
+#if ORCON_OWNER_MODEL
+// The PRG recovery menu (reset_gesture.h) and the notices after it: 4 lines of 21 characters.
+static void oledGesture() {
+    using gesture::Phase;
+    static const char* const OPT[] = {"Annuleren", "Herstelmodus", "WiFi wissen", "Fabrieksreset"};
+    char l[4][24] = {"", "", "", ""};
+    const uint32_t now = millis();
+    if (g_msgUntil) {
+        snprintf(l[0], 24, "%s", g_msg[0]); snprintf(l[1], 24, "%s", g_msg[1]); snprintf(l[2], 24, "%s", g_msg[2]);
+    } else switch (g_gesture.phase()) {
+        case Phase::Arming:
+            snprintf(l[0], 24, "HERSTELMENU"); snprintf(l[1], 24, "PRG vasthouden...");
+            snprintf(l[2], 24, "nog %lu s", (unsigned long)((g_gesture.leftMs(now) + 999) / 1000)); snprintf(l[3], 24, "loslaten = stoppen");
+            break;
+        case Phase::Release:
+            snprintf(l[0], 24, "HERSTELMENU"); snprintf(l[1], 24, "Laat PRG nu los");
+            break;
+        case Phase::Menu:
+            snprintf(l[0], 24, "HERSTELMENU %u/4", unsigned(g_gesture.option()) + 1);
+            snprintf(l[1], 24, "> %s", OPT[unsigned(g_gesture.option()) % 4]);
+            snprintf(l[2], 24, "kort: volgende"); snprintf(l[3], 24, "2 s vast: kiezen");
+            break;
+        case Phase::Confirm:
+            if (g_gesture.confirming()) {
+                snprintf(l[0], 24, "FABRIEKSRESET"); snprintf(l[1], 24, "wissen over %lu s", (unsigned long)((g_gesture.leftMs(now) + 999) / 1000));
+                snprintf(l[2], 24, "loslaten = stoppen");
+            } else {
+                snprintf(l[0], 24, "FABRIEKSRESET?"); snprintf(l[1], 24, "Wist ALLES, ook");
+                snprintf(l[2], 24, "koppeling + eigenaar"); snprintf(l[3], 24, "PRG 5 s vast = ja");
+            }
+            break;
+        default: break;
+    }
+    oled.clearBuffer();
+    for (int i = 0; i < 4; ++i) oled.drawStr(0, 11 + 15 * i, l[i]);
+    oled.sendBuffer();
+}
+#endif
 static void oledDraw() {
     oledTick();
 #if defined(BOARD_HELTEC_V2)
@@ -698,12 +759,19 @@ static void oledDraw() {
         oled.drawStr(0,56,g_pocBootToken+16); oled.sendBuffer(); return;
     }
 #endif
+#if ORCON_OWNER_MODEL
+    if (g_msgUntil || g_gesture.visible(millis())) { oledGesture(); return; }
+#endif
     if (g_apMode) {   // the setup AP: exactly what someone standing at the board needs to connect
-        char a[24], b[24];
+        char a[24], b[24], t[24] = "WiFi-instelmodus";
         snprintf(a, sizeof(a), "Ww: %s", apPassword());
         snprintf(b, sizeof(b), "http://%s", g_ip);
+#if ORCON_OWNER_MODEL
+        if (provision::installing(ownerstore::state())) snprintf(t, sizeof(t), "Installatie");
+        else if (ownerstore::physicalActive()) snprintf(t, sizeof(t), "Herstelmodus  %lum", (unsigned long)(ownerstore::physicalLeftMs() / 60000 + 1));
+#endif
         oled.clearBuffer();
-        oled.drawStr(0, 11, "WiFi-instelmodus"); oled.drawStr(0, 26, WIFI_AP_NAME);
+        oled.drawStr(0, 11, t); oled.drawStr(0, 26, WIFI_AP_NAME);
         oled.drawStr(0, 41, a); oled.drawStr(0, 56, b);
         oled.sendBuffer();
         return;
@@ -716,7 +784,45 @@ static void oledDraw() {
 }
 #endif
 
-#if defined(BOARD_HELTEC_V2)
+#if ORCON_OWNER_MODEL
+static void notice(const char* a, const char* b, const char* c, uint32_t ms) {
+    g_msg[0] = a; g_msg[1] = b; g_msg[2] = c; g_msgUntil = millis() + ms; if (!g_msgUntil) g_msgUntil = 1;
+    oledDraw();
+}
+// Stored home network, ours and the WiFi driver's copy (written by boots before persistent(false)).
+static void eraseWifi() {
+    prefs.begin("orcon", false); prefs.remove("ssid"); prefs.remove("pass"); prefs.end();
+    Preferences d; if (d.begin("nvs.net80211", false)) { d.clear(); d.end(); }
+}
+// PRG (GPIO0): read-only with a pull-up, so reset+hold still enters the ROM flasher. A short press
+// wakes the OLED as before; the boot-time hold opens the recovery menu (reset_gesture.h).
+static void prgPoll(uint32_t now) {
+    using gesture::Action;
+    if (g_msgUntil && int32_t(now - g_msgUntil) >= 0) { g_msgUntil = 0; g_dirty = true; }
+    const Action a = g_gesture.poll(digitalRead(PIN_PRG_BTN), now);
+    static uint32_t drawn = 0;
+    switch (a) {
+        case Action::None:
+            if (g_gesture.visible(now) && now - drawn >= 200) { drawn = now; oledDraw(); }   // countdown
+            return;
+        case Action::Wake: g_oledPower.wake(now); oledDraw(); return;
+        case Action::Cancelled: notice("Herstelmenu", "geannuleerd", "", 2000); return;
+        case Action::Recovery:
+            setupweb::note(rfcon::WARN, "PRG-menu: herstelmodus (setup-accesspoint, 15 minuten)");
+            ownerstore::armMode(ownerstore::Mode::Recovery); notice("Herstelmodus", "herstart...", "", 5000); restartIn(1500);
+            return;
+        case Action::WifiReset:
+            setupweb::note(rfcon::WARN, "PRG-menu: WiFi gewist; setup-accesspoint start");
+            eraseWifi(); ownerstore::armMode(ownerstore::Mode::WifiReset); notice("WiFi gewist", "herstart...", "", 5000); restartIn(1500);
+            return;
+        case Action::FactoryReset:
+            if (!ownerstore::requestFactoryReset()) { notice("Reset geweigerd:", "update nog niet", "bevestigd (5 min)", 6000); return; }
+            setupweb::note(rfcon::WARN, "PRG-menu: fabrieksreset bevestigd");
+            notice("Fabrieksreset", "herstart en wist", "niet uitschakelen", 8000); restartIn(1500);
+            return;
+    }
+}
+#elif defined(BOARD_HELTEC_V2)
 // Physical PRG button (GPIO0): a short press restarts the OLED viewing window
 // (wake + fresh 30 s in Auto/Off; no visible change while On). The pin is only
 // ever read, with a pull-up — GPIO0 keeps its plain boot-strapping role, so
@@ -737,6 +843,8 @@ static void prgPoll(uint32_t now) {
     }
 }
 
+#endif
+#if defined(BOARD_HELTEC_V2)
 // Local display setting, separate from /api/cmd: the RX-only allowlist and all
 // TX/OTA guards stay unchanged. Reject unknown keys before any NVS/state change.
 // {"mode":...} persists the policy; {"toggle":1} flips the screen right now
@@ -788,38 +896,57 @@ static void handleOledSave() {
 #if defined(NO_OLED)
 static const char* apPassword() { return WIFI_AP_PASS; }
 #else
-static char g_apPass[11] = "";
+static char g_apPass[13] = "";             // 12 of 31 symbols: ~59 bits against an offline WPA2 attack
 static const char* apPassword() {
     if (g_apPass[0]) return g_apPass;
     prefs.begin("orcon", true);
     String stored = prefs.getString("appw", "");
     prefs.end();
-    if (stored.length() == 10) { memcpy(g_apPass, stored.c_str(), 10); g_apPass[10] = 0; return g_apPass; }
+    if (stored.length() == 12) { memcpy(g_apPass, stored.c_str(), 12); g_apPass[12] = 0; return g_apPass; }
     static const char A[] = "abcdefghjkmnpqrstuvwxyz23456789";   // 31 symbols: no 0/o, 1/l/i
-    uint8_t r[10];
+    uint8_t r[12];
     esp_fill_random(r, sizeof(r));
-    for (int i = 0; i < 10; ++i) g_apPass[i] = A[r[i] % 31];
-    g_apPass[10] = 0;
+    for (int i = 0; i < 12; ++i) g_apPass[i] = A[r[i] % 31];
+    g_apPass[12] = 0;
     prefs.begin("orcon", false); prefs.putString("appw", g_apPass); prefs.end();   // once per device
     return g_apPass;
 }
 #endif
+static void startAp(bool only) {
+    g_apMode = true; g_apOnly = only;
+    WiFi.mode(only ? WIFI_AP : WIFI_AP_STA);
+    WiFi.softAP(WIFI_AP_NAME, apPassword());
+    snprintf(g_ip, sizeof(g_ip), "%s", WiFi.softAPIP().toString().c_str());
+#if ORCON_OWNER_MODEL
+    g_dns.setErrorReplyCode(DNSReplyCode::NoError);
+    g_dns.start(53, "*", WiFi.softAPIP());   // phones then offer the wizard by themselves (captive portal)
+#endif
+}
 static void wifiConnect() {
+    WiFi.persistent(false);   // no flash copy in the WiFi driver: credentials live in NVS "orcon" only
+#if ORCON_OWNER_MODEL
+    // Installing, or a PRG recovery boot: the setup AP only. Without a station the device has no path
+    // to the home network while the wizard handles passwords and the key file.
+    if (provision::installing(ownerstore::state()) || ownerstore::bootMode() != ownerstore::Mode::None) { startAp(true); return; }
+#endif
     g_apMode = (g_ssid.length() == 0);
     if (!g_apMode) {
         WiFi.mode(WIFI_STA);
         WiFi.begin(g_ssid.c_str(), g_pass.c_str());
-        uint32_t t0 = millis();
-        while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) { delay(250); oledDraw(); }
+        uint32_t t0 = millis(), drawn = 0;
+        while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) {
+            delay(25);
+#if defined(BOARD_HELTEC_V2)
+            prgPoll(millis());                   // the PRG boot window also runs while WiFi connects
+#endif
+            if (millis() - drawn >= 250) { drawn = millis(); oledDraw(); }
+        }
     }
     if (WiFi.status() == WL_CONNECTED) {
         g_apMode = false;
         snprintf(g_ip, sizeof(g_ip), "%s", WiFi.localIP().toString().c_str());
     } else {
-        g_apMode = true;
-        WiFi.mode(WIFI_AP_STA);
-        WiFi.softAP(WIFI_AP_NAME, apPassword());
-        snprintf(g_ip, sizeof(g_ip), "%s", WiFi.softAPIP().toString().c_str());
+        startAp(false);
     }
 }
 
@@ -828,9 +955,15 @@ static void wifiConnect() {
 // someone is connected to the setup AP, so a user configuring WiFi is not disturbed.
 static void apRecovery(uint32_t now) {
     static uint32_t last = 0;
-    if (!g_apMode || g_ssid.length() == 0) return;
+    if (!g_apMode || g_apOnly || g_ssid.length() == 0) return;
+#if ORCON_OWNER_MODEL
+    if (g_wt == WTest::Testing) return;          // the wizard's WiFi test owns the station now
+#endif
     if (WiFi.status() == WL_CONNECTED) {
         g_apMode = false;
+#if ORCON_OWNER_MODEL
+        g_dns.stop();
+#endif
         WiFi.softAPdisconnect(true);
         WiFi.mode(WIFI_STA);
         snprintf(g_ip, sizeof(g_ip), "%s", WiFi.localIP().toString().c_str());
@@ -846,6 +979,90 @@ static void apRecovery(uint32_t now) {
     if (uint32_t(now - last) < 60000 || WiFi.softAPgetStationNum() > 0) return;
     last = now;
     WiFi.begin(g_ssid.c_str(), g_pass.c_str());
+}
+
+#if ORCON_OWNER_MODEL
+static void restartIn(uint32_t ms) { g_rebootAt = millis() + ms; }
+static void wifiEvent(arduino_event_id_t e, arduino_event_info_t info) {
+    if (e == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) g_wtReason = info.wifi_sta_disconnected.reason;
+}
+static void wifiTestEnd(WTest r) {
+    g_wt = r;
+    WiFi.disconnect(false, true);                // stop the station and its retries; the AP stays up
+    if (g_apOnly) WiFi.mode(WIFI_AP);            // installing/recovery: no path to the home network again
+    g_wtPass = "";
+}
+// Saved only once it worked, so a wrong choice never strands the device; the AP stays up throughout.
+static void wifiTestTick(uint32_t now) {
+    if (g_wt != WTest::Testing) return;
+    if (WiFi.status() == WL_CONNECTED) {
+        snprintf(g_wtIp, sizeof(g_wtIp), "%s", WiFi.localIP().toString().c_str());
+        saveWifi(g_wtSsid.c_str(), g_wtPass.c_str(), nullptr);
+        g_ssid = g_wtSsid; g_pass = g_wtPass;
+        setupweb::note(rfcon::INFO, "WiFi-test geslaagd: netwerk opgeslagen");
+        wifiTestEnd(WTest::Connected);
+        if (!g_apOnly) restartIn(3000);          // an installed device in its AP fallback: join it properly
+        return;
+    }
+    const uint8_t r = g_wtReason;
+    if (r == WIFI_REASON_AUTH_FAIL || r == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT || r == WIFI_REASON_HANDSHAKE_TIMEOUT ||
+        r == WIFI_REASON_802_1X_AUTH_FAILED) { wifiTestEnd(WTest::WrongPassword); return; }
+    if (r == WIFI_REASON_NO_AP_FOUND && now - g_wtAt > 8000) { wifiTestEnd(WTest::NotFound); return; }
+    if (now - g_wtAt > 20000) wifiTestEnd(r == WIFI_REASON_NO_AP_FOUND ? WTest::NotFound : WTest::Failed);
+}
+bool wifiTestStart(const char* ssid, const char* pass) {
+    if (g_wt == WTest::Testing || !g_apMode) return false;
+    g_wtSsid = ssid; g_wtPass = pass; g_wtIp[0] = 0; g_wtReason = 0; g_wtAt = millis(); g_wt = WTest::Testing;
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.begin(g_wtSsid.c_str(), g_wtPass.c_str());   // a hidden network is found by name (directed probe)
+    return true;
+}
+const char* wifiTestState() {
+    switch (g_wt) {
+        case WTest::Testing: return "testing";
+        case WTest::Connected: return "connected";
+        case WTest::WrongPassword: return "wrong-password";
+        case WTest::NotFound: return "not-found";
+        case WTest::Failed: return "failed";
+        default: return "idle";
+    }
+}
+const char* wifiTestIp() { return g_wtIp; }
+const char* storedSsid() { return g_ssid.c_str(); }
+bool staUp() { return g_wt == WTest::Testing || ((WiFi.getMode() & WIFI_STA) && WiFi.status() == WL_CONNECTED); }
+bool apOnly() { return g_apOnly; }
+// Checked on the socket, not from headers: the local address is the AP address and the client is in
+// the AP subnet. A home-network host that routes to 192.168.4.1 through our station address fails the
+// client check; a spoofed AP-subnet source gets its replies on the AP side and cannot complete TCP.
+bool fromSetupAp() {
+    if (!g_apMode) return false;
+    WiFiClient c = server.client();
+    return setupflow::apClient((uint32_t)c.localIP(), (uint32_t)c.remoteIP(), (uint32_t)WiFi.softAPIP(), (uint32_t)WiFi.softAPSubnetMask());
+}
+// The control image creates its radio identity at the first pairing (never at boot): random.
+bool ensureOwnIdentity() {
+    const orcon::Ids& id = orcon::ids();
+    if (id.us.cls > 0 && id.us.cls < 63 && id.us.serial > 0 && id.us.serial <= 0x3FFFFUL) return true;
+    uint32_t us = esp_random() & 0x3FFFFUL;
+    if (!us) us = 1;
+    saveIds(DEV_US_CLASS, us, id.fan.cls, id.fan.serial);
+    orcon::setIds(DEV_US_CLASS, us, id.fan.cls, id.fan.serial);
+    setupweb::note(rfcon::INFO, "eigen zender-ID aangemaakt (willekeurig)");
+    return true;
+}
+#endif
+// Captive portal: on the setup AP, a request for any other name (a phone's connectivity check)
+// goes to the wizard. Our own address and orcon15rf.local are served normally.
+static bool captiveRedirect() {
+#if ORCON_OWNER_MODEL
+    if (!g_apMode || setupflow::hostAllowed(server.hostHeader().c_str(), g_ip)) return false;
+    server.sendHeader("Location", String("http://") + g_ip + "/");
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(302, "text/plain", "");
+    return true;
+#else
+    return false;
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -964,6 +1181,18 @@ public:
 static ProfileNvs profileNvs;
 #endif
 void begin() {
+#if ORCON_OWNER_MODEL
+    // A confirmed factory reset completes here, before anything reads NVS; interrupted, it resumes
+    // at the next boot. Then a clean restart, so the device starts exactly as a new one.
+    bool ran = false;
+    if (!ownerstore::resumeFactoryReset(ran)) {
+        oledInit(); notice("Fabrieksreset", "niet voltooid;", "opnieuw over 10 s", 10000);
+        delay(10000); ESP.restart();
+    }
+    if (ran) { Serial.println("[reset] factory reset complete: restart as a new device"); delay(200); ESP.restart(); }
+    ownerstore::begin();
+    WiFi.onEvent(wifiEvent);
+#endif
     loadConfig();          // also applies stored device IDs via orcon::setIds
 #if !ORCON_TX_POC || ORCON_WEB_CONTROL
     profiles::store().begin(profileNvs);
@@ -1007,7 +1236,7 @@ void begin() {
     server.on("/api/wifi",   HTTP_POST, [](){ if (setupweb::authorize(true, true)) handleWifiSave(); });
     server.on("/api/oled",   HTTP_POST, [](){ if (setupweb::authorize(true)) handleOledSave(); });
 #endif
-    server.onNotFound([](){ server.send(403,"application/json","{\"error\":\"route-disabled-in-web-control\"}"); });
+    server.onNotFound([](){ if (captiveRedirect()) return; server.send(403,"application/json","{\"error\":\"route-disabled-in-web-control\"}"); });
 #else
     setupweb::begin(server);            // "/" = setup wizard + /api/setup/*, /api/remote/*
     server.on("/dashboard", handleRoot);
@@ -1024,6 +1253,7 @@ void begin() {
 #endif
     server.on("/api/state", handleState);
     server.on("/api/log",   handleLog);
+    server.onNotFound([](){ if (captiveRedirect()) return; server.send(404, "text/plain", "Not found"); });
 #if ORCON_WEB_AUTH
     // Heltec V2 RX-only (the rollback image): settings need the web login. Identity editing and
     // the command route are gone (receive-only; pairing and profiles live in the setup page).
@@ -1066,7 +1296,14 @@ bool        wifiConnected(){ return !g_apMode && WiFi.status() == WL_CONNECTED; 
 bool        maskIds()      { return g_maskIds; }
 void        restartSoon()  { g_rebootAt = millis() + 1200; }
 // Only SSID + password: profiles, MQTT, OLED and IDs stay. An empty SSID makes wifiConnect() start the setup AP.
-void        forgetWifi()   { prefs.begin("orcon", false); prefs.remove("ssid"); prefs.remove("pass"); prefs.end(); restartSoon(); }
+void        forgetWifi()   {
+#if ORCON_OWNER_MODEL
+    eraseWifi();                                 // ours and the WiFi driver's copy
+#else
+    prefs.begin("orcon", false); prefs.remove("ssid"); prefs.remove("pass"); prefs.end();
+#endif
+    restartSoon();
+}
 const char* mqttHost()     { return g_mqttHost.c_str(); }
 bool        mqttConnected() {
 #if MQTT_ENABLED
@@ -1092,6 +1329,18 @@ void loop() {
 #endif
     oledTick();  // runs independently of state publishing and RF activity
     apRecovery(millis());
+#if ORCON_OWNER_MODEL
+    if (g_apMode) g_dns.processNextRequest();
+    wifiTestTick(millis());
+    // The PRG recovery mode lasts 15 minutes; then back to normal when a home network is stored.
+    static bool physicalEnded = false;
+    if (!physicalEnded && ownerstore::bootMode() != ownerstore::Mode::None && !ownerstore::physicalActive()) {
+        physicalEnded = true;
+        setupweb::note(rfcon::INFO, "herstelmodus afgelopen");
+        if (g_ssid.length() && !provision::installing(ownerstore::state())) restartIn(1000);
+        g_dirty = true;
+    }
+#endif
 #if defined(BOARD_HELTEC_V2)
     prgPoll(millis());   // OLED wake button; a plain GPIO read, no RF/WiFi impact
 #endif

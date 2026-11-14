@@ -27,6 +27,9 @@ bool requestAllowed(const char* contentType, const char* origin, const char* hos
 // DNS-rebinding guard: the Host header must name this device (its IP, optional port) or an
 // fixed "orcon15rf.local" name; a foreign domain rebound to our IP never gets the token or a POST.
 bool hostAllowed(const char* host, const char* deviceIp);
+// The request arrived on the setup access point: the socket's local address is the AP address and
+// the client is in the AP subnet (addresses as the platform's IPAddress converts them).
+bool apClient(uint32_t local, uint32_t remote, uint32_t apIp, uint32_t apMask);
 bool uniqueObjectKeys(const char* json, const char* const* keys, size_t nkeys);
 
 enum class St : uint8_t { Idle, Active, Done, Timeout, Cancelled };

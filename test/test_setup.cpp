@@ -129,6 +129,14 @@ int main() {
         CHECK(!requestAllowed("application/json", "https://192.0.2.5", "192.0.2.5"), "scheme mismatch refused");
         CHECK(!requestAllowed("application/json", "http://192.0.2.5", ""), "Origin without Host refused");
         CHECK(hostAllowed("192.0.2.5", "192.0.2.5") && hostAllowed("192.0.2.5:80", "192.0.2.5"), "own IP (with port) allowed");
+        // The setup-AP check on socket addresses (IPAddress -> uint32_t is little-endian on the ESP32).
+        auto ip = [](unsigned a, unsigned b, unsigned c, unsigned d) { return uint32_t(a | b << 8 | c << 16 | d << 24); };
+        const uint32_t AP = ip(192,168,4,1), MASK = ip(255,255,255,0);
+        CHECK(apClient(AP, ip(192,168,4,2), AP, MASK), "phone on the setup AP accepted");
+        CHECK(!apClient(ip(192,168,1,23), ip(192,168,1,50), AP, MASK), "home network (station address) refused");
+        CHECK(!apClient(AP, ip(192,168,1,50), AP, MASK), "home host routing to 192.168.4.1 via our station refused");
+        CHECK(!apClient(AP, AP, AP, MASK) && !apClient(AP, ip(192,168,4,2), 0, MASK) && !apClient(AP, ip(192,168,4,2), AP, 0),
+              "loopback-like or unknown AP address refused");
         CHECK(hostAllowed("orcon15rf.local", "192.0.2.5"), "mDNS name allowed");
         CHECK(!hostAllowed("192.0.2.55", "192.0.2.5") && !hostAllowed("192.0.2.", "192.0.2.5"), "other/prefix IP refused");
         CHECK(!hostAllowed("evil.example", "192.0.2.5") && !hostAllowed(".local", "192.0.2.5") && !hostAllowed("", "192.0.2.5"),
