@@ -38,7 +38,11 @@ Dit image bedient de Orcon via de webinterface. Je hebt er geen USB-kabel en gee
 
 Er is **geen standaardwachtwoord**.
 
-**Eerste wachtwoord, of wachtwoord vergeten**
+**Nieuwe apparaten en het eigendomsmodel.** Het eerste wachtwoord stel je in met de installatiewizard via het setup-accesspoint. Een vergeten wachtwoord herstel je met de eigen herstelsleutel van de eigenaar, in de herstelmodus van het PRG-menu. Zie [`INSTALLATIE.md`](INSTALLATIE.md) en [`PROVISIONING.md`](PROVISIONING.md).
+
+Onderstaand pad met de OTA-sleutel werkt alleen nog op een gemigreerd apparaat (staat Legacy) dat nog geen eigenaarssleutel heeft. Daarna geeft het apparaat 403 `owner-key-required`.
+
+**Eerste wachtwoord, of wachtwoord vergeten (alleen Legacy)**
 1. Vraag op de Mac met `~/.orcon/ota-signing-key.pem` een herstelcode aan: `python3 tools/orcon.py auth-code`.
    - De Heltec geeft de code alleen voor een verzoek dat met de OTA-sleutel is ondertekend.
    - Het verzoek is gebonden aan een eenmalige nonce en aan dit board.
@@ -75,13 +79,16 @@ Er is **geen standaardwachtwoord**.
 ## Nood-WiFi (accesspoint `Orcon15RF-Setup`)
 
 **Wachtwoord**
-- Willekeurig per apparaat (10 tekens), één keer opgeslagen.
+- Willekeurig per apparaat (12 tekens, ongeveer 59 bits), één keer opgeslagen.
+- Een fabrieksreset maakt het opnieuw aan.
+- Een opgeslagen wachtwoord van 10 tekens (van oudere firmware) wordt bij de eerste start vervangen; het OLED toont het nieuwe.
 - Het staat alleen op het OLED, zolang het accesspoint aan staat. Het scherm blijft dan aan.
 - Het adres is `http://192.168.4.1`.
 - `orconsetup` geldt alleen nog voor het 4848-board zonder OLED.
 
 **Wat kan in deze modus**
-- Aanmelden en WiFi instellen.
+- Aanmelden en WiFi instellen. Via het accesspoint wordt een nieuw netwerk eerst getest en pas na een gelukte verbinding opgeslagen.
+- De installatiewizard en de herstelmodus gebruiken hetzelfde accesspoint, maar zonder station (alleen AP). Zie [`PROVISIONING.md`](PROVISIONING.md).
 - RF-bediening alleen via het thuisnetwerk.
 
 **Automatisch herstel**

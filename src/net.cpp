@@ -1008,7 +1008,9 @@ static void wifiTestTick(uint32_t now) {
         g_ssid = g_wtSsid; g_pass = g_wtPass;
         setupweb::note(rfcon::INFO, "WiFi-test geslaagd: netwerk opgeslagen");
         wifiTestEnd(WTest::Connected);
-        if (!g_apOnly) restartIn(3000);          // an installed device in its AP fallback: join it properly
+        // Outside the installation (AP fallback, "WiFi wissen", recovery mode): join it now. While
+        // installing, the wizard continues on the AP and the device joins after the last step.
+        if (!provision::installing(ownerstore::state())) restartIn(3000);
         return;
     }
     const uint8_t r = g_wtReason;
