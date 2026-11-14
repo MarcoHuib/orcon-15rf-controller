@@ -1211,8 +1211,9 @@ void begin() {
         while (!settled || int32_t(millis() - until) < 0 || g_gesture.phase() != gesture::Phase::Idle) {   // never cut a menu short
             const gesture::Action a = g_gesture.poll(digitalRead(PIN_PRG_BTN), millis());
             if (a == gesture::Action::FactoryReset && !settled) notice("Update onbevestigd:", "reset kan niet,", "RST = vorige versie", 8000);
-            else if (a == gesture::Action::FactoryReset && ownerstore::forceResetMarker()) {
-                notice("Fabrieksreset", "herstart en wist", "niet uitschakelen", 8000); delay(1500); ESP.restart();
+            else if (a == gesture::Action::FactoryReset) {
+                if (!ownerstore::forceResetMarker()) notice("Reset mislukt:", "opslag onleesbaar,", "probeer opnieuw", 8000);
+                else { notice("Fabrieksreset", "herstart en wist", "niet uitschakelen", 8000); delay(1500); ESP.restart(); }
             }
             if (g_gesture.visible(millis())) { g_msgUntil = 0; oledDraw(); }   // the countdown and menu come first
             else if (!g_msgUntil || int32_t(millis() - g_msgUntil) >= 0) {

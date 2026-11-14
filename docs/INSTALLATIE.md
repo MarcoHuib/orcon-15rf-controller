@@ -114,6 +114,8 @@ Een fabrieksreset maakt ook de herstelsleutel van de vorige eigenaar waardeloos.
 | Download van de sleutel lukt niet | Gebruik **Tekst kopiëren**, of open http://192.168.4.1 in Safari of Chrome. |
 | Wachtwoord vergeten, geen sleutel meer | Fabrieksreset en opnieuw installeren. |
 | Scherm toont **Reset nodig (PRG)** | De Heltec is zijn instellingen kwijt (zeldzame opslagfout) maar had een eigenaar. Uit veiligheid start de installatie pas na een fabrieksreset met de knoppen. |
+| Scherm toont **Opslag onleesbaar: RST, PRG 15 s vast = fabrieksreset** | Een deel van de opslag is beschadigd. Uit veiligheid start de Heltec niet normaal. Doe de fabrieksreset met de knoppen. Staat er "Reset mislukt", probeer het dan opnieuw. Blijft dat zo, dan is herstel via USB nodig. |
+| Scherm toont **Opslag onleesbaar, update onbevestigd: RST = vorige versie** | De net geïnstalleerde update kan de opslag niet lezen. Druk kort op RST: de Heltec gaat terug naar de vorige versie. |
 
 ## Veiligheid in het kort
 

@@ -117,6 +117,7 @@ struct SentinelView {
     Sentinel cur;
     uint8_t next = 0;
     Slot slot[2] = {Slot::Corrupt, Slot::Corrupt};
+    bool readBoth = false;    // both sectors were read: a read error is no classification (slot[] is a guess then)
     bool redundant = false;   // both sectors hold cur's state (no older state left to fall back to)
 };
 SentinelView sentinelLoad(SentinelFlash&);
@@ -124,7 +125,9 @@ SentinelView sentinelLoad(SentinelFlash&);
 // point leaves the old state or the new one; afterwards no other state remains to revive. Refuses when unreadable.
 bool sentinelWrite(SentinelFlash&, bool owned, bool resetPending);
 // The same, also over unreadable storage (only the PRG factory reset): a non-damaged sector first, so until
-// that record is down the other stays damaged and the storage reads unreadable, never absent.
+// that record is down the other stays damaged and the storage reads unreadable, never absent. Refuses after
+// a read error (Codex OWNER-01, round 6): erasing on a guess could remove the only remaining evidence.
+// Every record is read back before the other sector is touched.
 bool sentinelForce(SentinelFlash&, bool owned, bool resetPending);
 // Records ownership (wizard step 1, the boot repair) and restores redundancy. Never clears a pending reset
 // (Codex OWNER-13): refuses then, and when unreadable. Writes nothing when both sectors already say so.

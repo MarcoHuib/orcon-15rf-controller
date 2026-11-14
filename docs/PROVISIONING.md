@@ -58,7 +58,11 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
 - Stap 1 en dat herstel bij het opstarten wissen nooit een klaarstaande fabrieksreset; ze weigeren dan (Codex OWNER-13). Na het bevestigen van de reset herstart het apparaat bovendien direct, zonder tussendoor nog webverzoeken te verwerken.
 - Een beschadigd record telt nooit als leeg, ook niet bij een beschadigde magic (1–2 bits afwijkend). Is er geen geldig record maar wel een beschadigd, dan is de opslag onleesbaar: fail closed, nooit "geen eigenaar" (Codex OWNER-01, ronde 5).
 - Onleesbaar betekent: geen normale start. Alleen de PRG-fabrieksreset herschrijft de opslag, eerst in de onbeschadigde sector. Een onderbreking daarbij geeft weer "onleesbaar", nooit "leeg".
-- Host-test: de hele levenscyclus met 2.860 onderbrekingspunten (elke byte van elk wissen en schrijven, ook half geprogrammeerde bytes), en schade aan elke bit van beide sectoren.
+  - Dat herschrijven gebeurt alleen als beide sectoren te lezen zijn. Een leesfout zegt niets over de inhoud, en wissen op een gok kan het laatste bewijs van eigendom weghalen (Codex OWNER-01, ronde 6). De OLED meldt dan "Reset mislukt"; opnieuw proberen kan.
+  - Elk geschreven record wordt teruggelezen voordat de andere sector wordt aangeraakt. Een schrijfactie die stil mislukt, wist dus nooit de beschadigde sector.
+  - Is een sector blijvend onleesbaar (defecte flash), dan helpt alleen herstel via USB.
+  - Zeldzaam: een onderbroken wisactie kan een beschadigd record herstellen. Dan geldt weer de toestand van vóór de schade, en de noodreset is nog niet gebeurd.
+- Host-test: de hele levenscyclus met 2.860 onderbrekingspunten (elke byte van elk wissen en schrijven, ook half geprogrammeerde bytes), schade aan elke bit van beide sectoren, leesfouten per sector en stil mislukte schrijfacties.
 
 **Schrijfvolgorde.** Stap 1 schrijft eerst `state=1` en pas dán het wachtwoord. Een wachtwoord zonder staat kan dus alleen van oude firmware komen, en alleen dat wordt Legacy. Een stroomonderbreking tijdens stap 1 laat nooit een toestand achter waarin het oude herstelpad (via de releasesleutel) opengaat.
 

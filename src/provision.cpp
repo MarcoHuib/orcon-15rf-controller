@@ -1,4 +1,5 @@
 #include "provision.h"
+#include <string.h>
 
 namespace provision {
 
@@ -91,6 +92,7 @@ SentinelView sentinelLoad(SentinelFlash& f) {
         if (!f.read(i, raw[i])) return v;         // a read error: unreadable
         v.slot[i] = decodeSentinel(raw[i], r[i]);
     }
+    v.readBoth = true;
     v.read = chooseSentinel(v.slot[0], r[0], v.slot[1], r[1], v.cur, v.next);
     v.redundant = v.read == SentinelRead::Ok && v.slot[0] == Slot::Valid && v.slot[1] == Slot::Valid &&
                   r[0].owned == r[1].owned && r[0].resetPending == r[1].resetPending;
@@ -98,15 +100,17 @@ SentinelView sentinelLoad(SentinelFlash& f) {
 }
 static bool putRecord(SentinelFlash& f, uint8_t sector, bool owned, bool pending, uint32_t seq) {
     Sentinel s; s.owned = owned; s.resetPending = pending; s.seq = seq;
-    uint8_t rec[SENTINEL_LEN];
+    uint8_t rec[SENTINEL_LEN], back[SENTINEL_LEN];
     encodeSentinel(s, rec);
-    return f.erase(sector) && f.write(sector, rec);
+    // Read back before the caller touches the other sector: that one may hold the only evidence left.
+    return f.erase(sector) && f.write(sector, rec) && f.read(sector, back) && !memcmp(back, rec, SENTINEL_LEN);
 }
 static bool holds(SentinelFlash& f, bool owned, bool pending) {
     const SentinelView v = sentinelLoad(f);
     return v.read == SentinelRead::Ok && v.redundant && v.cur.owned == owned && v.cur.resetPending == pending;
 }
 static bool store(SentinelFlash& f, const SentinelView& v, bool owned, bool pending) {
+    if (!v.readBoth) return false;                // never erase on a guess (Codex OWNER-01, round 6)
     const bool ok = v.read == SentinelRead::Ok;
     const uint32_t seq = ok ? v.cur.seq : 0;
     const uint8_t first = ok ? v.next : v.slot[0] == Slot::Corrupt && v.slot[1] != Slot::Corrupt ? 1 : 0;

@@ -32,15 +32,17 @@ struct Flash : ResetOps {
 
 // The two sentinel sectors with power cuts: after `budget` byte steps the power fails. An erase clears byte by
 // byte, a write programs byte by byte; the byte being worked on at the cut is half done (`mask`: its bits that
-// made it). Reads fail while the power is off, and on request (`readErr`).
+// made it). Reads fail while the power is off, and for the sectors in `readErr` (bit i: sector i). The next
+// `lostWrites` writes report success but change nothing (a silent flash fault).
 struct SimFlash : SentinelFlash {
     uint8_t sec[2][SENTINEL_LEN];
     long budget = -1;                                     // -1: no cut
-    uint8_t mask = 0;
-    bool dead = false, readErr = false;
+    uint8_t mask = 0, readErr = 0;
+    int lostWrites = 0;
+    bool dead = false;
     SimFlash() { memset(sec, 0xFF, sizeof(sec)); }
     bool step() { if (dead || budget == 0) { dead = true; return false; } if (budget > 0) --budget; return true; }
-    bool read(uint8_t i, uint8_t out[SENTINEL_LEN]) override { if (dead || readErr) return false; memcpy(out, sec[i], SENTINEL_LEN); return true; }
+    bool read(uint8_t i, uint8_t out[SENTINEL_LEN]) override { if (dead || (readErr >> i & 1)) return false; memcpy(out, sec[i], SENTINEL_LEN); return true; }
     bool erase(uint8_t i) override {
         if (dead) return false;
         for (size_t b = 0; b < SENTINEL_LEN; ++b) { if (!step()) { sec[i][b] |= mask; return false; } sec[i][b] = 0xFF; }
@@ -48,6 +50,7 @@ struct SimFlash : SentinelFlash {
     }
     bool write(uint8_t i, const uint8_t in[SENTINEL_LEN]) override {
         if (dead) return false;
+        if (lostWrites > 0) { --lostWrites; return true; }
         for (size_t b = 0; b < SENTINEL_LEN; ++b) { if (!step()) { sec[i][b] &= uint8_t(in[b] | uint8_t(~mask)); return false; } sec[i][b] &= in[b]; }
         return true;
     }
@@ -264,13 +267,24 @@ int main() {
             CHECK(cutsOk(*u, forceReset, {UNREADABLE, PENDING, OWNED}, PENDING));
         }
         CHECK(cutsOk(owned, forceReset, {OWNED, PENDING}, PENDING));   // readable: it continues the sequence
+        // A read error is no classification (Codex OWNER-01, round 6): the emergency rewrite refuses and erases
+        // nothing, whichever sector failed. A write that silently did not happen is caught by the read-back
+        // before the damaged sector (the only evidence left) is touched.
+        for (SimFlash* u : {&bothBad, &badEmpty, &emptyBad, &owned}) for (uint8_t m : {1, 2, 3}) {
+            SimFlash r = *u; r.readErr = m;
+            CHECK(!forceReset(r) && !memcmp(r.sec, u->sec, sizeof(r.sec)));
+        }
+        for (SimFlash* u : {&badEmpty, &emptyBad}) {
+            SimFlash l = *u; l.lostWrites = 1;
+            CHECK(!forceReset(l) && st(l) == UNREADABLE && forceReset(l) && st(l) == PENDING);   // retried: done
+        }
         // Sequence wrap (Codex OWNER-14): clearing at UINT32_MAX really clears.
         SimFlash wrap; Sentinel ws; ws.owned = true; ws.resetPending = true;
         ws.seq = 0xFFFFFFFEu; encodeSentinel(ws, wrap.sec[0]); ws.seq = 0xFFFFFFFFu; encodeSentinel(ws, wrap.sec[1]);
         CHECK(st(wrap) == PENDING && cutsOk(wrap, clearReset, {PENDING, UNOWNED}, UNOWNED));
         SimFlash w2 = wrap; CHECK(clearReset(w2) && st(w2) == UNOWNED && recordOwner(w2) && st(w2) == OWNED && survivesDamage(w2, OWNED));
         // A read error is unreadable, and nothing writes then.
-        SimFlash re = owned; re.readErr = true;
+        SimFlash re = owned; re.readErr = 3;
         CHECK(st(re) == UNREADABLE && !recordOwner(re) && !clearReset(re) && !memcmp(re.sec, owned.sec, sizeof(re.sec)));
         CHECK(g_cuts > 2000);
         // The boot decision: an owned device whose NVS lost everything is Locked, never New.
