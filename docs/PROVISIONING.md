@@ -51,6 +51,8 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
 **Fail closed**
 - Een onleesbare NVS telt als Done zonder sleutel: geen wizard en geen herstel via de releasesleutel.
 - Een onbekende waarde telt ook als Done.
+- Een opgeslagen wachtwoord dat niet te lezen is, telt als "gezet", nooit als "geen". Stap 1 gaat dan niet opnieuw open (Codex OWNER-02); aanmelden meldt "niet beschikbaar".
+- Na de registratie van een eigenaarssleutel vervallen openstaande herstelcodes van de releasesleutel. Zo'n code wordt daarna ook geweigerd (Codex OWNER-03).
 
 ## 3. Eerste installatie via de directe WiFi-verbinding
 
@@ -180,8 +182,8 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
 **Fabrieksreset (`provision::resume`, met een stroomonderbreking getest op elke stap)**
 1. De bevestigde knopbediening schrijft alleen een marker (NVS `orconreset`) en herstart.
 2. Bij de volgende start, vóór alles wat NVS leest, wist het apparaat in deze volgorde:
-   1. `orconown` (eigenaarssleutel en staat);
-   2. `orconauth` (wachtwoord);
+   1. `orconauth` (wachtwoord);
+   2. `orconown` (eigenaarssleutel en staat). Na het wachtwoord: een reset die hiertussen stopt, laat een geïnstalleerd apparaat zonder wachtwoord achter (op slot), nooit "wachtwoord zonder staat" (zoals Legacy);
    3. `orconprofiles`;
    4. `orcon` (WiFi, unit, eigen ID, AP-wachtwoord, MQTT, OLED);
    5. `nvs.net80211`.
@@ -191,7 +193,7 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
    - als laatste de marker.
 4. Daarna een schone herstart als nieuw apparaat.
 
-Bij een stroomonderbreking gaat de reset bij de volgende start verder. Zonder marker gebeurt niets. Een crash, update of stroomonderbreking kan dus nooit zelf een reset veroorzaken, en een gestarte reset wordt altijd afgemaakt.
+Bij een stroomonderbreking gaat de reset bij de volgende start verder. Zonder marker gebeurt niets. Is de marker onleesbaar, dan start het apparaat niet normaal: het toont een melding en probeert het over 10 s opnieuw. Onleesbaar betekent nooit "geen reset" (Codex OWNER-01). Een crash, update of stroomonderbreking kan dus nooit zelf een reset veroorzaken, en een gestarte reset wordt altijd afgemaakt.
 
 **Intrekking van de vorige eigenaar**
 - Zijn publieke sleutel is weg, dus zijn sleutelbestand verifieert niets meer.
@@ -284,6 +286,13 @@ Deze punten zijn bewust niet als oplossing gebouwd.
 **De unit zelf ontkoppelen**
 - RAMSES-II heeft daar geen commando voor dat wij kunnen sturen. Zie §4.
 
+**POST-bodies in de Arduino-WebServer (Codex OWNER-05, geërfd, niet opgelost)**
+- De WebServer van Arduino-ESP32 2.0.16 leest een POST-body helemaal in (`malloc` van Content-Length) vóórdat een handler draait.
+- Een client in het LAN of op het AP kan dus met een grote of heel langzame body geheugen en tijd vasthouden. De handler-limieten (bijvoorbeeld 1900 B) komen pas daarna.
+- Dit geldt voor elke bestaande POST-route, ook op `main`.
+- Een oplossing vraagt een aangepaste of andere webserver met limieten vóór het bufferen. Dat is een aparte wijziging, buiten deze opdracht.
+- Gevolg: hooguit een DoS (geheugen, herstart). Geen toegang.
+
 **Hardware**
 - Pas na hardwarevalidatie bewezen: de crypto op de ESP32 zelf en de duur van PBKDF2 (50 000 rondes, ongeveer 6 s geschat), het werkelijke knopgedrag, het kanaalwissel-gedrag van het AP en de captive portal per telefoon.
 - Zie [`HW_VALIDATIE_PROVISIONING.md`](HW_VALIDATIE_PROVISIONING.md). Tot die tijd: **NOT TESTED**.
@@ -313,12 +322,13 @@ Een LAN-IP of `.local` krijgt geen publiek certificaat.
 
 | Suite | Wat |
 |---|---|
-| `provision` (87) | staten, migratie, routebeleid, fabrieksreset met een stroomonderbreking op elke stap |
+| `provision` (95) | staten, migratie, routebeleid, fabrieksreset met een stroomonderbreking op elke stap, onleesbare marker, vergrendelde herstelmodus-timer |
 | `reset_gesture` (32) | gewone druk, korte reset, lange druk, annuleren, alle menukeuzes, bevestiging, vastzittende knop, dender, wrap |
 | `owner_key` (36) | KAT tegen OpenSSL (AES, P-256, SHA-256); in beide richtingen uitwisselbaar met de `openssl`-CLI; weigeren van SHA1, AES-128, weinig rondes, onversleuteld, P-384; mutatie-sweep |
-| `setup_web_provision` (54) en `_provision_rx` (53) | nieuw apparaat tot geïnstalleerd: LAN geweigerd, STA aan geweigerd, stap 1 eenmalig, onderbroken wizard, WiFi-test, sleutel maken en controleren, oude sleutel en verkeerde zin geweigerd, herstel met blokkade, sleutel vervangen, releasesleutel dicht, captive redirect, geen resetroute |
+| `setup_web_provision` (54) en `_provision_rx` (53), plus de OWNER-03-test in elke owner-build | nieuw apparaat tot geïnstalleerd: LAN geweigerd, STA aan geweigerd, stap 1 eenmalig, onderbroken wizard, WiFi-test, sleutel maken en controleren, oude sleutel en verkeerde zin geweigerd, herstel met blokkade, sleutel vervangen, releasesleutel dicht, captive redirect, geen resetroute |
 | `ota_policy` (85) | onder andere v2-releases, downgrade, RF-test nooit in een release, pre-owner-image geweigerd |
-| `web_auth` (94) | onder andere Codex SEC-02/03 (wrap) |
+| `web_auth` (95) | onder andere Codex SEC-02/03 (wrap) en het wissen van herstelcodes |
+| `setup_web_provision_unreadable` | onleesbaar wachtwoord in een onvoltooide installatie: stap 1 blijft dicht (OWNER-02) |
 | CLI (43), pagina (136) | onder andere aanmelden voor OTA, releasebundel, de wizard in de pagina, de herstelpaden |
 
 Ook gebouwd: alle 11 firmware-omgevingen.

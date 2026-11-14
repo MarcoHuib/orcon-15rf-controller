@@ -150,6 +150,7 @@ Recovery::Check Recovery::use(const char* in, uint32_t now) {
     if (++tries_ >= CODE_TRIES) { code_[0] = 0; return Check::Exhausted; }
     return Check::Wrong;
 }
+void Recovery::clear() { memset(nonce_, 0, sizeof(nonce_)); memset(code_, 0, sizeof(code_)); tries_ = 0; }
 void Recovery::sweep(uint32_t now) {
     if (nonce_[0] && uint32_t(now - nonceMs_) >= NONCE_TTL_MS) nonce_[0] = 0;
     if (code_[0] && uint32_t(now - codeMs_) >= CODE_TTL_MS) memset(code_, 0, sizeof(code_));

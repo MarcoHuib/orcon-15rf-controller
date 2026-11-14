@@ -117,6 +117,7 @@ static webauth::Throttle g_throttle;
 static webauth::Recovery g_recovery;
 static webauth::Cred     g_cred;
 static bool              g_credSet = false;
+static bool              g_credUnreadable = false;   // a stored password that cannot be read: never "none" (fail closed)
 static webauth::Session* currentSession() {
     char sid[33];
     if (!webauth::cookieSid(g_srv->header("Cookie").c_str(), sid)) return nullptr;
@@ -308,7 +309,7 @@ static void handleState() {
     if (!sess) {
         Out o;
         o.add("{\"fw\":\"%s\",\"auth\":{\"enabled\":true,\"logged_in\":false,\"password_set\":%s,\"login_wait_s\":%lu},"
-              "\"wifi\":{\"ap\":%s}", FW_VERSION, g_credSet ? "true" : "false",
+              "\"wifi\":{\"ap\":%s}", FW_VERSION, g_credSet || g_credUnreadable ? "true" : "false",
               (unsigned long)((g_throttle.waitMs(millis()) + 999) / 1000), net::apMode() ? "true" : "false");
 #if ORCON_OWNER_MODEL
         // What the page needs to choose between the wizard, the recovery screens and the login.
@@ -870,7 +871,7 @@ static bool setPassword(const char* pw) {
     webauth::Cred c{};
     if (!webauth::makeCred(pw, authstore::kdf, authstore::random, c)) { fail(503, "auth-unavailable"); return false; }
     if (!authstore::save(c)) { fail(503, "auth-write-failed"); return false; }
-    g_cred = c; g_credSet = true;
+    g_cred = c; g_credSet = true; g_credUnreadable = false;
     return true;
 }
 static const char* str(JsonDocument& d, const char* k) { return d[k].is<const char*>() ? d[k].as<const char*>() : ""; }
@@ -883,7 +884,7 @@ static void handleLogin() {
     static const char* const K[] = { "password" };
     JsonDocument d;
     if (!sameOrigin(true) || !parseBody(d, K, 1, 400)) return;
-    if (!g_credSet) { fail(409, "password-not-set"); return; }
+    if (!g_credSet) { fail(g_credUnreadable ? 503 : 409, g_credUnreadable ? "auth-unavailable" : "password-not-set"); return; }
     if (const uint32_t w = g_throttle.waitMs(millis())) { failRetry(429, "login-locked", w); return; }
     if (!authstore::kdfReady()) { fail(503, "auth-unavailable"); return; }
     if (kdfBusy()) return;
@@ -916,10 +917,20 @@ static void handlePassword() {   // change, while logged in: the current passwor
     g_con.add(rfcon::INFO, millis(), "wachtwoord gewijzigd; andere sessies afgemeld");
     sessionReply(g_sessions.create(millis(), authstore::random));
 }
+// The release key may reset a password only on a migrated device that has no owner key yet.
+#if ORCON_OWNER_MODEL
+static bool vendorRecoveryOk() {
+    if (ownerstore::state() == provision::State::Legacy) return true;
+    fail(403, "owner-key-required");                 // per-device owner keys: the release key grants no access
+    return false;
+}
+#else
+static bool vendorRecoveryOk() { return true; }
+#endif
 static void handleSetup() {      // first password, or a forgotten one: needs the one-time code
     static const char* const K[] = { "code", "password" };
     JsonDocument d;
-    if (!sameOrigin(true) || !parseBody(d, K, 2, 400)) return;
+    if (!sameOrigin(true) || !vendorRecoveryOk() || !parseBody(d, K, 2, 400)) return;   // Legacy only (Codex OWNER-03)
     if (!webauth::passwordOk(str(d, "password"))) { fail(400, "password-weak"); return; }   // before a try is spent
     if (!authstore::kdfReady()) { fail(503, "auth-unavailable"); return; }
     if (kdfBusy()) return;
@@ -941,15 +952,6 @@ static bool cliOk() {
                         g_srv->hostHeader().c_str())) { fail(403, "forbidden-request"); return false; }
     return true;
 }
-#if ORCON_OWNER_MODEL
-static bool vendorRecoveryOk() {
-    if (ownerstore::state() == provision::State::Legacy) return true;
-    fail(403, "owner-key-required");                 // per-device owner keys: the release key grants no access
-    return false;
-}
-#else
-static bool vendorRecoveryOk() { return true; }
-#endif
 static void handleAuthNonce() {
     if (!cliOk() || !vendorRecoveryOk()) return;
     const char* n = g_recovery.issueNonce(millis(), authstore::random);
@@ -990,7 +992,7 @@ static bool provGate(provision::Route r, bool mutation) {
     c.state = ownerstore::state(); c.viaAp = net::fromSetupAp(); c.staUp = net::staUp(); c.physical = ownerstore::physicalActive();
     webauth::Session* sess = currentSession();
     c.loggedIn = sess && (!mutation || webauth::equal(g_srv->header("X-Orcon-Token").c_str(), sess->csrf));
-    c.passwordSet = g_credSet; c.keyPending = g_pend;
+    c.passwordSet = g_credSet || g_credUnreadable; c.keyPending = g_pend;   // unreadable never reopens step 1
     if (const char* e = provision::allow(r, c)) { fail(!strcmp(e, "login-required") ? 401 : 403, e); return false; }
     return true;
 }
@@ -1081,6 +1083,7 @@ static void handleProvKeyVerify() {                    // the owner proves the s
     if (!ownerkey::samePub(q, g_pendQ)) { fail(409, "key-mismatch"); return; }    // a file from an earlier attempt
     const bool installing = ownerstore::state() == provision::State::Setup;
     if (!ownerstore::registerKey(q)) { fail(503, "key-write-failed"); return; }
+    g_recovery.clear();                               // no release-key code may outlive the owner key (Codex OWNER-03)
     g_con.add(rfcon::WARN, millis(), "eigenaarssleutel %s geregistreerd%s", g_pendFp, installing ? "; installatie voltooid" : "");
     Out o; o.add("{\"ok\":true,\"fingerprint\":\"%s\",\"installed\":%s}", g_pendFp, installing ? "true" : "false");
     dropPending();
@@ -1126,7 +1129,8 @@ void begin(WebServer& s) {
     s.on("/", HTTP_GET, handlePage);
     s.on("/api/setup/state",       HTTP_GET,  handleState);
 #if ORCON_WEB_AUTH
-    g_credSet = authstore::load(g_cred);
+    { const authstore::Status st = authstore::status(g_cred);
+      g_credSet = st == authstore::Status::Ok; g_credUnreadable = st == authstore::Status::Unreadable; }
     s.on("/api/auth/login",    HTTP_POST, handleLogin);
     s.on("/api/auth/logout",   HTTP_POST, handleLogout);
     s.on("/api/auth/password", HTTP_POST, handlePassword);

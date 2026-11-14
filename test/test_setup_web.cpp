@@ -24,6 +24,9 @@
 #include <string>
 #include <vector>
 using namespace ramses;
+#ifndef PROVISION_SCENARIO
+#define PROVISION_SCENARIO 0   // 1: a new device end to end; 2: an unfinished installation, password unreadable
+#endif
 
 static unsigned long g_ms = 100000;
 unsigned long millis() { return g_ms; }
@@ -52,11 +55,12 @@ namespace radio { uint32_t lastReceivedMs() { return g_ms; } }   // rx() deliver
 // Device side of the login (auth_store.cpp): NVS, PBKDF2, RNG and the OTA signature, faked.
 #include "auth_store.h"
 static webauth::Cred g_store;
-static bool g_storeSet = false, g_kdfOk = true;
+static bool g_storeSet = false, g_kdfOk = true, g_storeUnreadable = PROVISION_SCENARIO == 2;
 static uint32_t g_rng = 0x2468ACE1u;
 namespace authstore {
-bool load(webauth::Cred& c) { if (!g_storeSet) return false; c = g_store; return true; }
-bool save(const webauth::Cred& c) { g_store = c; g_storeSet = true; return true; }
+Status status(webauth::Cred& c) { if (g_storeUnreadable) return Status::Unreadable; if (!g_storeSet) return Status::Absent; c = g_store; return Status::Ok; }
+bool load(webauth::Cred& c) { return status(c) == Status::Ok; }
+bool save(const webauth::Cred& c) { g_store = c; g_storeSet = true; g_storeUnreadable = false; return true; }
 bool kdfReady() { return g_kdfOk; }
 bool kdf(const char* pw, size_t n, const uint8_t* salt, size_t sn, uint32_t it, uint8_t out[32]) {
     uint32_t h = 2166136261u ^ it;
@@ -78,9 +82,6 @@ namespace radio { namespace sx1276 { uint32_t restoreDiag() { return g_restoreDi
 #endif
 static bool g_wifiFake = true;
 static int g_restarts = 0, g_forgets = 0;
-#ifndef PROVISION_SCENARIO
-#define PROVISION_SCENARIO 0
-#endif
 #if ORCON_OWNER_MODEL
 // Ownership model: the device side (owner_store.cpp, net.cpp) faked. The key-file code is the real
 // owner_key.cpp; its primitives here are deterministic stand-ins (OpenSSL checks the real format in
@@ -89,7 +90,7 @@ static int g_restarts = 0, g_forgets = 0;
 #include "owner_key.h"
 #include "owner_store.h"
 #include "provision.h"
-static provision::State g_ownState = PROVISION_SCENARIO ? provision::State::New : provision::State::Legacy;
+static provision::State g_ownState = PROVISION_SCENARIO == 1 ? provision::State::New : PROVISION_SCENARIO == 2 ? provision::State::Setup : provision::State::Legacy;
 static bool g_viaAp = false, g_staUp = false, g_apOnly = false, g_physical = false, g_cryptoOk = true;
 static uint8_t g_ownPub[65]; static bool g_ownPubSet = false;
 static std::string g_wtState = "idle", g_wtSsid, g_wtPass;
@@ -277,7 +278,23 @@ struct ProfileMemory : profiles::Storage {
     bool write(const uint8_t* in,size_t n)override{if(failWrite)return false;blob.assign(in,in+n);return true;}
 };
 static ProfileMemory profileMemory;
-#if ORCON_OWNER_MODEL && PROVISION_SCENARIO
+#if ORCON_OWNER_MODEL && PROVISION_SCENARIO == 2
+// Codex OWNER-02: an unfinished installation whose stored password cannot be read. Unreadable is
+// never "no password": the first-password step stays closed (no takeover by another AP client).
+static int unreadableScenario() {
+    printf("Provisioning scenario: unfinished installation, stored password unreadable\n");
+    g_apModeFake = true; g_apOnly = true; g_viaAp = true;
+    CHECK(call("GET", "/api/setup/state", "", nullptr) == 200 && J["auth"]["password_set"] == true && J["setup"]["state"] == "setup",
+          "an unreadable password still counts as set");
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"overname-poging\"}", nullptr) == 403 && err("password-already-set") &&
+          g_storeUnreadable, "no first-password step over an unreadable password (no takeover)");
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"overname-poging\"}", nullptr) == 503 && err("auth-unavailable"),
+          "login reports unavailable, not 'no password set'");
+    printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");
+    return failures ? 1 : 0;
+}
+#endif
+#if ORCON_OWNER_MODEL && PROVISION_SCENARIO == 1
 static std::string jstr(const char* k) { return J[k].is<const char*>() ? J[k].as<const char*>() : ""; }
 static std::string body(std::initializer_list<std::pair<const char*, std::string>> kv) {
     JsonDocument d; for (auto& p : kv) d[p.first] = p.second;
@@ -427,8 +444,10 @@ int main() {
     profiles::store().begin(profileMemory);
     setupweb::restoreProfileSelection();
     setupweb::begin(srv);
-#if ORCON_OWNER_MODEL && PROVISION_SCENARIO
+#if ORCON_OWNER_MODEL && PROVISION_SCENARIO == 1
     return provisionScenario();
+#elif ORCON_OWNER_MODEL && PROVISION_SCENARIO == 2
+    return unreadableScenario();
 #endif
 
     // ---- page ------------------------------------------------------------------------------
@@ -1118,6 +1137,33 @@ int main() {
         CHECK(call("POST", "/api/auth/nonce", "{}", nullptr, "application/json", nullptr) == 403 && err("owner-key-required"),
               "owner model: no release-key recovery once installed with an owner key");
         g_ownState = provision::State::Legacy;
+    }
+    {   // Codex OWNER-03: a release-key code issued on a Legacy device dies when the owner registers a key.
+        g_viaAp = true; g_physical = true; g_cookie.clear();
+        auto issue = []() {
+            call("POST", "/api/auth/nonce", "{}", nullptr, "application/json", nullptr);
+            const std::string n = J["nonce"] | "";
+            JsonDocument d; d["manifest"] = "{\"v\":1,\"kind\":\"orcon-auth-reset\",\"mac\":\"02:00:00:00:00:0a\",\"nonce\":\"" + n + "\"}"; d["sig"] = "a1b2";
+            std::string b; serializeJson(d, b);
+            call("POST", "/api/auth/reset", b.c_str(), nullptr, "application/json", nullptr);
+            return std::string(J["code"] | "");
+        };
+        const std::string first = issue();
+        CHECK(first.size() == 9 && call("POST", "/api/auth/setup", ("{\"code\":\"" + first + "\",\"password\":\"legacy-wachtwoord\"}").c_str(), nullptr) == 200,
+              "Legacy: the release-key code still sets a password (until an owner key exists)");
+        const std::string tok = J["token"] | "";
+        const std::string stale = issue();                               // e.g. a release-key holder on the AP
+        CHECK(stale.size() == 9, "Legacy: a second code is issued");
+        CHECK(call("POST", "/api/provision/key", "{\"passphrase\":\"eigen sleutelzin\"}", tok.c_str()) == 200, "recovery mode: the owner makes a key");
+        call("GET", "/api/provision/key/file", "", nullptr);
+        JsonDocument v; v["pem"] = J["pem"].as<const char*>(); v["passphrase"] = "eigen sleutelzin";
+        std::string vb; serializeJson(v, vb);
+        CHECK(call("POST", "/api/provision/key/verify", vb.c_str(), tok.c_str()) == 200 && g_ownState == provision::State::Done, "owner key registered: Done");
+        g_cookie.clear();
+        CHECK(call("POST", "/api/auth/setup", ("{\"code\":\"" + stale + "\",\"password\":\"aanvaller-wachtw\"}").c_str(), nullptr) == 403 &&
+              err("owner-key-required"), "the stale release-key code no longer sets a password");
+        CHECK(call("POST", "/api/auth/login", "{\"password\":\"aanvaller-wachtw\"}", nullptr) == 401, "the attacker's password never took effect");
+        g_ownState = provision::State::Legacy; g_physical = false; g_viaAp = false;
     }
 #endif
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");

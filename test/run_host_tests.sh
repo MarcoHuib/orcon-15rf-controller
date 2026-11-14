@@ -70,6 +70,7 @@ if [ -d "$AJ" ]; then
     # A new device end to end (wizard, key, recovery, refusals): the control image and the RX-only rollback image.
     run setup_web_provision -DPROVISION_SCENARIO=1 -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 -DORCON_TX_RF_ENABLE=1 -DORCON_TX_PAIR=1 -DORCON_TX_CONTROL=1 $WEB src/tx_poc.cpp
     run setup_web_provision_rx -DPROVISION_SCENARIO=1 -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 $WEB
+    run setup_web_provision_unreadable -DPROVISION_SCENARIO=2 -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 -DORCON_TX_POC=1 -DORCON_WEB_CONTROL=1 -DORCON_TX_RF_ENABLE=1 -DORCON_TX_PAIR=1 -DORCON_TX_CONTROL=1 $WEB src/tx_poc.cpp
 else
     echo "setup_web: NOT TESTED (no $AJ; run 'pio run -e heltec_v2_sx1276' once)"
 fi

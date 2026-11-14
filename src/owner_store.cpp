@@ -140,24 +140,27 @@ struct Arm { uint32_t magic; uint8_t mode, inv, pad[2]; };
 static RTC_NOINIT_ATTR Arm g_arm;
 static const uint32_t ARM_MAGIC = 0x4f524d31u;   // "ORM1"
 static Mode g_boot = Mode::None;
+static provision::PhysicalTimer g_physical;      // latched: a millis() wrap never revives it
 void armMode(Mode m) { g_arm.magic = ARM_MAGIC; g_arm.mode = uint8_t(m); g_arm.inv = uint8_t(~uint8_t(m)); }
 Mode bootMode() { return g_boot; }
-uint32_t physicalLeftMs() {
-    const uint32_t now = millis();
-    return g_boot == Mode::None || now >= provision::PHYSICAL_MS ? 0 : provision::PHYSICAL_MS - now;
-}
+uint32_t physicalLeftMs() { return g_physical.left(millis()); }
 bool physicalActive() { return physicalLeftMs() > 0; }
 
 void begin() {
     webauth::Cred c;
-    const bool cred = authstore::load(c);
+    const authstore::Status cs = authstore::status(c);
+    uint8_t stored = readState();
+    // A password that cannot be read is never "no password" (Codex OWNER-02): with no state it
+    // would otherwise read as a new device (wizard open). Fail closed: installed, no wizard.
+    if (cs == authstore::Status::Unreadable && stored == 0) stored = 0xFF;
     bool migrate = false;
-    g_state = provision::fromStored(readState(), cred, migrate);
+    g_state = provision::fromStored(stored, cs == authstore::Status::Ok, migrate);
     if (migrate && !writeState(provision::STORED_LEGACY))
         Serial.println("[owner] migration not stored; will repeat at the next boot");
     const bool armed = g_arm.magic == ARM_MAGIC && g_arm.inv == uint8_t(~g_arm.mode) && g_arm.mode <= uint8_t(Mode::WifiReset);
     g_boot = armed ? Mode(g_arm.mode) : Mode::None;
     g_arm.magic = 0;                                                     // one boot only
+    g_physical.arm(g_boot != Mode::None);
     Serial.printf("[owner] state %s%s%s\n", provision::name(g_state), migrate ? " (migrated)" : "",
                   g_boot == Mode::Recovery ? ", recovery mode" : g_boot == Mode::WifiReset ? ", WiFi reset mode" : "");
 }
@@ -168,13 +171,17 @@ bool trialBoot() {
     return esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;
 }
 struct Ops : provision::ResetOps {
-    bool pending() override {
+    // Tri-state (Codex OWNER-01): only a confirmed absence means "no reset pending".
+    provision::Marker marker() override {
         nvs_handle_t h;
-        if (nvs_open(RESET_NS, NVS_READONLY, &h) != ESP_OK) return false;
+        const esp_err_t e = nvs_open(RESET_NS, NVS_READONLY, &h);
+        if (e == ESP_ERR_NVS_NOT_FOUND) return provision::Marker::Absent;
+        if (e != ESP_OK) return provision::Marker::Unreadable;
         uint8_t v = 0;
-        const bool on = nvs_get_u8(h, "pending", &v) == ESP_OK && v == 1;
+        const esp_err_t g = nvs_get_u8(h, "pending", &v);
         nvs_close(h);
-        return on;
+        if (g == ESP_ERR_NVS_NOT_FOUND) return provision::Marker::Absent;
+        return g == ESP_OK && v == 1 ? provision::Marker::Set : provision::Marker::Unreadable;
     }
     bool mark() override {
         Preferences p;
@@ -230,7 +237,7 @@ bool requestFactoryReset() {
 }
 bool resumeFactoryReset(bool& ran) {
     Ops o;
-    ran = o.pending();
+    ran = o.marker() == provision::Marker::Set;
     return provision::resume(o);
 }
 
