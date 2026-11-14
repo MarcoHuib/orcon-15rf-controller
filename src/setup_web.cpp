@@ -870,7 +870,16 @@ static bool kdfBusy() {   // PBKDF2 holds the loop for a few hundred ms: never d
 static bool setPassword(const char* pw) {
     webauth::Cred c{};
     if (!webauth::makeCred(pw, authstore::kdf, authstore::random, c)) { fail(503, "auth-unavailable"); return false; }
-    if (!authstore::save(c)) { fail(503, "auth-write-failed"); return false; }
+    if (!authstore::save(c)) {
+        // The write may have persisted although its read-back failed: mirror what storage now holds.
+        // Only a confirmed absence keeps "no password" (and so the first-password step) open (Codex OWNER-06).
+        webauth::Cred back{};
+        const authstore::Status st = authstore::status(back);
+        if (st == authstore::Status::Ok) { g_cred = back; g_credSet = true; g_credUnreadable = false; }
+        else if (st == authstore::Status::Unreadable) g_credUnreadable = true;
+        fail(503, "auth-write-failed");
+        return false;
+    }
     g_cred = c; g_credSet = true; g_credUnreadable = false;
     return true;
 }
@@ -1025,6 +1034,12 @@ static void handleProvPassword() {                     // wizard step 1: the fir
     if (!plainString(d, "password") || !webauth::passwordOk(str(d, "password"))) { fail(400, "password-weak"); return; }
     if (!authstore::kdfReady()) { fail(503, "auth-unavailable"); return; }
     if (kdfBusy()) return;
+    { webauth::Cred probe{};                          // positively confirmed absent, right now; else mirror storage
+      const authstore::Status st = authstore::status(probe);
+      if (st != authstore::Status::Absent) {
+          if (st == authstore::Status::Ok) { g_cred = probe; g_credSet = true; g_credUnreadable = false; } else g_credUnreadable = true;
+          fail(403, "password-already-set"); return;
+      } }
     if (!ownerstore::markSetup()) { fail(503, "state-write-failed"); return; }   // the state BEFORE the password
     if (!setPassword(str(d, "password"))) return;
     g_sessions.clear();
@@ -1082,8 +1097,9 @@ static void handleProvKeyVerify() {                    // the owner proves the s
     if (e) { fail(400, e); return; }
     if (!ownerkey::samePub(q, g_pendQ)) { fail(409, "key-mismatch"); return; }    // a file from an earlier attempt
     const bool installing = ownerstore::state() == provision::State::Setup;
+    g_recovery.clear();                               // before any write: no release-key code outlives an owner key,
+                                                      // not even one whose registration fails half-way (Codex OWNER-03/07)
     if (!ownerstore::registerKey(q)) { fail(503, "key-write-failed"); return; }
-    g_recovery.clear();                               // no release-key code may outlive the owner key (Codex OWNER-03)
     g_con.add(rfcon::WARN, millis(), "eigenaarssleutel %s geregistreerd%s", g_pendFp, installing ? "; installatie voltooid" : "");
     Out o; o.add("{\"ok\":true,\"fingerprint\":\"%s\",\"installed\":%s}", g_pendFp, installing ? "true" : "false");
     dropPending();

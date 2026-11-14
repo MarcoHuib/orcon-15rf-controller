@@ -2,8 +2,9 @@
 
 namespace provision {
 
-State fromStored(uint8_t stored, bool credPresent, bool& migrate) {
+State fromStored(uint8_t stored, bool credPresent, bool pubPresent, bool& migrate) {
     migrate = false;
+    if (pubPresent) return State::Done;           // an owner key exists: whatever the state says, never less
     switch (stored) {
         case 0:
             if (!credPresent) return State::New;

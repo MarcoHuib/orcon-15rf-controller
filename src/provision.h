@@ -41,7 +41,9 @@ private:
 };
 
 // From NVS at boot. migrate: store STORED_LEGACY now (a pre-owner password, nothing else).
-State fromStored(uint8_t stored, bool credPresent, bool& migrate);
+// pubPresent: an owner key is stored (or unreadable: count it). A stored key always means Done, so an
+// interrupted registration (key written, state not) never leaves Setup or Legacy (Codex OWNER-07).
+State fromStored(uint8_t stored, bool credPresent, bool pubPresent, bool& migrate);
 const char* name(State);
 inline bool installing(State s) { return s == State::New || s == State::Setup; }
 

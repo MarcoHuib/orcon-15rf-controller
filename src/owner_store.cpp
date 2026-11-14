@@ -124,7 +124,22 @@ bool ownerKey(uint8_t q[65]) {
     p.end();
     return ok;
 }
+// Tri-state like the state: a key that cannot be read still counts as present (fail closed).
+static bool pubPresent() {
+    nvs_handle_t h;
+    const esp_err_t e = nvs_open(NS, NVS_READONLY, &h);
+    if (e == ESP_ERR_NVS_NOT_FOUND) return false;
+    if (e != ESP_OK) return true;
+    size_t n = 0;
+    const esp_err_t g = nvs_get_blob(h, "pub", nullptr, &n);
+    nvs_close(h);
+    return g != ESP_ERR_NVS_NOT_FOUND;
+}
 bool registerKey(const uint8_t q[65]) {
+    // From the first write on, the release-key path is closed in RAM as well: a write that persists
+    // but fails its read-back must never leave a Legacy device recoverable with the release key
+    // (Codex OWNER-07). If nothing persisted, the next boot reads Legacy again; the owner retries.
+    if (g_state == provision::State::Legacy) g_state = provision::State::Done;
     Preferences p;
     if (!p.begin(NS, false)) return false;
     bool ok = p.putBytes("pub", q, ownerkey::PUB_LEN) == ownerkey::PUB_LEN;
@@ -154,7 +169,7 @@ void begin() {
     // would otherwise read as a new device (wizard open). Fail closed: installed, no wizard.
     if (cs == authstore::Status::Unreadable && stored == 0) stored = 0xFF;
     bool migrate = false;
-    g_state = provision::fromStored(stored, cs == authstore::Status::Ok, migrate);
+    g_state = provision::fromStored(stored, cs == authstore::Status::Ok, pubPresent(), migrate);
     if (migrate && !writeState(provision::STORED_LEGACY))
         Serial.println("[owner] migration not stored; will repeat at the next boot");
     const bool armed = g_arm.magic == ARM_MAGIC && g_arm.inv == uint8_t(~g_arm.mode) && g_arm.mode <= uint8_t(Mode::WifiReset);

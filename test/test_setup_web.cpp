@@ -25,7 +25,8 @@
 #include <vector>
 using namespace ramses;
 #ifndef PROVISION_SCENARIO
-#define PROVISION_SCENARIO 0   // 1: a new device end to end; 2: an unfinished installation, password unreadable
+#define PROVISION_SCENARIO 0   // 1: a new device end to end; 2: an unfinished installation, password unreadable;
+                               // 3: writes that persist but fail their read-back
 #endif
 
 static unsigned long g_ms = 100000;
@@ -55,12 +56,12 @@ namespace radio { uint32_t lastReceivedMs() { return g_ms; } }   // rx() deliver
 // Device side of the login (auth_store.cpp): NVS, PBKDF2, RNG and the OTA signature, faked.
 #include "auth_store.h"
 static webauth::Cred g_store;
-static bool g_storeSet = false, g_kdfOk = true, g_storeUnreadable = PROVISION_SCENARIO == 2;
+static bool g_storeSet = false, g_kdfOk = true, g_storeUnreadable = PROVISION_SCENARIO == 2, g_saveAmbiguous = false;
 static uint32_t g_rng = 0x2468ACE1u;
 namespace authstore {
 Status status(webauth::Cred& c) { if (g_storeUnreadable) return Status::Unreadable; if (!g_storeSet) return Status::Absent; c = g_store; return Status::Ok; }
 bool load(webauth::Cred& c) { return status(c) == Status::Ok; }
-bool save(const webauth::Cred& c) { g_store = c; g_storeSet = true; g_storeUnreadable = false; return true; }
+bool save(const webauth::Cred& c) { g_store = c; g_storeSet = true; g_storeUnreadable = false; return !g_saveAmbiguous; }   // ambiguous: persisted, read-back failed
 bool kdfReady() { return g_kdfOk; }
 bool kdf(const char* pw, size_t n, const uint8_t* salt, size_t sn, uint32_t it, uint8_t out[32]) {
     uint32_t h = 2166136261u ^ it;
@@ -90,7 +91,9 @@ static int g_restarts = 0, g_forgets = 0;
 #include "owner_key.h"
 #include "owner_store.h"
 #include "provision.h"
-static provision::State g_ownState = PROVISION_SCENARIO == 1 ? provision::State::New : PROVISION_SCENARIO == 2 ? provision::State::Setup : provision::State::Legacy;
+static provision::State g_ownState = PROVISION_SCENARIO == 1 || PROVISION_SCENARIO == 3 ? provision::State::New :
+                                     PROVISION_SCENARIO == 2 ? provision::State::Setup : provision::State::Legacy;
+static bool g_registerFails = false;
 static bool g_viaAp = false, g_staUp = false, g_apOnly = false, g_physical = false, g_cryptoOk = true;
 static uint8_t g_ownPub[65]; static bool g_ownPubSet = false;
 static std::string g_wtState = "idle", g_wtSsid, g_wtPass;
@@ -121,7 +124,7 @@ static const ownerkey::Crypto C{fpbkdf2, faes, frnd, fpub, fsha};
 provision::State state() { return g_ownState; }
 bool markSetup() { if (!provision::installing(g_ownState)) return false; g_ownState = provision::State::Setup; return true; }
 bool ownerKey(uint8_t q[65]) { if (g_ownPubSet) memcpy(q, g_ownPub, 65); return g_ownPubSet; }
-bool registerKey(const uint8_t q[65]) { memcpy(g_ownPub, q, 65); g_ownPubSet = true; g_ownState = provision::State::Done; return true; }
+bool registerKey(const uint8_t q[65]) { if (g_registerFails) return false; memcpy(g_ownPub, q, 65); g_ownPubSet = true; g_ownState = provision::State::Done; return true; }
 const ownerkey::Crypto& crypto() { return C; }
 bool cryptoReady() { return g_cryptoOk; }
 bool generate(uint8_t d[32], uint8_t q[65]) { frnd(d, 32); d[0] |= 1; return fpub(d, q); }
@@ -294,6 +297,44 @@ static int unreadableScenario() {
     return failures ? 1 : 0;
 }
 #endif
+#if ORCON_OWNER_MODEL && PROVISION_SCENARIO == 3
+// Codex OWNER-06/07: writes that persist but fail their read-back. An ambiguous first password closes
+// step 1 (only a confirmed absence keeps it open); a key registration that fails half-way still has
+// killed every release-key code issued before it.
+static int ambiguousScenario() {
+    printf("Provisioning scenario: writes that persist but fail their read-back\n");
+    g_apModeFake = true; g_apOnly = true; g_viaAp = true;
+    g_saveAmbiguous = true;
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"eerste-wachtwoord\"}", nullptr) == 503 && err("auth-write-failed") && g_storeSet,
+          "the first password persisted but its read-back failed: 503");
+    g_cookie.clear(); g_saveAmbiguous = false;
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"overname-poging\"}", nullptr) == 403 && err("password-already-set"),
+          "no second first password after an ambiguous write (OWNER-06)");
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"overname-poging\"}", nullptr) == 401, "the takeover password was never stored");
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"eerste-wachtwoord\"}", nullptr) == 200, "the stored password works (RAM mirrors storage)");
+    const std::string tok = J["token"] | "";
+    g_ownState = provision::State::Legacy; g_physical = true;           // a migrated device in the recovery mode
+    call("POST", "/api/auth/nonce", "{}", nullptr, "application/json", nullptr);
+    const std::string n = J["nonce"] | "";
+    JsonDocument d; d["manifest"] = "{\"v\":1,\"kind\":\"orcon-auth-reset\",\"mac\":\"02:00:00:00:00:0a\",\"nonce\":\"" + n + "\"}"; d["sig"] = "a1b2";
+    std::string b; serializeJson(d, b);
+    call("POST", "/api/auth/reset", b.c_str(), nullptr, "application/json", nullptr);
+    const std::string stale = J["code"] | "";
+    CHECK(stale.size() == 9, "Legacy: a release-key code is issued");
+    CHECK(call("POST", "/api/provision/key", "{\"passphrase\":\"eigen sleutelzin\"}", tok.c_str()) == 200, "recovery mode: the owner makes a key");
+    call("GET", "/api/provision/key/file", "", nullptr);
+    JsonDocument v; v["pem"] = J["pem"].as<const char*>(); v["passphrase"] = "eigen sleutelzin";
+    std::string vb; serializeJson(v, vb);
+    g_registerFails = true;
+    CHECK(call("POST", "/api/provision/key/verify", vb.c_str(), tok.c_str()) == 503 && err("key-write-failed"), "the registration write fails half-way");
+    g_cookie.clear();
+    CHECK(call("POST", "/api/auth/setup", ("{\"code\":\"" + stale + "\",\"password\":\"aanvaller-wachtw\"}").c_str(), nullptr) == 409 &&
+          err("code-required"), "the earlier release-key code is gone anyway (OWNER-07)");
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"aanvaller-wachtw\"}", nullptr) == 401, "the attacker's password never took effect");
+    printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");
+    return failures ? 1 : 0;
+}
+#endif
 #if ORCON_OWNER_MODEL && PROVISION_SCENARIO == 1
 static std::string jstr(const char* k) { return J[k].is<const char*>() ? J[k].as<const char*>() : ""; }
 static std::string body(std::initializer_list<std::pair<const char*, std::string>> kv) {
@@ -448,6 +489,8 @@ int main() {
     return provisionScenario();
 #elif ORCON_OWNER_MODEL && PROVISION_SCENARIO == 2
     return unreadableScenario();
+#elif ORCON_OWNER_MODEL && PROVISION_SCENARIO == 3
+    return ambiguousScenario();
 #endif
 
     // ---- page ------------------------------------------------------------------------------

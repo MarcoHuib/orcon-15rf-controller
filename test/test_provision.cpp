@@ -33,13 +33,17 @@ struct Flash : ResetOps {
 int main() {
     // ---- stored state and migration
     bool mig = true;
-    CHECK(fromStored(0, false, mig) == State::New && !mig);
-    CHECK(fromStored(0, true, mig) == State::Legacy && mig);              // password from pre-owner firmware
-    CHECK(fromStored(STORED_SETUP, false, mig) == State::Setup && !mig);  // step 1 interrupted before the password
-    CHECK(fromStored(STORED_SETUP, true, mig) == State::Setup && !mig);
-    CHECK(fromStored(STORED_DONE, true, mig) == State::Done && !mig);
-    CHECK(fromStored(STORED_LEGACY, true, mig) == State::Legacy && !mig);
-    CHECK(fromStored(7, false, mig) == State::Done && fromStored(255, true, mig) == State::Done);   // unknown: fail closed
+    CHECK(fromStored(0, false, false, mig) == State::New && !mig);
+    CHECK(fromStored(0, true, false, mig) == State::Legacy && mig);              // password from pre-owner firmware
+    CHECK(fromStored(STORED_SETUP, false, false, mig) == State::Setup && !mig);  // step 1 interrupted before the password
+    CHECK(fromStored(STORED_SETUP, true, false, mig) == State::Setup && !mig);
+    CHECK(fromStored(STORED_DONE, true, false, mig) == State::Done && !mig);
+    CHECK(fromStored(STORED_LEGACY, true, false, mig) == State::Legacy && !mig);
+    CHECK(fromStored(7, false, false, mig) == State::Done && fromStored(255, true, false, mig) == State::Done);   // unknown: fail closed
+    // Codex OWNER-07: a stored owner key always means Done (an interrupted registration, a partial erase)
+    CHECK(fromStored(STORED_LEGACY, true, true, mig) == State::Done && !mig);
+    CHECK(fromStored(STORED_SETUP, true, true, mig) == State::Done && !mig);
+    CHECK(fromStored(0, true, true, mig) == State::Done && !mig && fromStored(0, false, true, mig) == State::Done && !mig);
     CHECK(!strcmp(name(State::New), "new") && !strcmp(name(State::Legacy), "legacy") && installing(State::Setup) && !installing(State::Done));
 
     // ---- route policy
@@ -106,7 +110,7 @@ int main() {
         Flash f; request(f); f.reboot(); f.budget = 1; resume(f);
         CHECK(!f.ns.count("orconauth") && f.ns.count("orconown"));
         bool mig = false;
-        CHECK(fromStored(STORED_DONE, false, mig) == State::Done && !mig);  // installed without a password: locked
+        CHECK(fromStored(STORED_DONE, false, false, mig) == State::Done && !mig);  // installed without a password: locked
     }
     {   // the recovery mode timer: 15 minutes, then latched off (a millis() wrap never revives it)
         PhysicalTimer p; CHECK(p.left(0) == 0);

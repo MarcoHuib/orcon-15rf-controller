@@ -53,6 +53,11 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
 - Een onbekende waarde telt ook als Done.
 - Een opgeslagen wachtwoord dat niet te lezen is, telt als "gezet", nooit als "geen". Stap 1 gaat dan niet opnieuw open (Codex OWNER-02); aanmelden meldt "niet beschikbaar".
 - Na de registratie van een eigenaarssleutel vervallen openstaande herstelcodes van de releasesleutel. Zo'n code wordt daarna ook geweigerd (Codex OWNER-03).
+- **Dubbelzinnige schrijfacties** (wel opgeslagen, maar het teruglezen mislukt) worden voorzichtig behandeld (Codex OWNER-06/07):
+  - Na een mislukte opslag neemt het RAM over wat er werkelijk in de opslag staat.
+  - Stap 1 opent alleen als de opslag op dat moment bevestigt dat er nog geen wachtwoord is.
+  - Herstelcodes van de releasesleutel vervallen al vóór de eerste schrijfactie van een registratie, en het herstelpad sluit dan ook in RAM.
+  - Bij het opstarten betekent een opgeslagen (of onleesbare) eigenaarssleutel altijd Done, wat de staat ook zegt.
 
 ## 3. Eerste installatie via de directe WiFi-verbinding
 
@@ -322,13 +327,13 @@ Een LAN-IP of `.local` krijgt geen publiek certificaat.
 
 | Suite | Wat |
 |---|---|
-| `provision` (95) | staten, migratie, routebeleid, fabrieksreset met een stroomonderbreking op elke stap, onleesbare marker, vergrendelde herstelmodus-timer |
+| `provision` (98) | staten, migratie, routebeleid, fabrieksreset met een stroomonderbreking op elke stap, onleesbare marker, vergrendelde herstelmodus-timer |
 | `reset_gesture` (32) | gewone druk, korte reset, lange druk, annuleren, alle menukeuzes, bevestiging, vastzittende knop, dender, wrap |
 | `owner_key` (36) | KAT tegen OpenSSL (AES, P-256, SHA-256); in beide richtingen uitwisselbaar met de `openssl`-CLI; weigeren van SHA1, AES-128, weinig rondes, onversleuteld, P-384; mutatie-sweep |
 | `setup_web_provision` (54) en `_provision_rx` (53), plus de OWNER-03-test in elke owner-build | nieuw apparaat tot geïnstalleerd: LAN geweigerd, STA aan geweigerd, stap 1 eenmalig, onderbroken wizard, WiFi-test, sleutel maken en controleren, oude sleutel en verkeerde zin geweigerd, herstel met blokkade, sleutel vervangen, releasesleutel dicht, captive redirect, geen resetroute |
 | `ota_policy` (85) | onder andere v2-releases, downgrade, RF-test nooit in een release, pre-owner-image geweigerd |
 | `web_auth` (95) | onder andere Codex SEC-02/03 (wrap) en het wissen van herstelcodes |
-| `setup_web_provision_unreadable` | onleesbaar wachtwoord in een onvoltooide installatie: stap 1 blijft dicht (OWNER-02) |
+| `setup_web_provision_unreadable`, `_ambiguous` | onleesbaar wachtwoord in een onvoltooide installatie (OWNER-02); opgeslagen maar niet terug te lezen: stap 1 blijft dicht en oude codes zijn weg, ook bij een half mislukte registratie (OWNER-06/07) |
 | CLI (43), pagina (136) | onder andere aanmelden voor OTA, releasebundel, de wizard in de pagina, de herstelpaden |
 
 Ook gebouwd: alle 11 firmware-omgevingen.
