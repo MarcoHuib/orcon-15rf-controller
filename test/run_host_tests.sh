@@ -49,6 +49,7 @@ run ota_policy -Wall -Wextra -Werror -I src -I $AJ test/test_ota_policy.cpp src/
 run web_auth -Wall -Wextra -Werror -I src -I $AJ test/test_web_auth.cpp src/web_auth.cpp
 run provision -Wall -Wextra -Werror -I src test/test_provision.cpp src/provision.cpp
 run reset_gesture -Wall -Wextra -Werror -I src test/test_reset_gesture.cpp
+run wifi_watch -Wall -Wextra -Werror -I src test/test_wifi_watch.cpp
 # The owner key file against OpenSSL (primitives and the openssl CLI as the independent reader).
 OSSL="$( (brew --prefix openssl 2>/dev/null || true) | head -1)"
 if [ -n "$OSSL" ] && [ -f "$OSSL/include/openssl/evp.h" ]; then

@@ -1,5 +1,6 @@
 // net.h — WiFi + web UI + MQTT + OLED glue.
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 
 namespace net {
@@ -13,6 +14,7 @@ const char* ipAddr();
 const char* ssidName();
 bool        apMode();
 bool        wifiConnected();  // station mode and associated with the configured network
+void        wifiDiag(char* out, size_t n);   // /api/diag: "wifi":{signal, address, outages, last reason},
 const char* mqttHost();
 bool        mqttConnected();
 bool        maskIds();        // privacy setting: mask device IDs in the UI

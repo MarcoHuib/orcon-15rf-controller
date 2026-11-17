@@ -111,6 +111,7 @@ Een fabrieksreset maakt ook de herstelsleutel van de vorige eigenaar waardeloos.
 | Herstelmenu verschijnt niet | Begin met RST en houd PRG vast binnen 20 seconden na de herstart, en dan 15 seconden lang. |
 | "Update nog niet bevestigd" in het menu | Na een update test de Heltec zichzelf maximaal 5 minuten. Probeer het daarna opnieuw. |
 | Netwerk niet gevonden | Alleen 2,4 GHz-netwerken werken. Controleer de naam (hoofdletters tellen mee). |
+| Scherm toont **WiFi: verbinden...**, of de Heltec is even niet bereikbaar | De verbinding met je thuisnetwerk is weg, bijvoorbeeld omdat de router herstart. De Heltec probeert het elke 30 seconden opnieuw en herstart zichzelf na 15 minuten zonder netwerk. Is het netwerk dan nog weg, dan toont hij **WiFi-instelmodus** en zoekt hij elke minuut verder; zodra je thuisnetwerk terug is, gaat hij er vanzelf weer op. Daarna kan hij een ander IP-adres hebben: gebruik **http://orcon15rf.local** of het adres op het scherm. |
 | Download van de sleutel lukt niet | Gebruik **Tekst kopiëren**, of open http://192.168.4.1 in Safari of Chrome. |
 | Wachtwoord vergeten, geen sleutel meer | Fabrieksreset en opnieuw installeren. |
 | Scherm toont **Reset nodig (PRG)** | De Heltec is zijn instellingen kwijt (zeldzame opslagfout) maar had een eigenaar. Uit veiligheid start de installatie pas na een fabrieksreset met de knoppen. |

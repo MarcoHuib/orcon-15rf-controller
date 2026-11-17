@@ -8,6 +8,7 @@
 #include "rx_only.h"
 #include "net_cfg.h"
 #include "oled_power.h"
+#include "wifi_watch.h"
 #if defined(USE_CC1101_TX) || defined(RADIO_CC1101_ASYNC)
 #include "cc1101_tx.h"
 #endif
@@ -88,7 +89,12 @@ static bool     g_dirty     = true;
 static uint32_t g_lastPub   = 0;
 static uint32_t g_lastMqtt  = 0;
 static uint32_t g_rebootAt  = 0;
-static char     g_ip[24]    = "0.0.0.0";
+static char     g_ip[24]    = "0.0.0.0";   // the current address: the OLED and the Host check (DNS rebinding) use it
+static wifiwatch::Watch g_watch;          // the home network in normal operation (wifi_watch.h)
+static volatile uint8_t g_staReason = 0;  // the network's last disconnect reason (written by the WiFi event task)
+static RTC_NOINIT_ATTR uint32_t g_watchMark;   // WATCH_MARK: the previous boot ended in the watch's restart
+static constexpr uint32_t WATCH_MARK = 0x57a7c4e1u;
+static bool     g_watchRestarted = false;
 
 static String   g_ssid, g_pass, g_mqttHost;
 // MQTT runs only with a broker configured: NVS "mqtt" = "" means off (net_cfg.h).
@@ -749,7 +755,8 @@ static void oledDraw() {
         snprintf(l2, sizeof(l2), "Mode: %s", orcon::modeName(s.mode));
     int fage = s.lastFanMs ? (int)((millis() - s.lastFanMs) / 1000) : -1;
     snprintf(l3, sizeof(l3), "fan %ds  CO2 %u", fage, s.co2);
-    snprintf(l4, sizeof(l4), g_apMode ? "AP %s" : "%s", g_ip);
+    if (!g_apMode && WiFi.status() != WL_CONNECTED) snprintf(l4, sizeof(l4), "WiFi: verbinden...");   // never a stale address
+    else snprintf(l4, sizeof(l4), g_apMode ? "AP %s" : "%s", g_ip);
 #if ORCON_TX_POC && !ORCON_WEB_CONTROL
     if (!g_pocAuthenticated && g_pocBootToken[0] && uint32_t(millis() - g_pocBootMs) < 60000) {
         // Physical bootstrap only: never put this credential in HTTP, serial or NVS.
@@ -933,6 +940,10 @@ static void startAp(bool only) {
 }
 static void wifiConnect() {
     WiFi.persistent(false);   // no flash copy in the WiFi driver: credentials live in NVS "orcon" only
+    // Mesh and multi-AP homes: every join (here, apRecovery, the watch, the wizard's test) picks the
+    // strongest access point of the network, not the first one a channel-by-channel scan happens to find.
+    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
 #if ORCON_OWNER_MODEL
     // Installing, or a PRG recovery boot: the setup AP only. Without a station the device has no path
     // to the home network while the wizard handles passwords and the key file.
@@ -988,6 +999,60 @@ static void apRecovery(uint32_t now) {
     if (uint32_t(now - last) < 60000 || WiFi.softAPgetStationNum() > 0) return;
     last = now;
     WiFi.begin(g_ssid.c_str(), g_pass.c_str());
+}
+
+static void staEvent(arduino_event_id_t, arduino_event_info_t info) {
+    const uint8_t r = info.wifi_sta_disconnected.reason;
+    if (r != WIFI_REASON_ASSOC_LEAVE) g_staReason = r;   // 8 is this firmware's own disconnect()
+}
+static void wifiNote(uint8_t kind, const char* m) {
+#if !ORCON_TX_POC || ORCON_WEB_CONTROL
+    setupweb::note(kind, m);
+#else
+    (void)kind; Serial.println(m);
+#endif
+}
+// The home network in normal operation (wifi_watch.h): retry a lost connection whatever the reason, keep
+// the address current (after an outage a DHCP server may hand out another one; without this the Host check
+// refuses the new address and the OLED shows the old one), and restart as a last resort. In setup-AP mode
+// the AP code and apRecovery() own the radio (the wizard's WiFi test only runs there).
+static void staWatch(uint32_t now) {
+    static uint32_t last = 0, noted = 0;
+    if (g_apMode || uint32_t(now - last) < 1000) return;
+    last = now;
+    const bool up = WiFi.status() == WL_CONNECTED;
+    char m[80];
+    if (up) {
+        const IPAddress a = WiFi.localIP();
+        char ip[16]; snprintf(ip, sizeof(ip), "%u.%u.%u.%u", a[0], a[1], a[2], a[3]);
+        if (strcmp(ip, g_ip)) { snprintf(g_ip, sizeof(g_ip), "%s", ip); g_dirty = true; }
+        if (g_watch.down()) {   // before tick(), which ends the outage
+            snprintf(m, sizeof(m), "WiFi: weer verbonden na %lu s (adres %s)", (unsigned long)(g_watch.downMs(now) / 1000), g_ip);
+            wifiNote(rfcon::INFO, m);
+        }
+    }
+#if ORCON_OWNER_MODEL
+    const bool settled = !ownerstore::unsettledBoot();   // OWNER-10: no restart while an update is unconfirmed
+#else
+    const bool settled = true;   // no ownership model; an unconfirmed update rolls back after 300 s anyway
+#endif
+    const bool wasDown = g_watch.down();
+    const wifiwatch::Act act = g_watch.tick(up, now, settled);
+    if (wasDown != g_watch.down()) g_dirty = true;   // the OLED line
+    if (act == wifiwatch::Act::Retry) {
+        if (noted != g_watch.outages()) {        // once per outage: no flood in the console
+            noted = g_watch.outages();
+            snprintf(m, sizeof(m), "WiFi: verbinding weg (reden %u), opnieuw verbinden", (unsigned)g_staReason);
+            wifiNote(rfcon::ERR, m);
+        }
+        WiFi.disconnect();                       // ends a half-finished attempt of the core's own retry
+        WiFi.begin(g_ssid.c_str(), g_pass.c_str());
+    } else if (act == wifiwatch::Act::Restart) {
+        Serial.println("[wifi] 15 minutes without the home network: restart");
+        g_watchMark = WATCH_MARK;
+        delay(100);
+        ESP.restart();
+    }
 }
 
 #if ORCON_OWNER_MODEL
@@ -1234,6 +1299,9 @@ void begin() {
     setupweb::restoreProfileSelection();
 #endif
     oledInit();
+    g_watchRestarted = g_watchMark == WATCH_MARK;   // RTC memory: random after a power cut, kept over a restart
+    g_watchMark = 0;
+    WiFi.onEvent(staEvent, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
     wifiConnect();
 
 #if ORCON_SIGNED_OTA
@@ -1328,6 +1396,14 @@ const char* ipAddr()       { return g_ip; }
 const char* ssidName()     { return g_apMode ? WIFI_AP_NAME : g_ssid.c_str(); }
 bool        apMode()       { return g_apMode; }
 bool        wifiConnected(){ return !g_apMode && WiFi.status() == WL_CONNECTED; }
+void wifiDiag(char* out, size_t n) {
+    const bool up = wifiConnected();
+    snprintf(out, n, "\"wifi\":{\"up\":%s,\"rssi\":%d,\"ip\":\"%s\",\"outages\":%lu,\"retries\":%lu,\"down_s\":%lu,"
+             "\"last_reason\":%u,\"watch_restart\":%s},",
+             up ? "true" : "false", up ? (int)WiFi.RSSI() : 0, g_ip, (unsigned long)g_watch.outages(),
+             (unsigned long)g_watch.retries(), (unsigned long)(g_watch.downMs(millis()) / 1000), (unsigned)g_staReason,
+             g_watchRestarted ? "true" : "false");
+}
 bool        maskIds()      { return g_maskIds; }
 void        restartSoon()  { g_rebootAt = millis() + 1200; }
 // Only SSID + password: profiles, MQTT, OLED and IDs stay. An empty SSID makes wifiConnect() start the setup AP.
@@ -1364,6 +1440,7 @@ void loop() {
 #endif
     oledTick();  // runs independently of state publishing and RF activity
     apRecovery(millis());
+    staWatch(millis());
 #if ORCON_OWNER_MODEL
     if (g_apMode) g_dns.processNextRequest();
     wifiTestTick(millis());
