@@ -14,9 +14,9 @@ struct Rig {
     int retries = 0, restarts = 0;
     uint32_t firstRetry = 0, firstRestart = 0;
     explicit Rig(uint32_t start = 0) : t(start) {}
-    void run(bool up, uint32_t ms, bool mayRestart = true) {
+    void run(bool up, uint32_t ms, bool mayRestart = true, bool joined = false) {
         for (uint32_t i = 0; i < ms; i += 100, t += 100) {   // t may wrap
-            const Act a = w.tick(up, t, mayRestart);
+            const Act a = w.tick(up, up || joined, t, mayRestart);
             if (a == Act::Retry && !retries++) firstRetry = t;
             if (a == Act::Restart && !restarts++) firstRestart = t;
         }
@@ -69,6 +69,33 @@ int main() {
     {   // Down from the very first tick (no "up" seen before): the same rules.
         Rig r(123); r.run(false, FIRST_RETRY_MS + 100);
         CHECK(r.retries == 1 && r.firstRetry == 123 + FIRST_RETRY_MS && r.w.outages() == 1);
+    }
+    {   // The address is lost while still joined (DHCP renewing): no retry cuts DHCP short for 60 s;
+        // after that the retries resume, and the 15-minute restart still applies.
+        Rig r; r.run(true, 1000);
+        const uint32_t lost = r.t;
+        r.run(false, DHCP_WINDOW_MS, true, true);
+        CHECK(r.retries == 0);
+        r.run(false, 200, true, true);
+        CHECK(r.retries == 1 && r.firstRetry >= lost + DHCP_WINDOW_MS && r.firstRetry <= lost + DHCP_WINDOW_MS + 200);
+        r.run(false, RESTART_AFTER_MS, true, true);
+        CHECK(r.restarts > 0 && r.firstRestart == lost + RESTART_AFTER_MS);
+    }
+    {   // A retry ends the join; the next join gets a fresh DHCP window, then a retry 30 s later at the earliest.
+        Rig r; r.run(true, 1000); r.run(false, 12000);              // first retry at 10 s
+        CHECK(r.retries == 1);
+        r.run(false, 3000, true, true);                              // joined again 2 s after it, waiting for DHCP
+        r.run(false, DHCP_WINDOW_MS - 3000 - 100, true, true);
+        CHECK(r.retries == 1);                                       // inside the window: nothing
+        r.run(false, 3000, true, true);
+        CHECK(r.retries == 2);                                       // window over: retry
+        r.run(false, 1000);                                          // that retry dropped the join
+        r.run(false, 20000, true, true);                             // joined again: a new window
+        CHECK(r.retries == 2);
+    }
+    {   // An address arrives inside the window: back online, nothing else happens.
+        Rig r; r.run(true, 1000); r.run(false, 5000); r.run(false, 20000, true, true); r.run(true, 60000);
+        CHECK(r.retries == 0 && r.restarts == 0 && !r.w.down() && r.w.outages() == 1);
     }
     printf("wifi_watch: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;

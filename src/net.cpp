@@ -9,6 +9,7 @@
 #include "net_cfg.h"
 #include "oled_power.h"
 #include "wifi_watch.h"
+#include <atomic>
 #if defined(USE_CC1101_TX) || defined(RADIO_CC1101_ASYNC)
 #include "cc1101_tx.h"
 #endif
@@ -28,6 +29,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_wifi.h>   // esp_wifi_sta_get_ap_info: is the station associated (the watch's DHCP window)
 #if ORCON_SIGNED_OTA
 #include <ESPmDNS.h>   // orcon15rf.local for tools/orcon.py (ArduinoOTA starts mDNS on other builds)
 #endif
@@ -91,7 +93,7 @@ static uint32_t g_lastMqtt  = 0;
 static uint32_t g_rebootAt  = 0;
 static char     g_ip[24]    = "0.0.0.0";   // the current address: the OLED and the Host check (DNS rebinding) use it
 static wifiwatch::Watch g_watch;          // the home network in normal operation (wifi_watch.h)
-static volatile uint8_t g_staReason = 0;  // the network's last disconnect reason (written by the WiFi event task)
+static std::atomic<uint8_t> g_staReason{0};   // the network's last disconnect reason (written by the WiFi event task)
 static RTC_NOINIT_ATTR uint32_t g_watchMark;   // WATCH_MARK: the previous boot ended in the watch's restart
 static constexpr uint32_t WATCH_MARK = 0x57a7c4e1u;
 static bool     g_watchRestarted = false;
@@ -1003,7 +1005,7 @@ static void apRecovery(uint32_t now) {
 
 static void staEvent(arduino_event_id_t, arduino_event_info_t info) {
     const uint8_t r = info.wifi_sta_disconnected.reason;
-    if (r != WIFI_REASON_ASSOC_LEAVE) g_staReason = r;   // 8 is this firmware's own disconnect()
+    if (r != WIFI_REASON_ASSOC_LEAVE) g_staReason.store(r, std::memory_order_relaxed);   // 8: our own disconnect()
 }
 static void wifiNote(uint8_t kind, const char* m) {
 #if !ORCON_TX_POC || ORCON_WEB_CONTROL
@@ -1036,13 +1038,15 @@ static void staWatch(uint32_t now) {
 #else
     const bool settled = true;   // no ownership model; an unconfirmed update rolls back after 300 s anyway
 #endif
+    wifi_ap_record_t ap;
+    const bool joined = esp_wifi_sta_get_ap_info(&ap) == ESP_OK;   // associated; DHCP may still run (IDF, any core)
     const bool wasDown = g_watch.down();
-    const wifiwatch::Act act = g_watch.tick(up, now, settled);
+    const wifiwatch::Act act = g_watch.tick(up, joined, now, settled);
     if (wasDown != g_watch.down()) g_dirty = true;   // the OLED line
     if (act == wifiwatch::Act::Retry) {
         if (noted != g_watch.outages()) {        // once per outage: no flood in the console
             noted = g_watch.outages();
-            snprintf(m, sizeof(m), "WiFi: verbinding weg (reden %u), opnieuw verbinden", (unsigned)g_staReason);
+            snprintf(m, sizeof(m), "WiFi: verbinding weg (reden %u), opnieuw verbinden", (unsigned)g_staReason.load(std::memory_order_relaxed));
             wifiNote(rfcon::ERR, m);
         }
         WiFi.disconnect();                       // ends a half-finished attempt of the core's own retry
@@ -1299,7 +1303,8 @@ void begin() {
     setupweb::restoreProfileSelection();
 #endif
     oledInit();
-    g_watchRestarted = g_watchMark == WATCH_MARK;   // RTC memory: random after a power cut, kept over a restart
+    // RTC memory: random after a power cut, kept over a restart. Best-effort evidence (diagnostics only).
+    g_watchRestarted = g_watchMark == WATCH_MARK && esp_reset_reason() == ESP_RST_SW;
     g_watchMark = 0;
     WiFi.onEvent(staEvent, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
     wifiConnect();
@@ -1401,7 +1406,8 @@ void wifiDiag(char* out, size_t n) {
     snprintf(out, n, "\"wifi\":{\"up\":%s,\"rssi\":%d,\"ip\":\"%s\",\"outages\":%lu,\"retries\":%lu,\"down_s\":%lu,"
              "\"last_reason\":%u,\"watch_restart\":%s},",
              up ? "true" : "false", up ? (int)WiFi.RSSI() : 0, g_ip, (unsigned long)g_watch.outages(),
-             (unsigned long)g_watch.retries(), (unsigned long)(g_watch.downMs(millis()) / 1000), (unsigned)g_staReason,
+             (unsigned long)g_watch.retries(), (unsigned long)(g_watch.downMs(millis()) / 1000),
+             (unsigned)g_staReason.load(std::memory_order_relaxed),
              g_watchRestarted ? "true" : "false");
 }
 bool        maskIds()      { return g_maskIds; }
