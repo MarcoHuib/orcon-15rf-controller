@@ -55,7 +55,8 @@ with tempfile.TemporaryDirectory() as d:
     a, b = Path(d) / 'a.bin', Path(d) / 'b.bin'
     a.write_bytes(dump); b.write_bytes(newer)
     out = subprocess.run([sys.executable, str(Path(nk.__file__)), a], capture_output=True, text=True)
-    check(out.returncode == 0 and 'Testnet' not in out.stdout and 'all page and entry CRCs OK' in out.stdout, 'CLI lists keys, never values')
+    check(out.returncode == 0 and 'Testnet' not in out.stdout and 'sha256' not in out.stdout
+          and 'all page and entry CRCs OK' in out.stdout, 'CLI lists keys, never values or value hashes')
     out = subprocess.run([sys.executable, str(Path(nk.__file__)), '--diff', a, b], capture_output=True, text=True)
     check('~ orcon' in out.stdout and 'mode' in out.stdout, 'diff marks the changed key')
 print(f'nvs keys: {ok} checks, {fail} failures'); sys.exit(1 if fail else 0)

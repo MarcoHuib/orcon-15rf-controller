@@ -1,9 +1,9 @@
 """List the keys in an ESP32 NVS partition dump (read with esptool), without showing values.
 
-Checks every page header and entry CRC, then prints one line per key: namespace, key, type, size
-and a short SHA-256 of the value. Two dumps can be compared with --diff: which keys were added,
-removed or changed. Used to verify a configuration backup before a migration or factory reset
-(docs/MIGRATIE_EIGEN_HELTEC.md). Values are never printed: they include WiFi and login secrets.
+Checks every page header and entry CRC, then prints one line per key: namespace, key, type and
+size. Two dumps can be compared with --diff: which keys were added, removed or changed. Used to
+verify a configuration backup before a migration or factory reset (docs/MIGRATIE_EIGEN_HELTEC.md).
+Values are never printed, nor hashes of them: a short hash of a WiFi password can be brute-forced.
 
     python3 tools/nvs_keys.py nvs.bin
     python3 tools/nvs_keys.py --diff before.bin after.bin
@@ -75,8 +75,8 @@ def main(argv):
         return 0
     if len(argv) != 1: print(__doc__); return 2
     ks = keys(open(argv[0], 'rb').read())
-    for (ns, key), (typ, size, h) in sorted(ks.items()):
-        print(f'{ns:<16} {key:<16} {typ:<5} {size:>5} B  sha256:{h}')
+    for (ns, key), (typ, size, _) in sorted(ks.items()):
+        print(f'{ns:<16} {key:<16} {typ:<5} {size:>5} B')
     print(f'{len(ks)} keys in {len({k[0] for k in ks})} namespaces; all page and entry CRCs OK')
     return 0
 
