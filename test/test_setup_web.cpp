@@ -81,15 +81,19 @@ static std::string g_siriKey;                  // the stored Siri key ("" = none
 static bool g_siriStoreFails = false;          // NVS write or read-back error
 static bool g_siriUnreadable = false;          // the stored key cannot be read (it may still exist)
 namespace authstore {
+// Same contract as auth_store.cpp (Codex SIRI-04): a malformed stored value is unreadable, and a change
+// counts only if it reads back.
 Status siriKey(char out[33]) {
     out[0] = 0;
-    if (g_siriUnreadable) return Status::Unreadable;
+    if (g_siriUnreadable || (!g_siriKey.empty() && !webauth::siriKeyValid(g_siriKey.c_str()))) return Status::Unreadable;
     if (g_siriKey.empty()) return Status::Absent;
     snprintf(out, 33, "%s", g_siriKey.c_str()); return Status::Ok;
 }
 bool setSiriKey(const char* k) {
     if (g_siriStoreFails || (k && !webauth::siriKeyValid(k))) return false;
-    g_siriKey = k ? k : ""; return true;
+    g_siriKey = k ? k : "";
+    char back[33]; const Status s = siriKey(back);
+    return k ? s == Status::Ok && !strcmp(back, k) : s == Status::Absent;
 }
 }
 #endif
@@ -1067,7 +1071,12 @@ int main() {
         g_siriUnreadable = true;
         CHECK(siri(q + "2") == 401, "Siri: an unreadable key refuses, like no key (Codex SIRI-01)");
         CHECK(call("GET", "/api/siri/key") == 503 && err("storage-unavailable"), "Siri key: unreadable is never shown as off (Codex SIRI-01)");
-        g_siriUnreadable = false;
+        CHECK(call("POST", "/api/siri/key", "{\"action\":\"off\"}") == 503 && err("storage-unavailable"),
+              "Siri key: no off claimed while the result cannot be read back");
+        g_siriUnreadable = false; g_siriKey = key;   // that erase may or may not have landed: restore for the next checks
+        { const std::string kept = g_siriKey; g_siriKey = "ZZZZ";                  // a damaged stored value
+          CHECK(siri("k=ZZZZ&stand=2") == 401 && call("GET", "/api/siri/key") == 503, "Siri: a malformed stored key is unreadable, never a key");
+          g_siriKey = kept; }
         txpoc::g_budgetWait = 42000;
         CHECK(siri(q + "2") == 429 && srv.out.find("42 seconden") != std::string::npos, "Siri: the RF budget applies, the wait in seconds");
         txpoc::g_budgetWait = 0;

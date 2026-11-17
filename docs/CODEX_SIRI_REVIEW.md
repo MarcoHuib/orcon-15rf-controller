@@ -53,3 +53,23 @@
 - **Tests:** vier nieuwe checks in `setup_web_control`, samen 34 Siri-checks.
 
 **Niet getest:** HTTP en WiFi in het echt, de hardware-RNG, flashfouten en stroomuitval, RF, en iOS (Opdrachten en Siri).
+
+## Ronde 2 (9516a01): GO
+**SIRI-01: FIXED. SIRI-02: FIXED. SIRI-03: FIXED.** Geen regressie gevonden in de RF-controles, de netwerk- en Host-controles, aanmelden en CSRF, het vervangen en intrekken van de sleutel, of de pagina.
+
+Voor SIRI-01 heeft Codex de NVS-code getoetst aan het `nvs.h`-contract van ESP-IDF 4.4.7:
+- **Lezen.** Een ontbrekende namespace of sleutel geeft `NOT_FOUND`. Een te lange waarde geeft `INVALID_LENGTH`, en een onjuist formaat faalt de validatie.
+- **Schrijven en wissen.** Set en erase worden gecontroleerd, en `nvs_commit` moet slagen. Daarna leest de code opnieuw. Alleen een `NOT_FOUND` bij het wissen telt als succes, en ook dan moet het teruglezen bevestigen dat de sleutel weg is.
+
+| ID | Ernst | Bevinding |
+|----|-------|-----------|
+| SIRI-04 | INFO | De nepversie van de opslag in de hosttest was soepeler dan de firmware. Een ongeldige opgeslagen waarde gold als geldig, en een wijziging gold als gelukt zonder teruglezen. De hosttests vervangen `auth_store.cpp` en kunnen fouten in de NVS-aanroepen dus niet vinden. |
+
+**Herstel:**
+- De nepversie volgt nu hetzelfde contract: een ongeldige opgeslagen waarde is onleesbaar, en een wijziging telt alleen na teruglezen.
+- Twee nieuwe checks, samen 36 Siri-checks:
+  - "uit" wordt niet geclaimd zolang het resultaat niet terug te lezen is;
+  - een beschadigde opgeslagen sleutel werkt nooit als sleutel.
+- De strengere nepversie ving meteen een te strenge bewering in de eigen test: na een onbevestigd wissen is de toestand onbekend. Dat is verbeterd.
+
+**Bewust niet gedaan:** de echte NVS-code op de host draaien via een NVS-shim. Die code is door review gecontroleerd en wordt op de Heltec getest.
