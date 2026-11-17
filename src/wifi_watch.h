@@ -33,6 +33,7 @@ public:
         if (int32_t(now - next_) < 0) return Act::None;   // wrap-safe: millis() wraps after 49.7 days
         next_ = now + RETRY_EVERY_MS;
         ++retries_;
+        joined_ = false;   // the retry ends this join: the next one gets a fresh DHCP window, even unsampled
         return Act::Retry;
     }
     bool     down() const { return down_; }

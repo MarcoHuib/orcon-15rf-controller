@@ -41,3 +41,20 @@ Een ESP32 met verbinding stuurt elke 60 s een gratuitous ARP (lwIP-instelling). 
 - **WIFI-04:** gedocumenteerd als grens in `src/wifi_watch.h`. Er is bewust geen liveness-probe gebouwd: een ping naar de gateway ziet geen problemen met inkomende broadcasts, en het incident past beter bij de twee herstelde gaten. Komt het terug, dan laat `/api/diag` het zien: `"up":true` zonder nieuwe onderbreking. Dan volgt een apart ontworpen probe.
 
 **Niet getest:** echte drivertiming, DHCP-gedrag van verschillende routers, verborgen SSID's, WPA3, de AP+STA-wizard met een telefoon, en het opstartvenster van 15 s. Hardware: NOT TESTED.
+
+## Ronde 2 (43b6f3e): GO
+
+| ID | Ernst | Bevinding |
+|----|-------|-----------|
+| WIFI-05 | MINOR | Na een nieuwe poging bleef `joined_` staan. Werd het board tussen twee metingen in weer aangemeld, dan kreeg die nieuwe aanmelding het verlopen DHCP-venster. De volgende poging kwam dan na 30 s en kon een DHCP-aanvraag van 40 tot 60 s afbreken. |
+| WIFI-06 | MINOR (bestaand) | `g_wtReason` van de WiFi-test in de wizard had dezelfde race tussen de eventtaak en de looptaak als WIFI-02. |
+
+Status van ronde 1: WIFI-01 PARTIAL (door WIFI-05), WIFI-02 FIXED, WIFI-03 FIXED, WIFI-04 DOCUMENTED.
+
+**Wel gecontroleerd en in orde:**
+- Het DHCP-venster kan de herstart na 15 minuten niet uitstellen. De herstartcontrole komt vóór het venster, en een nieuwe aanmelding zet de starttijd van de onderbreking niet terug.
+- AP-modus, de WiFi-test van de wizard, OTA, fabrieksreset, de Host-controle en `/api/diag`: geen regressie gevonden.
+
+## Herstel na ronde 2
+- **WIFI-05:** een nieuwe poging wist `joined_`. Elke volgende aanmelding krijgt zo een vers venster van 60 s, ook als de tussenliggende "niet aangemeld"-toestand niet gemeten werd. De nieuwe hosttest faalt zonder deze regel (2 fouten) en slaagt ermee (28 checks).
+- **WIFI-06:** `g_wtReason` is nu ook `std::atomic<uint8_t>`, met relaxed load en store.

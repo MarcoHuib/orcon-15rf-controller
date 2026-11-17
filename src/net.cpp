@@ -82,7 +82,7 @@ static uint32_t g_msgUntil = 0;
 enum class WTest : uint8_t { Idle, Testing, Connected, WrongPassword, NotFound, Failed };
 static WTest    g_wt = WTest::Idle;       // the wizard's WiFi test (the AP stays up meanwhile)
 static uint32_t g_wtAt = 0;
-static volatile uint8_t g_wtReason = 0;   // last station disconnect reason (written by the WiFi event task)
+static std::atomic<uint8_t> g_wtReason{0};   // last station disconnect reason (written by the WiFi event task)
 static String   g_wtSsid, g_wtPass;
 static char     g_wtIp[16] = "";
 static void restartIn(uint32_t ms);
@@ -1062,7 +1062,7 @@ static void staWatch(uint32_t now) {
 #if ORCON_OWNER_MODEL
 static void restartIn(uint32_t ms) { g_rebootAt = millis() + ms; }
 static void wifiEvent(arduino_event_id_t e, arduino_event_info_t info) {
-    if (e == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) g_wtReason = info.wifi_sta_disconnected.reason;
+    if (e == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) g_wtReason.store(info.wifi_sta_disconnected.reason, std::memory_order_relaxed);
 }
 static void wifiTestEnd(WTest r) {
     g_wt = r;
@@ -1084,7 +1084,7 @@ static void wifiTestTick(uint32_t now) {
         if (!provision::installing(ownerstore::state())) restartIn(3000);
         return;
     }
-    const uint8_t r = g_wtReason;
+    const uint8_t r = g_wtReason.load(std::memory_order_relaxed);
     if (r == WIFI_REASON_AUTH_FAIL || r == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT || r == WIFI_REASON_HANDSHAKE_TIMEOUT ||
         r == WIFI_REASON_802_1X_AUTH_FAILED) { wifiTestEnd(WTest::WrongPassword); return; }
     if (r == WIFI_REASON_NO_AP_FOUND && now - g_wtAt > 8000) { wifiTestEnd(WTest::NotFound); return; }
@@ -1092,7 +1092,7 @@ static void wifiTestTick(uint32_t now) {
 }
 bool wifiTestStart(const char* ssid, const char* pass) {
     if (g_wt == WTest::Testing || !g_apMode) return false;
-    g_wtSsid = ssid; g_wtPass = pass; g_wtIp[0] = 0; g_wtReason = 0; g_wtAt = millis(); g_wt = WTest::Testing;
+    g_wtSsid = ssid; g_wtPass = pass; g_wtIp[0] = 0; g_wtReason.store(0, std::memory_order_relaxed); g_wtAt = millis(); g_wt = WTest::Testing;
     WiFi.mode(WIFI_AP_STA);
     WiFi.begin(g_wtSsid.c_str(), g_wtPass.c_str());   // a hidden network is found by name (directed probe)
     return true;

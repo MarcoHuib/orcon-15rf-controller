@@ -93,6 +93,16 @@ int main() {
         r.run(false, 20000, true, true);                             // joined again: a new window
         CHECK(r.retries == 2);
     }
+    {   // A retry while joined, and the next sample is joined again (the drop fell between two samples):
+        // that join still gets a fresh 60 s DHCP window, not the 30 s retry cadence (Codex WIFI-05).
+        Rig r; r.run(true, 1000);
+        r.run(false, DHCP_WINDOW_MS + 200, true, true);             // window over: the first retry
+        CHECK(r.retries == 1);
+        r.run(false, DHCP_WINDOW_MS - 300, true, true);             // joined at every sample since
+        CHECK(r.retries == 1);                                       // no retry 30 s later
+        r.run(false, 500, true, true);
+        CHECK(r.retries == 2);                                       // after a full window
+    }
     {   // An address arrives inside the window: back online, nothing else happens.
         Rig r; r.run(true, 1000); r.run(false, 5000); r.run(false, 20000, true, true); r.run(true, 60000);
         CHECK(r.retries == 0 && r.restarts == 0 && !r.w.down() && r.w.outages() == 1);
