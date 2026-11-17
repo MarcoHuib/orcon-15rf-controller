@@ -11,7 +11,11 @@
                                         PHRASE for images that transmit: "RF test image" (rftest),
                                         "control firmware" (the daily-use control image)
        ota-install ... --test-rollback  rollback test: the trial boot is told not to confirm itself
-                                        (POST /api/ota/hold, logged in); PASS only if the previous image returns
+                                        (POST /api/ota/hold, logged in); PASS only if the previous image returns.
+                                        The password is checked on the running firmware before anything is
+                                        written; a hold that fails is retried until the trial boot ends
+  orcon.py backup-check --nvs DUMP      compare the board (RF IDs, OLED mode, WiFi name, profiles) with an
+                                        NVS dump (tools/nvs_keys.py); prints only equal/different per field
   orcon.py auth-code                    web login: a one-time code (10 min) to set or reset the
                                         password, issued only for a request signed with the OTA key.
                                         Only on a device migrated from before the ownership model that
@@ -31,7 +35,7 @@ Host: --host, $ORCON_HOST, ~/.orcon/config.json {"host": ...}, else orcon15rf.lo
 Captures hold real device IDs: they go to captures/ (git-ignored), directories 0700, files 0600.
 Nothing here uses GitHub or the network beyond the board itself.
 """
-import argparse, getpass, hashlib, json, os, subprocess, sys, tempfile, time, urllib.error, urllib.request, uuid
+import argparse, getpass, hashlib, json, os, subprocess, sys, tempfile, time, urllib.error, urllib.request, uuid, zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -93,9 +97,13 @@ def login(h, password, timeout=15):
 
 def rollback_hold(h, password, login_fn=login, post=http):
     """Rollback test: the trial boot is a fresh boot (sessions live in RAM), so log in there,
-    then ask it not to confirm itself. The board only accepts this from a logged-in owner."""
+    then ask it not to confirm itself. The board only accepts this from a logged-in owner.
+    True only once the board accepted the hold; a failure never ends the watch (it is retried)."""
     def hold():
-        print('rollback test: hold ->', post(h, '/api/ota/hold', {}, headers=login_fn(h, password)))
+        try: st, j = post(h, '/api/ota/hold', {}, headers=login_fn(h, password))
+        except (SystemExit, Exception) as e:          # refused login, network error, malformed reply
+            print('rollback test: hold not sent yet:', e); return False
+        print('rollback test: hold ->', (st, j)); return st == 200
     return hold
 
 
@@ -244,6 +252,9 @@ def cmd_ota_install(args):
     owner = bool(before.get('owner_model'))
     password = getpass.getpass('Webwachtwoord van de controller: ') if owner or args.test_rollback else ''
     hdr = login(h, password) if owner else {}
+    # A hold that cannot log in lets the test image confirm itself: a wrong password must fail HERE, before
+    # anything is written. The running firmware checks the same stored password the new image will.
+    if args.test_rollback and not owner: login(h, password)
     st, n = http(h, '/api/ota/nonce', {}, headers=hdr)
     if st != 200: raise SystemExit(f'nonce refused: {n}')
     text = build_manifest(mac, env, commit, pkg / 'firmware.bin', n['nonce'])
@@ -261,9 +272,15 @@ def cmd_ota_install(args):
     verdict = watch_confirmation(lambda: http(h, '/api/ota', timeout=4), commit, before['fw'], time.time, time.sleep,
                                  limit=480 if hold else 420, on_trial=hold, target=b['partition'], old_slot=before.get('running'))
     print(verdict)
+    if args.test_rollback and verdict.startswith('CONFIRMED'):
+        print('WARNING: the hold did not take effect in time; the test image confirmed itself and stays installed '
+              '(the same result as a normal install of this package). Check with orcon.py status.')
     want = 'ROLLED BACK' if args.test_rollback else 'CONFIRMED'
     if not verdict.startswith(want): raise SystemExit(1)
-    if args.test_rollback: print('ROLLBACK TEST PASS: the unconfirmed image was abandoned and the previous one runs')
+    if args.test_rollback:
+        print('ROLLBACK TEST PASS: the unconfirmed image was abandoned and the previous one runs')
+        print(f"Note: {b['partition']} now holds the abandoned image, so the board has ONE valid image until the next "
+              'install. Install the next image soon, or rewrite the previous image there.')
 
 
 def record_install(path, firmware, label):
@@ -277,7 +294,8 @@ def watch_confirmation(get, commit, old_fw, clock, sleep, limit=420, boot_grace=
     itself (running_state valid). The old slot again after the new image ran, or never leaving it,
     means a rollback. Slots, not only commits: two images of one commit (e.g. the RX-only rollback
     image and the control image) differ only by slot and variant.
-    on_trial is called once, as soon as the new image is seen in its trial boot."""
+    on_trial is called as soon as the new image is seen in its trial boot, and again at every poll of
+    that trial boot until it returns True (the image confirms itself 60 s after boot: no single shot)."""
     start, seen_new, seen_trial, last = clock(), False, False, None
     while clock() - start < limit:
         sleep(5)
@@ -291,7 +309,7 @@ def watch_confirmation(get, commit, old_fw, clock, sleep, limit=420, boot_grace=
             seen_new = True
             if o.get('running_state') == 'pending-verify':
                 seen_trial = True
-                if on_trial: on_trial(); on_trial = None
+                if on_trial and on_trial(): on_trial = None
             if o.get('running_state') == 'valid':
                 # The image confirms itself only after >= 60 s of trial boot; valid without one means
                 # the bootloader rollback was bypassed (e.g. the core confirmed it at boot).
@@ -346,6 +364,52 @@ def cmd_keygen(args):
     print(lines)
 
 
+# ---- backup-check: the board against an NVS dump, field by field, never a value ------------------------------
+def backup_view(vals):
+    """What the board's API shows, rebuilt from NVS values {(namespace, key): raw bytes} (tools/nvs_keys.py):
+    RF IDs, OLED mode, WiFi name and the profiles (format: src/remote_profiles.cpp encode())."""
+    u32 = lambda k: int.from_bytes(vals.get(('orcon', k), b'\0'), 'little')
+    text = lambda k, dflt=None: vals[('orcon', k)].split(b'\0', 1)[0].decode() if ('orcon', k) in vals else dflt
+    rid = lambda raw: f'{raw >> 18:02d}:{raw & 0x3FFFF:06d}'
+    b = vals.get(('orconprofiles', 'data'), b'')
+    if b and (len(b) < 18 or b[:5] != b'OCRP\x01' or len(b) != 18 + 127 * b[5] or zlib.crc32(b[:-4]) != int.from_bytes(b[-4:], 'little')):
+        raise ValueError('profile blob is not readable')
+    items = [b[14 + 127 * i:141 + 127 * i] for i in range(b[5])] if b else []
+    return {'own': f"{u32('uc'):02d}:{u32('us'):06d}", 'unit': f"{u32('fc'):02d}:{u32('fs'):06d}",
+            'oled': text('oled_mode', 'auto'), 'ssid': text('ssid'), 'active': int.from_bytes(b[10:14], 'little') if b else 0,
+            'profiles': [{'id': int.from_bytes(p[:4], 'little'), 'name': p[4:53].split(b'\0', 1)[0].decode(),
+                          'remote': rid(int.from_bytes(p[53:57], 'little')), 'unit': rid(int.from_bytes(p[57:61], 'little'))}
+                         for p in items]}
+
+
+def board_view(h, hdr, get=http):
+    """The same fields from the board: /api/state (open) plus /api/netcfg and /api/profiles (logged in)."""
+    (s1, st), (s2, net), (s3, prof) = get(h, '/api/state'), get(h, '/api/netcfg', headers=hdr), get(h, '/api/profiles', headers=hdr)
+    if (s1, s2, s3) != (200, 200, 200): raise SystemExit(f'the board refused a read (HTTP {s1}/{s2}/{s3})')
+    return {'own': st.get('us_id'), 'unit': st.get('fan_id'), 'oled': st.get('oled_mode'), 'ssid': net.get('ssid'),
+            'active': prof.get('active'), 'profiles': [{k: p.get(k) for k in ('id', 'name', 'remote', 'unit')} for p in prof.get('items', [])]}
+
+
+BACKUP_FIELDS = (('own', 'eigen RF-ID'), ('unit', 'unit-ID'), ('profiles', 'profielen: aantal, namen, afstandsbediening en unit'),
+                 ('active', 'actief profiel'), ('ssid', 'WiFi-netwerk'), ('oled', 'OLED-stand'))
+
+
+def backup_rows(backup, board):
+    """One line per field, 'gelijk' or 'ANDERS': never a value (IDs, names and the network name stay private)."""
+    return [f"{'gelijk' if backup[k] == board.get(k) else 'ANDERS':7} {label}" for k, label in BACKUP_FIELDS]
+
+
+def cmd_backup_check(args):
+    import nvs_keys
+    try: backup = backup_view({k: v for k, (_, v) in nvs_keys.values(Path(args.nvs).read_bytes()).items()})
+    except (OSError, ValueError) as e: raise SystemExit(f'NVS dump not usable: {e}')
+    h = host(args)
+    rows = backup_rows(backup, board_view(h, login(h, getpass.getpass('Webwachtwoord van de controller: '))))
+    print('\n'.join(rows))
+    if any(r.startswith('ANDERS') for r in rows): raise SystemExit('the board does NOT match this backup')
+    print('the board matches this backup')
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--host')
@@ -358,9 +422,10 @@ def main(argv=None):
     rl = sub.add_parser('release'); rl.add_argument('--worktree', required=True); rl.add_argument('--env', required=True)
     rl.add_argument('--version', type=int, required=True); rl.add_argument('--yes', action='store_true')
     rl.add_argument('--tx-ack', dest='tx_ack', default=''); rl.add_argument('--out')
+    sub.add_parser('backup-check').add_argument('--nvs', required=True)
     a = p.parse_args(argv)
     {'status': cmd_status, 'logs': cmd_logs, 'capture': cmd_capture, 'ota-install': cmd_ota_install, 'keygen': cmd_keygen,
-     'auth-code': cmd_auth_code, 'release': cmd_release}[a.cmd](a)
+     'auth-code': cmd_auth_code, 'release': cmd_release, 'backup-check': cmd_backup_check}[a.cmd](a)
 
 
 if __name__ == '__main__':

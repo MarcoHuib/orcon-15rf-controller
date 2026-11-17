@@ -46,6 +46,8 @@ dump = page(1, [nsdef, entry(1, 0x01, 1, 0xFF, 'mode', bytes([2])), string(1, 's
 ks = nk.keys(dump)
 check(set(ks) == {('orcon', 'mode'), ('orcon', 'ssid')}, 'namespace and keys found')
 check(ks[('orcon', 'ssid')][:2] == ('str', 8), 'string type and size (with terminator)')
+vs = nk.values(dump)
+check(vs[('orcon', 'ssid')] == ('str', b'Testnet\0') and vs[('orcon', 'mode')] == ('u8', b'\x02'), 'raw values for comparisons')
 newer = dump[:nk.PAGE] + page(2, [nsdef, entry(1, 0x01, 1, 0xFF, 'mode', bytes([3]))])
 check(nk.keys(newer)[('orcon', 'mode')] != ks[('orcon', 'mode')], 'a newer page wins')
 bad = bytearray(dump); bad[64 + 32 + 24] ^= 1                                # flip a value bit of "mode"

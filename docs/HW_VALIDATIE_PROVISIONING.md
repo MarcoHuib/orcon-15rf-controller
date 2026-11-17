@@ -6,7 +6,7 @@
 - Bewijs komt lokaal in `build/` en `captures/` (git-ignored).
 - Wat niet getest is, heet **NOT TESTED**.
 
-**Besluit van 14-11-2026: er komt geen tweede board.** De migratie, de eerste tests en later de fabrieksreset met de volledige wizard gebeuren op het werkende board. Elke stap heeft een apart akkoord, en een nieuwe koppeling is geaccepteerd. Het draaiboek staat in [`MIGRATIE_EIGEN_HELTEC.md`](MIGRATIE_EIGEN_HELTEC.md); dit document blijft de lijst met controles.
+**Besluit van 14-11-2026: er komt geen tweede board.** De migratie, de eerste tests en later de fabrieksreset met de volledige wizard gebeuren op het werkende board. Elke stap heeft een apart akkoord, en een nieuwe koppeling is geaccepteerd. Het draaiboek staat in [`MIGRATIE_EIGEN_HELTEC.md`](MIGRATIE_EIGEN_HELTEC.md); dit document blijft de lijst met controles. **Sinds 17-11-2026 gaat alles draadloos:** geen nieuwe USB-back-up, en controles die USB vragen (zoals `recover check` in D6) vervallen tenzij USB toch nodig wordt.
 
 **Uitgangspunt: er is maar één Heltec V2.**
 - Het werkende board wordt nooit automatisch gereset, geflasht of opnieuw gekoppeld.

@@ -73,6 +73,11 @@
   3. watches the trial boot and prints `CONFIRMED` or `ROLLED BACK`;
   4. appends the image hash to `~/.orcon/installed.txt` (0600), which `heltec_v2.sh recover` uses to identify slots.
 - `ota-install ... --test-rollback`: the same upload, then `POST /api/ota/hold` in the trial boot. It passes only if the previous image returns. The CLI asks for the web password and logs in inside the trial boot.
+  - It first checks that password on the running firmware, so a typo stops it before anything is written.
+  - A hold that fails is retried at every poll while the trial boot lasts; the image would confirm itself 60 s after boot.
+  - If the image confirms anyway, the CLI prints a WARNING: the result is then a normal install.
+  - After a PASS the abandoned image fills the other slot, so the board has one valid image until the next install.
+- `backup-check --nvs <dump>`: compares the board (RF IDs, OLED mode, WiFi name, profiles; logged in) with an NVS dump. It prints only "gelijk" or "ANDERS" per field, never a value.
 - On ownership-model firmware (`owner_model` in `/api/ota`) `ota-install` asks for the web password and sends the session with every step. Older firmware installs exactly as before.
 - `release --worktree <wt> --env <env> --version N --yes`: a signed v2 bundle for every board (`docs/RELEASES.md`).
 - **Host.** Signed-OTA builds answer on `orcon15rf.local` (mDNS). An IP address in `~/.orcon/config.json` also works.

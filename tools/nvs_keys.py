@@ -49,8 +49,9 @@ def entries(dump):
     return out
 
 
-def keys(dump):
-    """{(namespace, key): (type, size, short hash)}: blob chunks joined in order, newest value wins."""
+def values(dump):
+    """{(namespace, key): (type, raw value)}: blob chunks joined in order, newest value wins.
+    Raw values include secrets: compare them, never print them."""
     es = sorted(entries(dump), key=lambda x: x[0])
     names = {e[5][0]: e[4] for e in es if e[1] == 0 and e[2] == 0x01}   # namespace definitions: index -> name
     blobs, out = {}, {}
@@ -59,11 +60,15 @@ def keys(dump):
         name = names.get(ns, f'#{ns}')
         if typ == 0x42: blobs.setdefault((name, key), {})[chunk] = val; continue
         if typ == 0x48: continue
-        out[(name, key)] = (TYPES.get(typ, hex(typ)), len(val), hashlib.sha256(val).hexdigest()[:12])
+        out[(name, key)] = (TYPES.get(typ, hex(typ)), val)
     for k, parts in blobs.items():
-        val = b''.join(parts[c] for c in sorted(parts))
-        out[k] = ('blob', len(val), hashlib.sha256(val).hexdigest()[:12])
+        out[k] = ('blob', b''.join(parts[c] for c in sorted(parts)))
     return out
+
+
+def keys(dump):
+    """{(namespace, key): (type, size, short hash)}: the hash only tells --diff whether a value changed."""
+    return {k: (t, len(v), hashlib.sha256(v).hexdigest()[:12]) for k, (t, v) in values(dump).items()}
 
 
 def main(argv):
