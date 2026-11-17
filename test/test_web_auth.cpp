@@ -33,6 +33,10 @@ int main() {
     CHECK(passwordOk("12345678") && passwordOk("lange zin met spaties") && passwordOk("wachtwoörd!"));
     CHECK(!passwordOk(std::string(65, 'a').c_str()) && passwordOk(std::string(64, 'a').c_str()));
     CHECK(!passwordOk("tab\there!") && !passwordOk("del\x7fpass1"));
+    // The Siri key: exactly 32 lowercase hex characters.
+    CHECK(siriKeyValid("0123456789abcdef0123456789abcdef") && !siriKeyValid(nullptr) && !siriKeyValid(""));
+    CHECK(!siriKeyValid("0123456789abcdef0123456789abcde") && !siriKeyValid("0123456789abcdef0123456789abcdef0"));
+    CHECK(!siriKeyValid("0123456789ABCDEF0123456789abcdef") && !siriKeyValid("0123456789abcdef0123456789abcdeg"));
     // Credential: salted, verified in constant time, wrong or unusable input refused.
     Cred c{};
     CHECK(!makeCred("kort", kdf, rng, c));

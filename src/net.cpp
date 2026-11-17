@@ -1119,6 +1119,15 @@ bool fromSetupAp() {
     WiFiClient c = server.client();
     return setupflow::apClient((uint32_t)c.localIP(), (uint32_t)c.remoteIP(), (uint32_t)WiFi.softAPIP(), (uint32_t)WiFi.softAPSubnetMask());
 }
+// Siri: the request came in over the station from a host in the home network's own subnet (socket
+// addresses). A port-forwarded or routed request keeps its foreign source address and is refused; a
+// router that also rewrites the source to its own LAN address is not caught (defence in depth only).
+bool fromHomeNet() {
+    if (g_apMode || WiFi.status() != WL_CONNECTED) return false;
+    WiFiClient c = server.client();
+    return (uint32_t)c.localIP() == (uint32_t)WiFi.localIP() &&
+           setupflow::lanClient((uint32_t)c.localIP(), (uint32_t)c.remoteIP(), (uint32_t)WiFi.subnetMask());
+}
 // The control image creates its radio identity at the first pairing (never at boot): random.
 bool ensureOwnIdentity() {
     const orcon::Ids& id = orcon::ids();

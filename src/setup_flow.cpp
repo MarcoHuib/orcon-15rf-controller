@@ -12,6 +12,14 @@ uint8_t keyFromName(const char* s) {
     return K_NONE;
 }
 uint8_t modeOfKey(uint8_t k) { return k < K_N ? KEY_MODE[k] : 0xFF; }
+uint8_t siriStand(const char* s) {
+    if (s && !strcmp(s, "afwezig")) return K_AWAY;
+    const uint8_t k = keyFromName(s);
+    return k == K_TIMER ? uint8_t(K_NONE) : k;
+}
+bool lanClient(uint32_t local, uint32_t remote, uint32_t mask) {
+    return local && mask && remote != local && ((local ^ remote) & mask) == 0;
+}
 
 uint8_t keyOfFrame(const ramses::Frame& f) {
     if (f.type != ramses::MsgType::I || !f.has_addr[0]) return K_NONE;

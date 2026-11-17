@@ -330,7 +330,7 @@ static void handleState() {
     o.add("{\"fw\":\"%s\",\"rx_only\":%s,\"caps\":{\"rx_supported\":%s,\"tx_supported\":%s,"
           "\"read_supported\":%s,\"pair_supported\":%s,\"control_supported\":%s,\"simulated\":%s,"
           "\"timer_supported\":%s,\"profile_control_supported\":%s,\"settings_pages\":%s,\"tx_max_per_boot\":%d,"
-          "\"tx_per_minute\":%d,\"tx_per_hour\":%d,\"dashboard\":%s,\"mqtt_supported\":%s},"
+          "\"tx_per_minute\":%d,\"tx_per_hour\":%d,\"dashboard\":%s,\"mqtt_supported\":%s,\"siri_supported\":%s},"
           "\"rf\":\"%s\",\"token\":\"%s\",\"mask_ids\":%s,\"active\":\"%s\","
           "\"auth\":{\"enabled\":%s,\"logged_in\":true}",
           FW_VERSION, RX_ONLY ? "true" : "false", CAN_RX ? "true" : "false", CAN_TX ? "true" : "false",
@@ -340,6 +340,7 @@ static void handleState() {
           ORCON_TX_MAX_PER_BOOT,
           ORCON_TX_RF_ENABLE ? int(TXB_PER_MINUTE) : 0, ORCON_TX_RF_ENABLE ? int(TXB_PER_HOUR) : 0,
           ORCON_TX_POC ? "false" : "true", MQTT_ENABLED ? "true" : "false",   // /dashboard; MQTT settings
+          ORCON_SIRI ? "true" : "false",
           rfState(), token, net::maskIds() ? "true" : "false",
           g_read.st == St::Active ? "read" : pairActive() ? "pair" : "none", ORCON_WEB_AUTH ? "true" : "false");
     char id[16] = "";
@@ -593,24 +594,48 @@ static void remoteBody(int code) {
     reply(code, o);
 }
 static void handleRemoteState() { if (!authorize(false, true)) return; remoteBody(200); }
-static void ctlRefuse(txpoc::Admission a) {
-    const char* e = "invalid"; int code = 400;
-    switch (a) {
-        case txpoc::Admission::Replay:           e = "stale-request";         code = 409; break;
-        case txpoc::Admission::Conflict:         e = "request-conflict";      code = 409; break;
-        case txpoc::Admission::Invalid:          e = "bad-key";               code = 400; break;
-        case txpoc::Admission::UnknownUnit:      e = "unit-not-selected";     code = 409; break;
-        case txpoc::Admission::Busy:             e = "session-busy";          code = 409; break;
-        case txpoc::Admission::Unavailable:      e = "rf-unavailable";        code = 503; break;
-        case txpoc::Admission::Limited:          e = "too-fast";              code = 429; break;
-        case txpoc::Admission::IdentityUnverified: e = "identity-unverified"; code = 403; break;
-        case txpoc::Admission::IdentityConflict: e = "identity-conflict";     code = 403; break;
-        case txpoc::Admission::UnitStateUnknown: e = "unit-state-unknown";    code = 409; break;
-        case txpoc::Admission::Unchanged:        e = "unit-already-in-mode";  code = 409; break;
-        case txpoc::Admission::RemoteActive:     e = "remote-active";         code = 409; break;
-        default:                                                              break;
+// The checks every RF mode command passes, from the web page or from Siri: the unit, no read/pair
+// session, the active profile, identity, the RF budget and the controller's own admission. Returns the
+// HTTP status: 202 queued, 200 duplicate; otherwise e names the refusal, and waitMs (only for
+// "tx-budget") says when to try again.
+static int ctlAdmit(uint8_t k, uint32_t request, const char*& e, uint32_t& waitMs) {
+    e = "invalid"; waitMs = 0;
+    if (!orcon::state().fanKnown) { e = "unit-not-selected"; return 409; }
+    if (g_read.st == St::Active || pairActive()) { e = "session-busy"; return 409; }
+    const rlog::Device* heard = nullptr; const size_t heardN = rlog::devices(&heard);
+    const bool identityClear = !txpoc::identityConflict(orcon::ids(), rlog::seen(), heard, heardN);
+    if(!profiles::store().ready()){e="profile-storage-unavailable";return 503;}
+    // TX only from an active profile: its six captured frames are the evidence for the
+    // five mode bytes and the unit-family tail. Without one nothing is guessed.
+    const profiles::Profile* profile=profiles::store().active();
+    if(!profile){e="profile-required";return 409;}
+    const uint8_t tail=profile->controlTail();
+    if(!tail){e="profile-protocol-unsupported";return 409;}
+    if(!(profile->unit==orcon::ids().fan)){e="profile-unit-mismatch";return 409;}
+    if(profile->remote==orcon::ids().us){e="identity-conflict";return 403;}
+#if ORCON_TX_MAX_PER_BOOT
+    // RF test image: refuse cleanly once the RF backend has used its per-boot packets.
+    if(txpoc::rfTxStarts()>=ORCON_TX_MAX_PER_BOOT){e="tx-limit-reached";return 409;}
+#endif
+    if((waitMs=txpoc::budgetWaitMs(1,MODE_ONAIR))){e="tx-budget";return 429;}
+    switch (txpoc::controller().submitCtl(modeOfKey(k), tail, orcon::ids(),
+                                          true, txpoc::rxReady(), identityClear, millis(), request)) {
+        case txpoc::Admission::Accepted:         return 202;
+        case txpoc::Admission::Duplicate:        return 200;
+        case txpoc::Admission::Replay:           e = "stale-request";         return 409;
+        case txpoc::Admission::Conflict:         e = "request-conflict";      return 409;
+        case txpoc::Admission::Invalid:          e = "bad-key";               return 400;
+        case txpoc::Admission::UnknownUnit:      e = "unit-not-selected";     return 409;
+        case txpoc::Admission::Busy:             e = "session-busy";          return 409;
+        case txpoc::Admission::Unavailable:      e = "rf-unavailable";        return 503;
+        case txpoc::Admission::Limited:          e = "too-fast";              return 429;
+        case txpoc::Admission::IdentityUnverified: e = "identity-unverified"; return 403;
+        case txpoc::Admission::IdentityConflict: e = "identity-conflict";     return 403;
+        case txpoc::Admission::UnitStateUnknown: e = "unit-state-unknown";    return 409;
+        case txpoc::Admission::Unchanged:        e = "unit-already-in-mode";  return 409;
+        case txpoc::Admission::RemoteActive:     e = "remote-active";         return 409;
+        default:                                                              return 400;
     }
-    fail(code, e);
 }
 static void handleRemoteSend() {
     static const char* const K[] = { "key", "minutes", "request" };
@@ -620,30 +645,68 @@ static void handleRemoteSend() {
     const uint8_t k = d["key"].is<const char*>() ? keyFromName(d["key"].as<const char*>()) : uint8_t(K_NONE);
     if (k == K_NONE || k == K_TIMER) { fail(400, "bad-key"); return; }   // five functions; no timer here
     if (!d["minutes"].isNull()) { fail(400, "bad-minutes"); return; }
-    if (!orcon::state().fanKnown) { fail(409, "unit-not-selected"); return; }
-    if (g_read.st == St::Active || pairActive()) { fail(409, "session-busy"); return; }
-    const rlog::Device* heard = nullptr; const size_t heardN = rlog::devices(&heard);
-    const bool identityClear = !txpoc::identityConflict(orcon::ids(), rlog::seen(), heard, heardN);
-    if(!profiles::store().ready()){fail(503,"profile-storage-unavailable");return;}
-    // TX only from an active profile: its six captured frames are the evidence for the
-    // five mode bytes and the unit-family tail. Without one nothing is guessed.
-    const profiles::Profile* profile=profiles::store().active();
-    if(!profile){fail(409,"profile-required");return;}
-    const uint8_t tail=profile->controlTail();
-    if(!tail){fail(409,"profile-protocol-unsupported");return;}
-    if(!(profile->unit==orcon::ids().fan)){fail(409,"profile-unit-mismatch");return;}
-    if(profile->remote==orcon::ids().us){fail(403,"identity-conflict");return;}
-#if ORCON_TX_MAX_PER_BOOT
-    // RF test image: refuse cleanly once the RF backend has used its per-boot packets.
-    if(txpoc::rfTxStarts()>=ORCON_TX_MAX_PER_BOOT){fail(409,"tx-limit-reached");return;}
-#endif
-    if(const uint32_t w=txpoc::budgetWaitMs(1,MODE_ONAIR)){failRetry(429,"tx-budget",w);return;}
-    txpoc::Admission a = txpoc::controller().submitCtl(modeOfKey(k), tail, orcon::ids(),
-                             true, txpoc::rxReady(), identityClear, millis(), d["request"].as<uint32_t>());
-    if (a == txpoc::Admission::Duplicate) { remoteBody(200); return; }
-    if (a != txpoc::Admission::Accepted) { ctlRefuse(a); return; }
-    remoteBody(202);
+    const char* e; uint32_t w;
+    const int code = ctlAdmit(k, d["request"].as<uint32_t>(), e, w);
+    if (code == 200 || code == 202) remoteBody(code);
+    else if (w) failRetry(code, e, w);
+    else fail(code, e);
 }
+#if ORCON_SIRI
+// ---- Siri: Apple Shortcuts (docs/SIRI.md) --------------------------------------------------------
+// POST /api/siri?stand=1|2|3|auto|afwezig&k=<Siri key>, sent by a shortcut ("Haal inhoud van URL op",
+// method POST); the answer is a short sentence for Siri. The key is no login: it only switches these
+// five modes, through exactly the checks of the web page (ctlAdmit), and only from the home network.
+// POST only, so a link preview or prefetch (GET) never switches the fan.
+static void siriSay(int code, const char* text) {
+    g_srv->sendHeader("Cache-Control", "no-store");
+    g_srv->send(code, "text/plain; charset=utf-8", text);
+}
+static void handleSiri() {
+    if (net::fromSetupAp() || !net::fromHomeNet() || !hostOk()) { siriSay(403, "Siri werkt alleen vanaf je eigen thuisnetwerk."); return; }
+    if (provision::installing(ownerstore::state())) { siriSay(409, "De installatie is nog niet klaar."); return; }
+    char key[33];
+    if (!authstore::siriKey(key) || !webauth::equal(g_srv->arg("k").c_str(), key)) {
+        siriSay(401, "De Siri-sleutel klopt niet. Kijk in de webinterface bij Systeem, Integraties.");
+        return;
+    }
+    const uint8_t k = siriStand(g_srv->arg("stand").c_str());
+    if (k == K_NONE) { siriSay(400, "Onbekende stand. Kies 1, 2, 3, auto of afwezig."); return; }
+    const char* what = k == K_AUTO ? "automatisch" : k == K_AWAY ? "afwezig" : k == K_1 ? "stand 1" : k == K_2 ? "stand 2" : "stand 3";
+    const char* e; uint32_t w;
+    const int code = ctlAdmit(k, 0, e, w);   // 0: no page sequence; every Siri request is a new command
+    char t[112];
+    if (code == 202) snprintf(t, sizeof(t), "De ventilatie gaat naar %s.", what);
+    else if (!strcmp(e, "unit-already-in-mode")) { snprintf(t, sizeof(t), "De ventilatie staat al op %s.", what); siriSay(200, t); return; }
+    else if (w) snprintf(t, sizeof(t), "Even wachten: de zendlimiet is bereikt. Probeer het over %lu seconden opnieuw.", (unsigned long)((w + 999) / 1000));
+    else if (!strcmp(e, "too-fast") || !strcmp(e, "remote-active") || !strcmp(e, "session-busy")) snprintf(t, sizeof(t), "De ventilatie is even bezig. Probeer het zo opnieuw.");
+    else if (!strcmp(e, "profile-required")) snprintf(t, sizeof(t), "Kies eerst een profiel in de webinterface.");
+    else snprintf(t, sizeof(t), "Dat lukt nu niet (%s).", e);
+    siriSay(code, t);
+}
+static void siriKeyBody() {
+    char key[33];
+    const bool on = authstore::siriKey(key);
+    Out o; o.add("{\"on\":%s,\"key\":\"%s\"}", on ? "true" : "false", on ? key : "");
+    reply(200, o);
+}
+// Only the logged-in owner sees the key (GET: session and Host check). It stays readable so a second
+// iPhone can be set up later; it can only switch the fan, and "new" replaces it at once.
+static void handleSiriKeyGet() { if (!authorize(false, false)) return; siriKeyBody(); }
+static void handleSiriKeyPost() {
+    static const char* const K[] = { "action" };
+    JsonDocument d;
+    if (!guard(d, K, 1)) return;
+    const char* a = d["action"].is<const char*>() ? d["action"].as<const char*>() : "";
+    char key[33] = "";
+    if (!strcmp(a, "new")) {
+        uint8_t r[16]; authstore::random(r, sizeof(r));
+        for (int i = 0; i < 16; ++i) snprintf(key + 2 * i, 3, "%02x", r[i]);
+    } else if (strcmp(a, "off")) { fail(400, "bad-action"); return; }
+    if (!authstore::setSiriKey(key[0] ? key : nullptr)) { fail(503, "storage-unavailable"); return; }
+    note(rfcon::INFO, key[0] ? "Siri: nieuwe sleutel, de oude werkt niet meer" : "Siri uitgezet");
+    siriKeyBody();
+}
+#endif
 #else
 static void remoteBody(int code) {
     const orcon::State& s = orcon::state();
@@ -1197,6 +1260,11 @@ void begin(WebServer& s) {
 #else
     s.on("/api/remote/send",  HTTP_POST, handleRemoteSend);
     s.on("/api/remote/state", HTTP_GET,  handleRemoteState);
+#endif
+#if ORCON_SIRI
+    s.on("/api/siri",         HTTP_POST, handleSiri);
+    s.on("/api/siri/key",     HTTP_GET,  handleSiriKeyGet);
+    s.on("/api/siri/key",     HTTP_POST, handleSiriKeyPost);
 #endif
 }
 

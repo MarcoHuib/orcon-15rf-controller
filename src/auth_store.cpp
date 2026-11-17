@@ -65,5 +65,27 @@ void random(uint8_t* out, size_t n) { esp_fill_random(out, n); }   // hardware R
 void ownMac(char out[18]) { ota::ownMac(out); }
 bool verifySignature(const char* text, size_t n, const char* sigHex) { return ota::verifySignature(text, n, sigHex); }
 
+static const char SIRI[] = "siri";
+bool siriKey(char out[33]) {
+    out[0] = 0;
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READONLY, &h) != ESP_OK) return false;
+    size_t n = 33;
+    const bool ok = nvs_get_str(h, SIRI, out, &n) == ESP_OK && webauth::siriKeyValid(out);
+    nvs_close(h);
+    if (!ok) out[0] = 0;
+    return ok;
+}
+bool setSiriKey(const char* key) {
+    if (key && !webauth::siriKeyValid(key)) return false;
+    Preferences p;
+    if (!p.begin(NS, false)) return false;
+    const bool ok = key ? p.putString(SIRI, key) == strlen(key) : (!p.isKey(SIRI) || p.remove(SIRI));
+    p.end();
+    char back[33];
+    const bool has = siriKey(back);
+    return ok && (key ? has && !strcmp(back, key) : !has);   // read back what was written
+}
+
 }  // namespace authstore
 #endif

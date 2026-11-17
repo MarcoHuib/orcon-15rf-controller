@@ -217,6 +217,13 @@
 #else
 #define ORCON_OWNER_MODEL 0
 #endif
+// Siri via Apple Shortcuts (docs/SIRI.md): the control image only. It transmits, and its web login
+// manages the Siri key.
+#if ORCON_TX_CONTROL && ORCON_OWNER_MODEL
+#define ORCON_SIRI 1
+#else
+#define ORCON_SIRI 0
+#endif
 // Published releases set this (platformio build flag, docs/RELEASES.md); a release manifest (v2)
 // is never installed when older than the running release. 0 = a development build.
 #ifndef ORCON_RELEASE_VERSION

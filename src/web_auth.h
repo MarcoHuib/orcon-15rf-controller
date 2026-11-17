@@ -33,6 +33,7 @@ bool credValid(const Cred&);
 bool makeCred(const char* pw, Kdf, Rng, Cred& out);
 bool verify(const Cred&, const char* pw, Kdf);            // constant-time comparison
 bool equal(const char* a, const char* b);                 // constant time for equal lengths
+bool siriKeyValid(const char* k);                         // the Siri key format: exactly 32 lowercase hex characters
 
 struct Session { char id[33] = ""; char csrf[33] = ""; uint32_t created = 0, last = 0; bool used = false; };
 class Sessions {

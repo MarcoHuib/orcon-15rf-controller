@@ -18,4 +18,8 @@ bool kdf(const char* pw, size_t n, const uint8_t* salt, size_t saltLen, uint32_t
 void random(uint8_t* out, size_t n);
 void ownMac(char out[18]);
 bool verifySignature(const char* text, size_t n, const char* sigHex);
+// The Siri key (docs/SIRI.md): 32 lowercase hex characters beside the password record, wiped by the
+// factory reset with it. Any read error counts as "no key": Siri then refuses (fail closed).
+bool siriKey(char out[33]);
+bool setSiriKey(const char* key);   // nullptr removes it; true only if the stored state reads back as asked
 }

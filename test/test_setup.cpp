@@ -137,6 +137,17 @@ int main() {
         CHECK(!apClient(AP, ip(192,168,1,50), AP, MASK), "home host routing to 192.168.4.1 via our station refused");
         CHECK(!apClient(AP, AP, AP, MASK) && !apClient(AP, ip(192,168,4,2), 0, MASK) && !apClient(AP, ip(192,168,4,2), AP, 0),
               "loopback-like or unknown AP address refused");
+        // Siri: home subnet only, on the station's own address and mask.
+        const uint32_t ST = ip(192,168,1,23);
+        CHECK(lanClient(ST, ip(192,168,1,50), MASK) && lanClient(ST, ip(10,0,0,9), ip(255,0,0,0)) == false,
+              "Siri: a phone in the home subnet accepted; another subnet refused");
+        CHECK(!lanClient(ST, ip(203,0,113,7), MASK) && !lanClient(ST, ip(192,168,2,50), MASK), "Siri: internet (forwarded) and routed clients refused");
+        CHECK(!lanClient(ST, ST, MASK) && !lanClient(0, ip(192,168,1,50), MASK) && !lanClient(ST, ip(192,168,1,50), 0),
+              "Siri: the device itself, no address, or no mask refused");
+        CHECK(siriStand("1") == K_1 && siriStand("2") == K_2 && siriStand("3") == K_3 && siriStand("auto") == K_AUTO &&
+              siriStand("afwezig") == K_AWAY && siriStand("away") == K_AWAY, "Siri: the five stands map to the remote's keys");
+        CHECK(siriStand("timer") == K_NONE && siriStand("") == K_NONE && siriStand(nullptr) == K_NONE && siriStand("Auto") == K_NONE &&
+              siriStand("4") == K_NONE, "Siri: no timer, nothing else");
         CHECK(hostAllowed("orcon15rf.local", "192.0.2.5"), "mDNS name allowed");
         CHECK(!hostAllowed("192.0.2.55", "192.0.2.5") && !hostAllowed("192.0.2.", "192.0.2.5"), "other/prefix IP refused");
         CHECK(!hostAllowed("evil.example", "192.0.2.5") && !hostAllowed(".local", "192.0.2.5") && !hostAllowed("", "192.0.2.5"),
