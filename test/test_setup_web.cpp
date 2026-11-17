@@ -79,8 +79,14 @@ bool verifySignature(const char*, size_t, const char* sig) { return !strcmp(sig,
 }
 static std::string g_siriKey;                  // the stored Siri key ("" = none)
 static bool g_siriStoreFails = false;          // NVS write or read-back error
+static bool g_siriUnreadable = false;          // the stored key cannot be read (it may still exist)
 namespace authstore {
-bool siriKey(char out[33]) { snprintf(out, 33, "%s", g_siriKey.c_str()); return webauth::siriKeyValid(out); }
+Status siriKey(char out[33]) {
+    out[0] = 0;
+    if (g_siriUnreadable) return Status::Unreadable;
+    if (g_siriKey.empty()) return Status::Absent;
+    snprintf(out, 33, "%s", g_siriKey.c_str()); return Status::Ok;
+}
 bool setSiriKey(const char* k) {
     if (g_siriStoreFails || (k && !webauth::siriKeyValid(k))) return false;
     g_siriKey = k ? k : ""; return true;
@@ -1052,8 +1058,16 @@ int main() {
         srv.req.clear(); srv.args.clear(); srv.args["k"] = key; srv.args["stand"] = "2"; srv.host = "attacker.example";
         srv.routes["POST /api/siri"]();
         CHECK(srv.code == 403, "Siri: a foreign Host (DNS rebinding) refused");
-        { const provision::State was = g_ownState; g_ownState = provision::State::New;
-          CHECK(siri(q + "2") == 409, "Siri: not while installing (after a factory reset)"); g_ownState = was; }
+        { const provision::State was = g_ownState;
+          g_ownState = provision::State::New;    const int a = siri(q + "2");
+          g_ownState = provision::State::Setup;  const int b = siri(q + "2");
+          g_ownState = provision::State::Locked; const int c = siri(q + "2");   // the key survived, the owner cannot log in
+          g_ownState = was;
+          CHECK(a == 409 && b == 409 && c == 409, "Siri: only in normal use: not while installing, nor Locked (Codex SIRI-02)"); }
+        g_siriUnreadable = true;
+        CHECK(siri(q + "2") == 401, "Siri: an unreadable key refuses, like no key (Codex SIRI-01)");
+        CHECK(call("GET", "/api/siri/key") == 503 && err("storage-unavailable"), "Siri key: unreadable is never shown as off (Codex SIRI-01)");
+        g_siriUnreadable = false;
         txpoc::g_budgetWait = 42000;
         CHECK(siri(q + "2") == 429 && srv.out.find("42 seconden") != std::string::npos, "Siri: the RF budget applies, the wait in seconds");
         txpoc::g_budgetWait = 0;
@@ -1082,6 +1096,10 @@ int main() {
         fresh(0x03);
         CHECK(siri("k=" + key2 + "&stand=1") == 202, "Siri: the new key works");
         loopTick();
+        g_siriStoreFails = true;
+        CHECK(call("POST", "/api/siri/key", "{\"action\":\"off\"}") == 503 && err("storage-unavailable") && g_siriKey == key2,
+              "Siri key: an off that storage cannot confirm is reported, never claimed (Codex SIRI-01)");
+        g_siriStoreFails = false;
         CHECK(call("POST", "/api/siri/key", "{\"action\":\"off\"}") == 200 && J["on"] == false && g_siriKey.empty(), "Siri key: off");
         CHECK(siri("k=" + key2 + "&stand=2") == 401, "Siri off: refused");
     }

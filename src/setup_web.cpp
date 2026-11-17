@@ -663,9 +663,12 @@ static void siriSay(int code, const char* text) {
 }
 static void handleSiri() {
     if (net::fromSetupAp() || !net::fromHomeNet() || !hostOk()) { siriSay(403, "Siri werkt alleen vanaf je eigen thuisnetwerk."); return; }
-    if (provision::installing(ownerstore::state())) { siriSay(409, "De installatie is nog niet klaar."); return; }
-    char key[33];
-    if (!authstore::siriKey(key) || !webauth::equal(g_srv->arg("k").c_str(), key)) {
+    // A device in normal use only (Codex SIRI-02): never while installing, nor Locked, where the owner
+    // cannot log in to revoke a key that survived.
+    const provision::State st = ownerstore::state();
+    if (st != provision::State::Done && st != provision::State::Legacy) { siriSay(409, "Siri is nu niet beschikbaar. Open de webinterface."); return; }
+    char key[33];   // absent and unreadable alike: refused, and not told apart to a client without the key
+    if (authstore::siriKey(key) != authstore::Status::Ok || !webauth::equal(g_srv->arg("k").c_str(), key)) {
         siriSay(401, "De Siri-sleutel klopt niet. Kijk in de webinterface bij Systeem, Integraties.");
         return;
     }
@@ -685,7 +688,9 @@ static void handleSiri() {
 }
 static void siriKeyBody() {
     char key[33];
-    const bool on = authstore::siriKey(key);
+    const authstore::Status s = authstore::siriKey(key);
+    if (s == authstore::Status::Unreadable) { fail(503, "storage-unavailable"); return; }   // never shown as "off" (SIRI-01)
+    const bool on = s == authstore::Status::Ok;
     Out o; o.add("{\"on\":%s,\"key\":\"%s\"}", on ? "true" : "false", on ? key : "");
     reply(200, o);
 }
@@ -703,8 +708,7 @@ static void handleSiriKeyPost() {
         for (int i = 0; i < 16; ++i) snprintf(key + 2 * i, 3, "%02x", r[i]);
     } else if (strcmp(a, "off")) { fail(400, "bad-action"); return; }
     if (!authstore::setSiriKey(key[0] ? key : nullptr)) { fail(503, "storage-unavailable"); return; }
-    note(rfcon::INFO, key[0] ? "Siri: nieuwe sleutel, de oude werkt niet meer" : "Siri uitgezet");
-    siriKeyBody();
+    siriKeyBody();   // no console note: that console is readable without a login (Codex SIRI-03)
 }
 #endif
 #else

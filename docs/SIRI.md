@@ -42,12 +42,13 @@ Siri antwoordt met een korte zin van de Heltec:
 `POST http://orcon15rf.local/api/siri?stand=<1|2|3|auto|afwezig>&k=<Siri-sleutel>`
 
 - **Zelfde zendroute als de webknoppen** (`ctlAdmit` in `src/setup_web.cpp`): gekoppelde unit, actief profiel, identiteitscontrole, het RF-budget (10 per minuut, 60 per uur, 3,6 s zendtijd per uur), minimaal 2 s tussen commando's, niet tijdens uitlezen of koppelen, en de wachttijd na een druk op de afstandsbediening.
-- **Alleen de vijf standen.** De timer kan niet via Siri.
+- **Alleen de vijf standen** (`afwezig` mag ook `away` heten). De timer kan niet via Siri.
+- **Alleen in normaal gebruik:** niet tijdens de installatie, en niet als de Heltec na opslagverlies op slot staat (Locked).
 - Het antwoord is platte tekst in het Nederlands.
 
 ## Veiligheid
 - **De Siri-sleutel is geen login.** Hij kan alleen de vijf standen kiezen: geen instellingen, geen wachtwoord, geen firmware, geen koppelen. Je beheerderswachtwoord staat nergens in een opdracht.
-- **De sleutel:** 128 bits uit de hardware-RNG van de ESP32, als 32 hexadecimale tekens. Hij staat in NVS (`orconauth/siri`) naast het wachtwoordrecord en wordt in constante tijd vergeleken. Alleen de aangemelde eigenaar ziet hem in de webinterface; zo kun je later nog een iPhone instellen.
+- **De sleutel:** 128 bits uit de hardware-RNG van de ESP32, als 32 hexadecimale tekens. Hij staat in NVS (`orconauth/siri`) naast het wachtwoordrecord en wordt in constante tijd vergeleken. Alleen de aangemelde eigenaar ziet hem in de webinterface; zo kun je later nog een iPhone instellen. Is de opslag onleesbaar, dan weigert Siri, en meldt de webinterface een opslagfout in plaats van "uit". Uitzetten telt pas als de sleutel aantoonbaar weg is. Het maken of wissen komt niet in de (openbare) console.
 - **Alleen vanaf je thuisnetwerk:**
   - De client moet in hetzelfde subnet zitten als de Heltec (socketadressen, geen headers). Een doorgestuurd verzoek van internet of uit een ander subnet houdt zijn vreemde bronadres en wordt geweigerd. Een router die bij port-forwarding ook het bronadres vervangt, wordt hiermee niet herkend; zet dus nooit een poort open.
   - Nooit via het setup-accesspoint.
@@ -61,6 +62,8 @@ Siri antwoordt met een korte zin van de Heltec:
 - HomeKit vraagt een grote extra bibliotheek op de ESP32, een eigen koppelcode en sleutelopslag, en dus een grote nieuwe security-review van koppelen, reset en eigendom.
 - **Opdrachten** gebruikt precies jouw zinnen en de bestaande controles. Er is maar één kleine, beperkte route bij gekomen.
 - HomeKit blijft mogelijk als latere optie, bijvoorbeeld voor de Woning-app of bediening buitenshuis via een woninghub.
+
+Review: [`CODEX_SIRI_REVIEW.md`](CODEX_SIRI_REVIEW.md).
 
 ## Niet getest
 De exacte iOS-menunamen per iOS-versie, hoe Siri het antwoord voorleest, en het geheel op de echte Heltec. Dat volgt bij de eerste installatie.

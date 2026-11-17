@@ -66,25 +66,30 @@ void ownMac(char out[18]) { ota::ownMac(out); }
 bool verifySignature(const char* text, size_t n, const char* sigHex) { return ota::verifySignature(text, n, sigHex); }
 
 static const char SIRI[] = "siri";
-bool siriKey(char out[33]) {
+Status siriKey(char out[33]) {
     out[0] = 0;
     nvs_handle_t h;
-    if (nvs_open(NS, NVS_READONLY, &h) != ESP_OK) return false;
+    const esp_err_t e = nvs_open(NS, NVS_READONLY, &h);
+    if (e == ESP_ERR_NVS_NOT_FOUND) return Status::Absent;            // never written (or factory reset)
+    if (e != ESP_OK) return Status::Unreadable;
     size_t n = 33;
-    const bool ok = nvs_get_str(h, SIRI, out, &n) == ESP_OK && webauth::siriKeyValid(out);
+    const esp_err_t g = nvs_get_str(h, SIRI, out, &n);
     nvs_close(h);
-    if (!ok) out[0] = 0;
-    return ok;
+    if (g == ESP_OK && webauth::siriKeyValid(out)) return Status::Ok;
+    out[0] = 0;
+    return g == ESP_ERR_NVS_NOT_FOUND ? Status::Absent : Status::Unreadable;   // malformed counts as unreadable
 }
 bool setSiriKey(const char* key) {
     if (key && !webauth::siriKeyValid(key)) return false;
-    Preferences p;
-    if (!p.begin(NS, false)) return false;
-    const bool ok = key ? p.putString(SIRI, key) == strlen(key) : (!p.isKey(SIRI) || p.remove(SIRI));
-    p.end();
-    char back[33];
-    const bool has = siriKey(back);
-    return ok && (key ? has && !strcmp(back, key) : !has);   // read back what was written
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READWRITE, &h) != ESP_OK) return false;
+    esp_err_t e = key ? nvs_set_str(h, SIRI, key) : nvs_erase_key(h, SIRI);
+    if (!key && e == ESP_ERR_NVS_NOT_FOUND) e = ESP_OK;               // already absent
+    if (e == ESP_OK) e = nvs_commit(h);
+    nvs_close(h);
+    char back[33];                                                    // read back: absence must be a confirmed NOT_FOUND
+    const Status s = siriKey(back);
+    return e == ESP_OK && (key ? s == Status::Ok && !strcmp(back, key) : s == Status::Absent);
 }
 
 }  // namespace authstore
