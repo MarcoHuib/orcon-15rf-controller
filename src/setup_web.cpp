@@ -32,6 +32,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <strings.h>               // strncasecmp: the "Bearer" scheme is case-insensitive
 #include "setup_page.h"            // after Arduino.h: PROGMEM comes from the core
 
 #if !ORCON_TX_POC || ORCON_WEB_CONTROL
@@ -106,6 +107,12 @@ static const char* rfState() {
     return S[s < 3 ? s : 2];
 }
 static bool pairActive() { return g_pair.st == St::Active; }
+bool busy() {   // a read or pair session, or an RF transaction in flight: net.cpp's WiFi watch never restarts then
+#if ORCON_TX_POC
+    if (txpoc::controller().status().busy) return true;
+#endif
+    return g_read.st == St::Active || pairActive();
+}
 #if !ORCON_TX_POC
 static bool fwPaired() { return orcon::pairState() == orcon::PairState::Paired; }
 #endif
@@ -653,10 +660,11 @@ static void handleRemoteSend() {
 }
 #if ORCON_SIRI
 // ---- Siri: Apple Shortcuts (docs/SIRI.md) --------------------------------------------------------
-// POST /api/siri?stand=1|2|3|auto|afwezig&k=<Siri key>, sent by a shortcut ("Haal inhoud van URL op",
-// method POST); the answer is a short sentence for Siri. The key is no login: it only switches these
-// five modes, through exactly the checks of the web page (ctlAdmit), and only from the home network.
-// POST only, so a link preview or prefetch (GET) never switches the fan.
+// POST /api/siri?stand=1|2|3|auto|afwezig with "Authorization: Bearer <Siri key>", sent by a shortcut
+// ("Haal inhoud van URL op", method POST, one header); the answer is a short sentence for Siri. The key is
+// no login: it only switches these five modes, through exactly the checks of the web page (ctlAdmit), and
+// only from the home network. Never in the URL: a URL ends up where a header does not (a shared shortcut,
+// a screenshot, a log); a key in the query is ignored. POST only, so a link preview (GET) never switches.
 static void siriSay(int code, const char* text) {
     g_srv->sendHeader("Cache-Control", "no-store");
     g_srv->send(code, "text/plain; charset=utf-8", text);
@@ -667,8 +675,10 @@ static void handleSiri() {
     // cannot log in to revoke a key that survived.
     const provision::State st = ownerstore::state();
     if (st != provision::State::Done && st != provision::State::Legacy) { siriSay(409, "Siri is nu niet beschikbaar. Open de webinterface."); return; }
+    const String auth = g_srv->header("Authorization");   // the WebServer always collects this header
+    const char* given = auth.length() > 7 && !strncasecmp(auth.c_str(), "Bearer ", 7) ? auth.c_str() + 7 : "";
     char key[33];   // absent and unreadable alike: refused, and not told apart to a client without the key
-    if (authstore::siriKey(key) != authstore::Status::Ok || !webauth::equal(g_srv->arg("k").c_str(), key)) {
+    if (authstore::siriKey(key) != authstore::Status::Ok || !webauth::equal(given, key)) {
         siriSay(401, "De Siri-sleutel klopt niet. Kijk in de webinterface bij Systeem, Integraties.");
         return;
     }

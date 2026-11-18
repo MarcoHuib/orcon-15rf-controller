@@ -17,10 +17,11 @@ Je iPhone stuurt het commando via je thuisnetwerk rechtstreeks naar de Heltec. E
 2. Tik op **Siri aanzetten**. De Heltec maakt een eigen Siri-sleutel en toont vijf opdrachten.
 3. Maak in de app **Opdrachten** een nieuwe opdracht (**+**):
    1. **Voeg actie toe** → **Haal inhoud van URL op**.
-   2. Tik in de webinterface op **Kopieer** bij de stand en plak het adres in de actie.
+   2. Tik in de webinterface op **Kopieer** bij de stand en plak het adres in de actie. Het adres bevat alleen de stand, bijvoorbeeld `http://orcon15rf.local/api/siri?stand=1`.
    3. Tik op het pijltje in de actie en zet **Methode** op **POST**.
-   4. Geef de opdracht de naam uit de lijst, bijvoorbeeld **Ventilatie stand 1**. Die naam zeg je tegen Siri.
-4. Herhaal stap 3 voor de andere vier standen.
+   4. Tik bij **Headers** op **Voeg nieuwe header toe**. Typ als sleutel `Authorization`. Tik in de webinterface op **Sleutel kopiëren** en plak dat als waarde. Dat is `Bearer `, gevolgd door je sleutel.
+   5. Geef de opdracht de naam uit de lijst, bijvoorbeeld **Ventilatie stand 1**. Die naam zeg je tegen Siri.
+4. Kies daarna bij die opdracht **Dupliceer** en pas alleen het adres en de naam aan. Doe dat voor de andere vier standen.
 
 De eerste keer vraagt iOS of Opdrachten apparaten in je lokale netwerk mag zoeken. Kies **Sta toe**.
 
@@ -36,10 +37,13 @@ Siri antwoordt met een korte zin van de Heltec:
 | Verkeerde of oude sleutel, of Siri uit | "De Siri-sleutel klopt niet. …" |
 | Niet vanaf je thuisnetwerk | "Siri werkt alleen vanaf je eigen thuisnetwerk." |
 
-**Nieuwe sleutel** maakt de oude meteen ongeldig. Plak daarna de nieuwe adressen in je opdrachten. **Siri uitzetten** wist de sleutel. Een fabrieksreset wist hem ook.
+**Nieuwe sleutel** maakt de oude meteen ongeldig. Plak daarna de nieuwe sleutel in de header van elke opdracht. **Siri uitzetten** wist de sleutel. Een fabrieksreset wist hem ook.
 
 ## Hoe het werkt
-`POST http://orcon15rf.local/api/siri?stand=<1|2|3|auto|afwezig>&k=<Siri-sleutel>`
+```
+POST http://orcon15rf.local/api/siri?stand=<1|2|3|auto|afwezig>
+Authorization: Bearer <Siri-sleutel>
+```
 
 - **Zelfde zendroute als de webknoppen** (`ctlAdmit` in `src/setup_web.cpp`): gekoppelde unit, actief profiel, identiteitscontrole, het RF-budget (10 per minuut, 60 per uur, 3,6 s zendtijd per uur), minimaal 2 s tussen commando's, niet tijdens uitlezen of koppelen, en de wachttijd na een druk op de afstandsbediening.
 - **Alleen de vijf standen** (`afwezig` mag ook `away` heten). De timer kan niet via Siri.
@@ -54,8 +58,34 @@ Siri antwoordt met een korte zin van de Heltec:
   - Nooit via het setup-accesspoint.
   - De bestaande Host-controle tegen DNS-rebinding geldt ook hier.
 - **Alleen POST.** Een linkvoorbeeld in Berichten of een prefetch (GET) zet de ventilatie nooit om.
-- **Zonder HTTPS** gaat de sleutel onversleuteld over je eigen WiFi. Wie je WiFi-wachtwoord heeft en het verkeer afluistert, kan hem lezen, en daarmee alleen de stand kiezen, binnen het RF-budget. Vermoed je dat? Tik op **Nieuwe sleutel**. HTTPS blijft een apart punt ([`HTTPS_ONTWERP.md`](HTTPS_ONTWERP.md)).
+- **Nooit in een URL.** De sleutel gaat alleen in de header `Authorization`. Een sleutel in de URL (`?k=…`) wordt genegeerd en het verzoek geweigerd. URL's komen terecht waar een header niet komt: gedeelde opdrachten, schermafbeeldingen, logs. De adressen in de webinterface bevatten alleen de stand.
+- **Niet in logs.**
+  - De firmware schrijft de sleutel nergens weg: niet naar de console, niet naar de seriële poort, niet naar NVS buiten `orconauth/siri`.
+  - De WebServer van de Arduino-kern logt URL's en headers alleen op het niveau "verbose". De firmware bouwt met `CORE_DEBUG_LEVEL=2`, dus die code zit er niet in.
+  - Het maken of wissen van de sleutel komt niet in de (openbare) console.
 - **Wachtwoord vergeten of gewijzigd:** de Siri-sleutel blijft geldig. Vervang hem zelf als je denkt dat iemand anders je wachtwoord had.
+
+## Het resterende risico: HTTP zonder versleuteling
+De Heltec spreekt nog geen HTTPS ([`HTTPS_ONTWERP.md`](HTTPS_ONTWERP.md); het blijft een blokkade voor een publieke release). Elk Siri-verzoek gaat dus **onversleuteld** over je eigen netwerk, inclusief de header met de sleutel.
+
+**Wie de sleutel kan zien:**
+- iemand met je WiFi-wachtwoord die het verkeer opneemt (bij WPA2-Personal kan elk apparaat met het wachtwoord het verkeer van andere apparaten ontcijferen);
+- een besmet of onbetrouwbaar apparaat in je netwerk, bijvoorbeeld via ARP-spoofing;
+- je router.
+
+**Wat zo iemand ermee kan:** alleen de stand kiezen. Steeds binnen het RF-budget (10 per minuut, 60 per uur), alleen vanaf je eigen thuisnetwerk, en alleen zolang de sleutel geldig is.
+
+**Wat diegene er niet mee kan:**
+- instellingen wijzigen of je wachtwoord zien;
+- firmware installeren, koppelen of de timer gebruiken;
+- iets vanaf internet.
+
+**Hetzelfde geldt al voor de webinterface:** je beheerwachtwoord en de sessiecookie gaan ook onversleuteld over HTTP, zie SEC-04 in [`CODEX_PR10_SECURITY_REVIEW.md`](CODEX_PR10_SECURITY_REVIEW.md). Siri voegt dus geen nieuw soort blootstelling toe; de sleutel geeft alleen veel minder rechten.
+
+**Wat je kunt doen:**
+- Vermoed je dat iemand meekeek, tik dan op **Nieuwe sleutel**; de oude werkt meteen niet meer.
+- Gebruik voor gasten een gastnetwerk (een ander subnet), of geef ze je WiFi-wachtwoord niet.
+- Zet nooit een poort naar de Heltec open.
 
 ## Waarom Opdrachten en (nog) niet HomeKit
 - **HomeKit** kent een ventilator als 0–100 % plus automatisch/handmatig. "Afwezig" en jouw vaste zinnen passen daar alleen omslachtig in, via vijf scènes.

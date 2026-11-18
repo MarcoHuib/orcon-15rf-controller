@@ -3,11 +3,28 @@
 **Wat is beoordeeld:** `feature/wifi-reconnect` ten opzichte van 1a92fb0 (de `src/` van 2edb423, Codex ronde 7 GO).
 - Ronde 1: dbeed9e.
 
-**Aanleiding:** de Heltec was onbereikbaar. Het ARP-record op de Mac bleef `incomplete`, `orcon15rf.local` werd niet gevonden en het OLED toonde nog het oude IP-adres. Na een RST werkte alles weer, met een ander DHCP-adres. Er was geen crashdump. De precieze oorzaak is achteraf niet vast te stellen. Er zijn twee mogelijkheden, en beide zijn in de code aan te wijzen:
-1. De Arduino-kern (2.0.16) probeert alleen opnieuw te verbinden bij redenen die op zijn eigen lijst staan. Na de eerste mislukking stopt hij voorgoed bij elke andere reden, bijvoorbeeld 202 AUTH_FAIL terwijl een access point opstart.
-2. `g_ip` was een momentopname bij het opstarten. Na een reconnect met een nieuw DHCP-adres toonde het OLED dus nog het oude adres, en weigerde de Host-controle elk verzoek naar het nieuwe adres met 403.
+**Aanleiding:** de Heltec was onbereikbaar. Gemeten:
+- het ARP-record op de Mac voor het oude adres bleef `incomplete`;
+- `orcon15rf.local` werd niet gevonden;
+- het OLED toonde nog het oude IP-adres.
 
-Een ESP32 met verbinding stuurt elke 60 s een gratuitous ARP (lwIP-instelling). Was het board op het oude adres verbonden geweest, dan was het `incomplete`-record vanzelf opgelost.
+Na een RST werkte alles weer, met een ander DHCP-adres. Er was geen crashdump.
+
+**Diagnose: wat de meting wel en niet verklaart**
+- **ARP `incomplete` is een fout op netwerkniveau.** Op het oude adres antwoordde niemand meer op ARP. Dat ligt onder HTTP. Een webserver die met 403 weigert, beantwoordt ARP gewoon, want dat doet de netwerkstack. **Een 403 kan de ARP-fout dus niet verklaren.**
+- **Een ESP32 met verbinding stuurt elke 60 s een gratuitous ARP** (lwIP-instelling). Was het board op het oude adres verbonden geweest, dan was het `incomplete`-record vanzelf opgelost. Het board was op dat adres dus niet verbonden. Het was **offline**, of **online op een ander adres**.
+- **Offline past bij alle drie de waarnemingen.** De Arduino-kern (2.0.16) probeert alleen opnieuw te verbinden bij redenen op zijn eigen lijst. Na de eerste mislukking stopt hij voorgoed bij elke andere reden, bijvoorbeeld 202 AUTH_FAIL terwijl een access point opstart.
+  - Geen ARP en geen mDNS volgen dan vanzelf.
+  - Het OLED toonde het oude adres, omdat `g_ip` een momentopname bij het opstarten was.
+  - Na de RST gaf DHCP een ander adres, omdat het oude intussen was vrijgegeven.
+  - **Dit is de meest waarschijnlijke verklaring.**
+- **"Online op een ander adres" verklaart de ARP-fout op het oude adres ook.** Maar dan had `orcon15rf.local` naar het nieuwe adres moeten wijzen; voor de mDNS-fout is dan een extra storing nodig. **Minder waarschijnlijk.**
+- **De 403 is een apart, echt defect.** Na een reconnect met een nieuw adres weigerde de Host-controle elk verzoek naar dat nieuwe adres, want `g_ip` was verouderd. Het board leek dan via het IP-adres kapot, terwijl het online was. Dat speelt alleen in het tweede scenario, en alleen voor wie het nieuwe adres probeerde. Het is dus geen verklaring voor de ARP-meting.
+- **Achteraf is niet vast te stellen welk scenario het was.** De oude firmware had geen WiFi-diagnose en de RST wiste alles. De nieuwe `/api/diag` maakt het onderscheid de volgende keer wel:
+  - `outages`, `last_outage_s` en `last_reason` laten zien dat het board offline was, hoe lang en waarom;
+  - `ip_changes` laat zien dat het board online een ander adres kreeg. Een ARP-fout op het oude adres is dan te verwachten.
+
+Beide defecten zijn hersteld: de kern-retry door de watch, en de verouderde `g_ip` door het live adres.
 
 **Uitvoering:**
 - Codex CLI 0.169 (VS Code-extensie), in een losse kloon van alleen deze branch, zonder remote.
@@ -58,3 +75,14 @@ Status van ronde 1: WIFI-01 PARTIAL (door WIFI-05), WIFI-02 FIXED, WIFI-03 FIXED
 ## Herstel na ronde 2
 - **WIFI-05:** een nieuwe poging wist `joined_`. Elke volgende aanmelding krijgt zo een vers venster van 60 s, ook als de tussenliggende "niet aangemeld"-toestand niet gemeten werd. De nieuwe hosttest faalt zonder deze regel (2 fouten) en slaagt ermee (28 checks).
 - **WIFI-06:** `g_wtReason` is nu ook `std::atomic<uint8_t>`, met relaxed load en store.
+
+## Aanvulling na ronde 2 (eigenaarsvragen, 18-11)
+- **De herstart onderbreekt niets kritieks.** `mayRestartNow()` in `src/net.cpp` staat de herstart na 15 minuten alleen toe als er niets loopt:
+  - geen onbevestigde update (OWNER-10);
+  - het PRG-menu is niet open;
+  - er is geen RF-zending bezig;
+  - er loopt geen lees- of koppelsessie (`setupweb::busy()`).
+
+  Een OTA-upload loopt helemaal binnen `server.handleClient()`, in dezelfde looptaak als de watch, dus de watch draait nooit midden in een upload. Een nieuwe poging gebeurt alleen zonder verbinding en raakt alleen WiFi, niet de 868-MHz-radio.
+- **Diagnose:** `/api/diag` → `wifi` heeft twee nieuwe velden, `last_outage_s` (duur van de laatste onderbreking) en `ip_changes` (adreswissels terwijl het board online was). Daarmee is "offline" achteraf te onderscheiden van "online op een ander adres". Zie de aangepaste diagnose bovenaan.
+- Deze aanvulling is beoordeeld in de Siri-review, ronde 3 ([`CODEX_SIRI_REVIEW.md`](CODEX_SIRI_REVIEW.md)).

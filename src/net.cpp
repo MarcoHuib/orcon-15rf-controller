@@ -97,6 +97,8 @@ static std::atomic<uint8_t> g_staReason{0};   // the network's last disconnect r
 static RTC_NOINIT_ATTR uint32_t g_watchMark;   // WATCH_MARK: the previous boot ended in the watch's restart
 static constexpr uint32_t WATCH_MARK = 0x57a7c4e1u;
 static bool     g_watchRestarted = false;
+// Tell "offline" from "online at another address" afterwards (an old address then fails ARP by design):
+static uint32_t g_ipChanges = 0, g_lastOutageS = 0;
 
 static String   g_ssid, g_pass, g_mqttHost;
 // MQTT runs only with a broker configured: NVS "mqtt" = "" means off (net_cfg.h).
@@ -1014,6 +1016,20 @@ static void wifiNote(uint8_t kind, const char* m) {
     (void)kind; Serial.println(m);
 #endif
 }
+// The watch's last resort never cuts into something running: an unconfirmed update (OWNER-10), the PRG menu,
+// an RF transaction, or a read/pair session. An OTA upload runs inside server.handleClient(), in this same
+// loop task, so the watch never runs during one; a retry only happens without a connection and only
+// touches WiFi.
+static bool mayRestartNow() {
+#if ORCON_OWNER_MODEL
+    if (ownerstore::unsettledBoot() || g_gesture.phase() != gesture::Phase::Idle) return false;
+#endif
+#if ORCON_TX_POC && !ORCON_WEB_CONTROL
+    return !txpoc::controller().status().busy;
+#else
+    return !setupweb::busy();
+#endif
+}
 // The home network in normal operation (wifi_watch.h): retry a lost connection whatever the reason, keep
 // the address current (after an outage a DHCP server may hand out another one; without this the Host check
 // refuses the new address and the OLED shows the old one), and restart as a last resort. In setup-AP mode
@@ -1027,21 +1043,17 @@ static void staWatch(uint32_t now) {
     if (up) {
         const IPAddress a = WiFi.localIP();
         char ip[16]; snprintf(ip, sizeof(ip), "%u.%u.%u.%u", a[0], a[1], a[2], a[3]);
-        if (strcmp(ip, g_ip)) { snprintf(g_ip, sizeof(g_ip), "%s", ip); g_dirty = true; }
+        if (strcmp(ip, g_ip)) { snprintf(g_ip, sizeof(g_ip), "%s", ip); ++g_ipChanges; g_dirty = true; }
         if (g_watch.down()) {   // before tick(), which ends the outage
-            snprintf(m, sizeof(m), "WiFi: weer verbonden na %lu s (adres %s)", (unsigned long)(g_watch.downMs(now) / 1000), g_ip);
+            g_lastOutageS = g_watch.downMs(now) / 1000;
+            snprintf(m, sizeof(m), "WiFi: weer verbonden na %lu s (adres %s)", (unsigned long)g_lastOutageS, g_ip);
             wifiNote(rfcon::INFO, m);
         }
     }
-#if ORCON_OWNER_MODEL
-    const bool settled = !ownerstore::unsettledBoot();   // OWNER-10: no restart while an update is unconfirmed
-#else
-    const bool settled = true;   // no ownership model; an unconfirmed update rolls back after 300 s anyway
-#endif
     wifi_ap_record_t ap;
     const bool joined = esp_wifi_sta_get_ap_info(&ap) == ESP_OK;   // associated; DHCP may still run (IDF, any core)
     const bool wasDown = g_watch.down();
-    const wifiwatch::Act act = g_watch.tick(up, joined, now, settled);
+    const wifiwatch::Act act = g_watch.tick(up, joined, now, mayRestartNow());
     if (wasDown != g_watch.down()) g_dirty = true;   // the OLED line
     if (act == wifiwatch::Act::Retry) {
         if (noted != g_watch.outages()) {        // once per outage: no flood in the console
@@ -1413,9 +1425,10 @@ bool        wifiConnected(){ return !g_apMode && WiFi.status() == WL_CONNECTED; 
 void wifiDiag(char* out, size_t n) {
     const bool up = wifiConnected();
     snprintf(out, n, "\"wifi\":{\"up\":%s,\"rssi\":%d,\"ip\":\"%s\",\"outages\":%lu,\"retries\":%lu,\"down_s\":%lu,"
-             "\"last_reason\":%u,\"watch_restart\":%s},",
+             "\"last_outage_s\":%lu,\"ip_changes\":%lu,\"last_reason\":%u,\"watch_restart\":%s},",
              up ? "true" : "false", up ? (int)WiFi.RSSI() : 0, g_ip, (unsigned long)g_watch.outages(),
              (unsigned long)g_watch.retries(), (unsigned long)(g_watch.downMs(millis()) / 1000),
+             (unsigned long)g_lastOutageS, (unsigned long)g_ipChanges,
              (unsigned)g_staReason.load(std::memory_order_relaxed),
              g_watchRestarted ? "true" : "false");
 }

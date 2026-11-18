@@ -210,6 +210,7 @@ static WebServer srv;
 static JsonDocument J;
 static const char* TOKEN = "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5";   // the per-boot token; the session's CSRF token after login
 static std::string g_cookie, g_setCookie, g_csrf;                 // the browser's cookie jar
+static std::string g_auth;                                         // an Authorization header to send ("" = none)
 static const DeviceId REM(29, 101), REM2(29, 303), UNIT(29, 202), US(37, 404), UNIT32(32, 202);
 
 // One request through the registered route. Returns the status code; J holds the JSON body.
@@ -239,6 +240,7 @@ static int call(const char* method, const char* path, const char* body = "{}", c
     if (type) srv.req["Content-Type"] = type;
     if (origin) srv.req["Origin"] = origin;
     if (!g_cookie.empty()) srv.req["Cookie"] = "theme=light; " + g_cookie;
+    if (!g_auth.empty()) srv.req["Authorization"] = g_auth;
     auto it = srv.routes.find(std::string(method) + " " + p);
     if (it == srv.routes.end()) return 404;
     it->second();
@@ -1020,10 +1022,14 @@ int main() {
 #if ORCON_SIRI
     // ---- Siri (docs/SIRI.md): a key that only switches the five modes, from the home network ----------
     {
-        auto siri = [](const std::string& q) {   // a shortcut: no cookie, no Origin, no CSRF token, no JSON
-            const std::string jar = g_cookie; g_cookie.clear();
-            const int c = call("POST", ("/api/siri?" + q).c_str(), "", nullptr, nullptr, nullptr);
-            g_cookie = jar; return c;
+        // A shortcut: no cookie, no Origin, no CSRF token, no JSON; the key only in the Authorization header.
+        auto siriRaw = [](const std::string& path, const std::string& auth) {
+            const std::string jar = g_cookie; g_cookie.clear(); g_auth = auth;
+            const int c = call("POST", path.c_str(), "", nullptr, nullptr, nullptr);
+            g_cookie = jar; g_auth.clear(); return c;
+        };
+        auto siri = [&](const std::string& stand, const std::string& k) {
+            return siriRaw("/api/siri?stand=" + stand, k.empty() ? "" : "Bearer " + k);
         };
         auto fresh = [](uint8_t mode) {          // before an accepted command: rate gap, current unit state
             g_ms += txpoc::RATE_CTL_MS; rx(fr(MsgType::I, UNIT32, UNIT32, 0x31D9, {0x00, 0x00, mode}));
@@ -1031,7 +1037,7 @@ int main() {
         const uint32_t n0 = txpoc::controller().status().nextRequest;
         call("GET", "/api/setup/state");
         CHECK(J["caps"]["siri_supported"] == true, "Siri: supported on the control image");
-        CHECK(siri("stand=2&k=0123456789abcdef0123456789abcdef") == 401 && srv.out.find("Siri-sleutel") != std::string::npos,
+        CHECK(siri("2", "0123456789abcdef0123456789abcdef") == 401 && srv.out.find("Siri-sleutel") != std::string::npos,
               "Siri off: refused, with a sentence for Siri");
         CHECK(call("GET", "/api/siri/key") == 200 && J["on"] == false && J["key"] == "", "Siri key: none yet");
         { const std::string jar = g_cookie; g_cookie.clear();
@@ -1048,69 +1054,71 @@ int main() {
               webauth::siriKeyValid(J["key"].as<const char*>()), "Siri key: 128 random bits as 32 hex characters");
         const std::string key = J["key"].as<std::string>();
         CHECK(key == g_siriKey && call("GET", "/api/siri/key") == 200 && J["key"] == key.c_str(), "Siri key: stored, shown again to the owner");
-        const std::string q = "k=" + key + "&stand=";
         // Every refusal comes before admission: nothing queued.
+        CHECK(siriRaw("/api/siri?stand=2&k=" + key, "") == 401, "Siri: a key in the URL is ignored, never accepted");
         std::string bad = key; bad[5] = bad[5] == 'a' ? 'b' : 'a';
-        CHECK(siri("k=" + bad + "&stand=2") == 401, "Siri: wrong key refused");
-        CHECK(siri("stand=2") == 401 && siri("k=&stand=2") == 401, "Siri: missing or empty key refused");
-        CHECK(siri("k=" + key.substr(0, 31) + "&stand=2") == 401 && siri("k=" + key + "0&stand=2") == 401, "Siri: a key of another length refused");
+        CHECK(siri("2", bad) == 401, "Siri: wrong key refused");
+        CHECK(siri("2", "") == 401 && siriRaw("/api/siri?stand=2", "Bearer ") == 401, "Siri: missing or empty key refused");
+        CHECK(siriRaw("/api/siri?stand=2", key) == 401 && siriRaw("/api/siri?stand=2", "Basic " + key) == 401,
+              "Siri: only the Bearer scheme");
+        CHECK(siri("2", key.substr(0, 31)) == 401 && siri("2", key + "0") == 401, "Siri: a key of another length refused");
         { std::string up = key; for (char& ch : up) ch = char(toupper((unsigned char)ch));
-          CHECK(up == key || siri("k=" + up + "&stand=2") == 401, "Siri: the key is exact (no case folding)"); }
-        CHECK(siri(q + "timer") == 400 && siri(q + "4") == 400 && siri(q) == 400, "Siri: no timer, no unknown stand");
-        g_homeNet = false; CHECK(siri(q + "2") == 403, "Siri: a client outside the home subnet (routed, forwarded) refused"); g_homeNet = true;
-        g_viaAp = true;    CHECK(siri(q + "2") == 403, "Siri: never via the setup access point"); g_viaAp = false;
-        srv.req.clear(); srv.args.clear(); srv.args["k"] = key; srv.args["stand"] = "2"; srv.host = "attacker.example";
+          CHECK(up == key || siri("2", up) == 401, "Siri: the key is exact (no case folding)"); }
+        CHECK(siri("timer", key) == 400 && siri("4", key) == 400 && siri("", key) == 400, "Siri: no timer, no unknown stand");
+        g_homeNet = false; CHECK(siri("2", key) == 403, "Siri: a client outside the home subnet (routed, forwarded) refused"); g_homeNet = true;
+        g_viaAp = true;    CHECK(siri("2", key) == 403, "Siri: never via the setup access point"); g_viaAp = false;
+        srv.req.clear(); srv.args.clear(); srv.req["Authorization"] = "Bearer " + key; srv.args["stand"] = "2"; srv.host = "attacker.example";
         srv.routes["POST /api/siri"]();
         CHECK(srv.code == 403, "Siri: a foreign Host (DNS rebinding) refused");
         { const provision::State was = g_ownState;
-          g_ownState = provision::State::New;    const int a = siri(q + "2");
-          g_ownState = provision::State::Setup;  const int b = siri(q + "2");
-          g_ownState = provision::State::Locked; const int c = siri(q + "2");   // the key survived, the owner cannot log in
+          g_ownState = provision::State::New;    const int a = siri("2", key);
+          g_ownState = provision::State::Setup;  const int b = siri("2", key);
+          g_ownState = provision::State::Locked; const int c = siri("2", key);   // the key survived, the owner cannot log in
           g_ownState = was;
           CHECK(a == 409 && b == 409 && c == 409, "Siri: only in normal use: not while installing, nor Locked (Codex SIRI-02)"); }
         g_siriUnreadable = true;
-        CHECK(siri(q + "2") == 401, "Siri: an unreadable key refuses, like no key (Codex SIRI-01)");
+        CHECK(siri("2", key) == 401, "Siri: an unreadable key refuses, like no key (Codex SIRI-01)");
         CHECK(call("GET", "/api/siri/key") == 503 && err("storage-unavailable"), "Siri key: unreadable is never shown as off (Codex SIRI-01)");
         CHECK(call("POST", "/api/siri/key", "{\"action\":\"off\"}") == 503 && err("storage-unavailable"),
               "Siri key: no off claimed while the result cannot be read back");
         g_siriUnreadable = false; g_siriKey = key;   // that erase may or may not have landed: restore for the next checks
         { const std::string kept = g_siriKey; g_siriKey = "ZZZZ";                  // a damaged stored value
-          CHECK(siri("k=ZZZZ&stand=2") == 401 && call("GET", "/api/siri/key") == 503, "Siri: a malformed stored key is unreadable, never a key");
+          CHECK(siri("2", "ZZZZ") == 401 && call("GET", "/api/siri/key") == 503, "Siri: a malformed stored key is unreadable, never a key");
           g_siriKey = kept; }
         txpoc::g_budgetWait = 42000;
-        CHECK(siri(q + "2") == 429 && srv.out.find("42 seconden") != std::string::npos, "Siri: the RF budget applies, the wait in seconds");
+        CHECK(siri("2", key) == 429 && srv.out.find("42 seconden") != std::string::npos, "Siri: the RF budget applies, the wait in seconds");
         txpoc::g_budgetWait = 0;
         CHECK(txpoc::controller().status().nextRequest == n0, "Siri: none of the refusals queued anything");
         // Accepted: the page's own admission, the remote's mode bytes, a sentence for Siri.
         fresh(0x01);
-        CHECK(siri(q + "2") == 202 && txpoc::controller().status().result.request.input.mode == 2 &&
+        CHECK(siri("2", key) == 202 && txpoc::controller().status().result.request.input.mode == 2 &&
               srv.out == "De ventilatie gaat naar stand 2." && srv.type.find("text/plain") == 0, "Siri: stand 2 queued");
         loopTick(); fresh(0x02);
-        CHECK(siri(q + "afwezig") == 202 && txpoc::controller().status().result.request.input.mode == 0, "Siri: afwezig is the away key");
+        CHECK(siri("afwezig", key) == 202 && txpoc::controller().status().result.request.input.mode == 0, "Siri: afwezig is the away key");
         loopTick(); fresh(0x00);
-        CHECK(siri(q + "auto") == 202 && txpoc::controller().status().result.request.input.mode == 4 &&
+        CHECK(siri("auto", key) == 202 && txpoc::controller().status().result.request.input.mode == 4 &&
               srv.out == "De ventilatie gaat naar automatisch.", "Siri: auto");
         loopTick(); fresh(0x03);
         const uint32_t n1 = txpoc::controller().status().nextRequest;
-        CHECK(siri(q + "3") == 200 && srv.out == "De ventilatie staat al op stand 3." && txpoc::controller().status().nextRequest == n1,
+        CHECK(siri("3", key) == 200 && srv.out == "De ventilatie staat al op stand 3." && txpoc::controller().status().nextRequest == n1,
               "Siri: already in that mode: said so, nothing sent");
         g_ms += txpoc::RATE_CTL_MS;
         rx(fr(MsgType::I, REM, UNIT32, 0x22F1, {0x00, 0x00, 0x04}));          // the physical remote, just now
-        CHECK(siri(q + "1") == 409 && srv.out.find("even bezig") != std::string::npos, "Siri: the remote's guard applies");
+        CHECK(siri("1", key) == 409 && srv.out.find("even bezig") != std::string::npos, "Siri: the remote's guard applies");
         g_ms += txpoc::REMOTE_GUARD_MS;
         // A new key replaces the old one at once; "off" ends Siri.
         CHECK(call("POST", "/api/siri/key", "{\"action\":\"new\"}") == 200 && J["key"] != key.c_str(), "Siri key: replaced");
         const std::string key2 = J["key"].as<std::string>();
-        CHECK(siri(q + "1") == 401, "Siri: the old key stops working at once");
+        CHECK(siri("1", key) == 401, "Siri: the old key stops working at once");
         fresh(0x03);
-        CHECK(siri("k=" + key2 + "&stand=1") == 202, "Siri: the new key works");
+        CHECK(siriRaw("/api/siri?stand=1", "bearer " + key2) == 202, "Siri: the new key works (the Bearer scheme is case-insensitive)");
         loopTick();
         g_siriStoreFails = true;
         CHECK(call("POST", "/api/siri/key", "{\"action\":\"off\"}") == 503 && err("storage-unavailable") && g_siriKey == key2,
               "Siri key: an off that storage cannot confirm is reported, never claimed (Codex SIRI-01)");
         g_siriStoreFails = false;
         CHECK(call("POST", "/api/siri/key", "{\"action\":\"off\"}") == 200 && J["on"] == false && g_siriKey.empty(), "Siri key: off");
-        CHECK(siri("k=" + key2 + "&stand=2") == 401, "Siri off: refused");
+        CHECK(siri("2", key2) == 401, "Siri off: refused");
     }
 #endif
 #elif RX_ONLY
