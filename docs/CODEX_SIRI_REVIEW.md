@@ -111,3 +111,21 @@ Deze ronde ging over de drie garanties die de eigenaar op 18-11 vroeg:
 - **WIFI-08:** de diagnose in `CODEX_WIFI_REVIEW.md` geeft nu drie hypotheses: offline, ander adres, of een stil gebroken verbinding. Alleen "403 verklaart de ARP-fout niet" is als bewezen gemarkeerd.
 - **WIFI-09:** de grenzen van de tellers staan bij de diagnose. De laatste reden van verbreken gaat nu via RTC-geheugen mee over de herstart van de watch.
 - **WIFI-10:** `restartBlock()` geeft een reden (`update`, `menu`, `pairing`, `rf-or-session`), en `/api/diag` toont die als `restart_block`. Er is bewust geen timeout die de blokkade overruled.
+
+## Ronde 4 (e4f4dcf): GO, alle drie de eigenaarsgaranties MET
+Geen nieuwe bevindingen en geen regressie.
+
+**SIRI-05, SIRI-06, SIRI-07, WIFI-07, WIFI-08, WIFI-09 en WIFI-10: alle FIXED.**
+
+Eigenaarsgaranties:
+1. **Siri-sleutel nooit in een URL of onnodig in logs, HTTP-risico duidelijk beschreven: MET.** De gegenereerde adressen bevatten alleen de stand. De sleutel gaat alleen in `Authorization`. Logging bij normaal gebruik en het resterende HTTP-risico staan duidelijk beschreven.
+2. **De WiFi-herstart onderbreekt geen OTA, koppelen of ander kritiek proces: MET.** De watch beschermt een lopende OTA, koppelen, RF-transacties en leessessies, en slaat een voltooide koppeling eerst op. Een klaargezette OTA-sessie (`Ready`) kan bij een herstart verloren gaan; dat staat beschreven en onderbreekt geen lopende upload.
+3. **De diagnose scheidt een 403 van de ARP-fout, zonder overdrijving: MET.** De telemetrie geldt als aanwijzing, met de grenzen erbij.
+
+**Tests van de reviewer:**
+- Alle C++-hostsuites slagen, waaronder 28 WiFi-watch-checks.
+- De paginatests slagen: 145 checks.
+- De gegenereerde gzip klopt met de HTML.
+- `git diff --check` is in orde.
+
+Niet getest: de firmwarebuild (wel lokaal: 11/11) en de hardware.
