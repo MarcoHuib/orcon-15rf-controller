@@ -1119,6 +1119,31 @@ int main() {
         g_siriStoreFails = false;
         CHECK(call("POST", "/api/siri/key", "{\"action\":\"off\"}") == 200 && J["on"] == false && g_siriKey.empty(), "Siri key: off");
         CHECK(siri("2", key2) == 401, "Siri off: refused");
+        // Every registered route, without a session and with a wrong Siri key, in a state where a command would
+        // go out at once: none may queue RF (Codex SIRI-09/10). Behaviour, so no spelling of a new call site
+        // (or an "if (false)" in front of a gate) escapes it, unlike the source guard.
+        {
+            CHECK(call("POST", "/api/siri/key", "{\"action\":\"new\"}") == 200, "route sweep: Siri on (a live key route)");
+            const std::string jar = g_cookie; g_cookie.clear();
+            g_auth = "Bearer 0123456789abcdef0123456789abcdef";          // not the stored key
+            fresh(0x01);
+            const uint32_t before = txpoc::controller().status().nextRequest; const int prepared = txpoc::s_rf.sent[0];
+            std::vector<std::string> routes; for (auto& r : srv.routes) routes.push_back(r.first);
+            int called = 0;
+            for (const std::string& r : routes) {
+                const size_t sp = r.find(' ');
+                const std::string body = "{\"key\":\"2\",\"stand\":\"2\",\"request\":" + std::to_string(before) + "}";
+                call(r.substr(0, sp).c_str(), (r.substr(sp + 1) + "?stand=2").c_str(), body.c_str()); ++called;   // a handler may 404 itself
+            }
+            loopTick();
+            g_auth.clear(); g_cookie = jar;
+            printf("  route sweep: %d routes\n", called);
+            CHECK(called == int(routes.size()) && srv.routes.count("POST /api/siri") && srv.routes.count("POST /api/remote/send"),
+                  "route sweep: every registered route was called, Siri and the web send among them");
+            CHECK(txpoc::controller().status().nextRequest == before && txpoc::s_rf.sent[0] == prepared,
+                  "route sweep: no route queues RF without a session or the Siri key");
+            CHECK(call("POST", "/api/siri/key", "{\"action\":\"off\"}") == 200, "route sweep: Siri off again");
+        }
     }
 #endif
 #elif RX_ONLY

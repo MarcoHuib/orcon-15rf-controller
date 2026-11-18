@@ -157,3 +157,23 @@ De bewijsrun voor de release (`tools/test_local.ps1 -Firmware`) draait ook `tool
   - in `handleSiri`: de netwerkpoort, `st`, de Done/Legacy-poort, de header, `given` en de sleutelpoort, en dan pas `ctlAdmit`.
 
   Aanroepers en `arg("k")` worden met een witruimte-ongevoelige regex over heel `setup_web.cpp` gezocht. Er zijn zes mutatietests bij gekomen (onder meer Codex' `||`→`&&`, het genegeerde guard-resultaat, de verzwakte toestandscontrole, `arg( "k" )`, een ontbrekende `return` en `ctlAdmit (`). Alle 19 mutaties van de zendroute worden afgewezen. De gedragstests in `test_setup_web.cpp` blijven de inhoudelijke controle.
+
+## Ronde 6 (b75fad3): GO
+**WIFI-11: FIXED. SIRI-08: PARTIAL.** De acht mutaties uit ronde 5 worden nu door de broncontrole afgewezen, maar Codex vond nieuwe die erdoor komen:
+
+| ID | Ernst | Bevinding |
+|----|-------|-----------|
+| SIRI-09 | MINOR | Hele statements bewijzen nog geen uitgevoerde controle. Een poort met `if (false)` ervoor, of een poort in commentaar, komt door de broncontrole. De HTTP-tests vangen deze mutaties wel. |
+| SIRI-10 | MINOR | Het tellen van aanroepers mist `(ctlAdmit)(…)` en `ctlAdmit/* … */(…)`. Een **toegevoegde route zonder aanmelding** met zo'n aanroep kwam zowel door de broncontrole als door de HTTP-tests. Ook `arg(/* … */ "k")` ontsnapt aan de regex; de HTTP-test op de URL-sleutel vangt dat wel. |
+
+Codex vond geen omzeiling van de aanmelding in de echte, ongewijzigde firmware. Het gaat om de kracht van de regressietests.
+
+## Herstel na ronde 6: een gedragstest over alle routes
+Een tekstuele broncontrole kan nooit alle schrijfwijzen afvangen. Daarom is er een semantische test bijgekomen in `setup_web_control`, de **route-sweep**:
+- de toestand is zo dat een commando meteen zou vertrekken: een actief profiel, een verse unitstatus, ruimte in het RF-budget, en Siri aan;
+- **elke geregistreerde route** (nu 36) wordt aangeroepen zonder sessie, met een verkeerde Siri-sleutel, met `?stand=2` en met een zend-body;
+- er mag niets in de RF-wachtrij komen en er mag geen frame worden voorbereid.
+
+**Bewezen:** met precies Codex' scenario (een extra route die `(ctlAdmit)(K_2, …)` zonder aanmelding aanroept) faalt de sweep. Op de echte code slaagt hij.
+
+De broncontrole blijft een snelle structuurcheck. De gedragstests, waaronder deze sweep, zijn de inhoudelijke regressietest. De firmware is niet gewijzigd: de releasecommit blijft **b75fad3**, met 90 van 90 PASS in de bewijsrun.
