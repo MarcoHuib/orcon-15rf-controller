@@ -98,6 +98,7 @@ static RTC_NOINIT_ATTR uint32_t g_watchMark;   // WATCH_MARK: the previous boot 
 static RTC_NOINIT_ATTR uint32_t g_watchReason; // the disconnect reason at that restart (valid with the mark)
 static constexpr uint32_t WATCH_MARK = 0x57a7c4e1u;
 static bool     g_watchRestarted = false;
+static bool     g_linkUp = false;         // the station has an address (set by the network code; the OLED reads it)
 // Tell "offline" from "online at another address" afterwards (an old address then fails ARP by design):
 static uint32_t g_ipChanges = 0, g_lastOutageS = 0;
 
@@ -760,8 +761,8 @@ static void oledDraw() {
         snprintf(l2, sizeof(l2), "Mode: %s", orcon::modeName(s.mode));
     int fage = s.lastFanMs ? (int)((millis() - s.lastFanMs) / 1000) : -1;
     snprintf(l3, sizeof(l3), "fan %ds  CO2 %u", fage, s.co2);
-    // Never a stale address. The watch's state, not a WiFi call: display code controls nothing else (CI guard).
-    if (!g_apMode && g_watch.down()) snprintf(l4, sizeof(l4), "WiFi: verbinden...");
+    // Never a stale address. A flag, not a WiFi call: display code controls nothing else (CI guard).
+    if (!g_apMode && !g_linkUp) snprintf(l4, sizeof(l4), "WiFi: verbinden...");
     else snprintf(l4, sizeof(l4), g_apMode ? "AP %s" : "%s", g_ip);
 #if ORCON_TX_POC && !ORCON_WEB_CONTROL
     if (!g_pocAuthenticated && g_pocBootToken[0] && uint32_t(millis() - g_pocBootMs) < 60000) {
@@ -971,6 +972,7 @@ static void wifiConnect() {
     if (WiFi.status() == WL_CONNECTED) {
         g_apMode = false;
         snprintf(g_ip, sizeof(g_ip), "%s", WiFi.localIP().toString().c_str());
+        g_linkUp = true;
     } else {
         startAp(false);
     }
@@ -993,6 +995,7 @@ static void apRecovery(uint32_t now) {
         WiFi.softAPdisconnect(true);
         WiFi.mode(WIFI_STA);
         snprintf(g_ip, sizeof(g_ip), "%s", WiFi.localIP().toString().c_str());
+        g_linkUp = true;
 #if ORCON_SIGNED_OTA
         MDNS.begin("orcon15rf");
 #endif
@@ -1046,6 +1049,7 @@ static void staWatch(uint32_t now) {
     if (g_apMode || uint32_t(now - last) < 1000) return;
     last = now;
     const bool up = WiFi.status() == WL_CONNECTED;
+    if (g_linkUp != up) { g_linkUp = up; g_dirty = true; }   // the OLED line
     char m[80];
     if (up) {
         const IPAddress a = WiFi.localIP();

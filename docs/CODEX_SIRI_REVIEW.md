@@ -141,3 +141,19 @@ De bewijsrun voor de release (`tools/test_local.ps1 -Firmware`) draait ook `tool
   - nooit `arg("k")`.
 
   Er zijn zes nieuwe mutatietests bij gekomen, en alle 13 mutaties worden afgewezen. Beoordeeld in ronde 5.
+
+## Ronde 5 (63cfc92): GO
+| ID | Ernst | Bevinding |
+|----|-------|-----------|
+| WIFI-11 | MINOR | `g_watch.down()` wordt pas in `loop()` bijgewerkt. Tijdens het verbinden bij het opstarten (tot 15 s) toonde het OLED daardoor weer `0.0.0.0` in plaats van "WiFi: verbinden...". |
+| SIRI-08 | MINOR | De controle keek naar losse woorden, niet naar handhaving. Acht gevaarlijke mutaties kwamen erdoor, zoals `\|\|` naar `&&` in de sleutelcontrole, een genegeerd `guard()`-resultaat, een verzwakte toestandscontrole, `arg( "k" )` met spaties en een derde aanroeper `ctlAdmit (` met spatie. De bestaande handlers zelf waren wel correct afgeschermd. |
+
+**Bewijs bij deze commit:** de bewijsrun op 63cfc92 gaf 90 van 90 PASS.
+
+## Herstel na ronde 5
+- **WIFI-11:** een vlag `g_linkUp` (het station heeft een adres) begint op onwaar. `wifiConnect()` en `apRecovery()` zetten hem bij verbinden, en de watch werkt hem elke seconde bij. Het OLED leest alleen die vlag. De OLED-regel blijft zo ook zonder WiFi-aanroep.
+- **SIRI-08:** `tx_paths_safe` controleert nu hele statements, met normalisatie van witruimte en in vaste volgorde, telkens met hun vroege `return`:
+  - in `handleRemoteSend`: `if (!guard(d, K, 3)) return;` vóór `ctlAdmit`;
+  - in `handleSiri`: de netwerkpoort, `st`, de Done/Legacy-poort, de header, `given` en de sleutelpoort, en dan pas `ctlAdmit`.
+
+  Aanroepers en `arg("k")` worden met een witruimte-ongevoelige regex over heel `setup_web.cpp` gezocht. Er zijn zes mutatietests bij gekomen (onder meer Codex' `||`→`&&`, het genegeerde guard-resultaat, de verzwakte toestandscontrole, `arg( "k" )`, een ontbrekende `return` en `ctlAdmit (`). Alle 19 mutaties van de zendroute worden afgewezen. De gedragstests in `test_setup_web.cpp` blijven de inhoudelijke controle.

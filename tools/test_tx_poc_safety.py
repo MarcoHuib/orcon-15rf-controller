@@ -92,15 +92,27 @@ def tx_paths_safe(web,net,radio,runtime,main):
     pos=[adm.find(x) for x in order]
     assert all(x>=0 for x in pos) and pos==sorted(pos),('send gate order',list(zip(order,pos)))
     assert 'identityClear' in adm.split('submitCtl(',1)[1] and 'txpoc::rxReady()' in adm.split('submitCtl(',1)[1]
-    assert web.count('ctlAdmit(')==3,('ctlAdmit callers',web.count('ctlAdmit('))   # definition + the two below
-    send=fn(web,'static void handleRemoteSend() {')     # the web-control (first) definition
-    assert 0<=send.find('guard(d, K, 3)')<send.find('ctlAdmit('),'web send: login and CSRF before the gates'
-    siri=fn(web,'static void handleSiri() {')
-    sorder=['net::fromSetupAp()','!net::fromHomeNet()','!hostOk()','provision::State::Done',
-            'header("Authorization")','authstore::siriKey(key) != authstore::Status::Ok','!webauth::equal(given, key)','ctlAdmit(']
-    spos=[siri.find(x) for x in sorder]
-    assert all(x>=0 for x in spos) and spos==sorted(spos),('siri gate order',list(zip(sorder,spos)))
-    assert 'arg("k")' not in siri,'Siri key never from the URL'
+    callers=len(re.findall(r'\bctlAdmit\s*\(',web))
+    assert callers==3,('ctlAdmit callers',callers)           # the definition + the two handlers below
+    assert not re.search(r'\barg\s*\(\s*"k"\s*\)',web),'a Siri key is never read from the URL'
+    # Whole statements, whitespace-normalised, in this order: each gate with its early return (Codex SIRI-08:
+    # tokens alone let "||" -> "&&", an ignored guard result or a weakened predicate pass). The behaviour
+    # itself is tested over HTTP in test/test_setup_web.cpp (wrong key, Locked, URL key, no session).
+    def in_order(body,pats,what):
+        flat=re.sub(r'\s+',' ',body); at=-1
+        for p in pats:
+            m=re.compile(p).search(flat,at+1); assert m,(what,'missing or out of order',p); at=m.start()
+    in_order(fn(web,'static void handleRemoteSend() {'),          # the web-control (first) definition
+             [r'if \(!guard\(d, K, 3\)\) return;',r'ctlAdmit\(k, d\["request"\]\.as<uint32_t>\(\), e, w\)'],'web send')
+    say=r'\{ siriSay\(\d{3}, "[^"]*"\); return; \}'
+    in_order(fn(web,'static void handleSiri() {'),
+             [r'if \(net::fromSetupAp\(\) \|\| !net::fromHomeNet\(\) \|\| !hostOk\(\)\) '+say,
+              r'const provision::State st = ownerstore::state\(\);',
+              r'if \(st != provision::State::Done && st != provision::State::Legacy\) '+say,
+              r'const String auth = g_srv->header\("Authorization"\);',
+              r'const char\* given = auth\.length\(\) > 7 && !strncasecmp\(auth\.c_str\(\), "Bearer ", 7\) \? auth\.c_str\(\) \+ 7 : "";',
+              r'if \(authstore::siriKey\(key\) != authstore::Status::Ok \|\| !webauth::equal\(given, key\)\) '+say,
+              r'ctlAdmit\(k, 0, e, w\)'],'siri')
     assert net.count('controller().submit(')==1 and 'submit' not in main.replace('consumeResult','')
     poc=fn(net,'static void handlePocMode() {')
     assert poc.find('rf-web-control-required')>=0 and poc.find('rf-web-control-required')<poc.find('controller().submit(')
@@ -132,7 +144,13 @@ for name,old,new in [('no-profile-gate','if(!profile){e="profile-required";retur
                      ('siri-no-key','if (authstore::siriKey(key) != authstore::Status::Ok || !webauth::equal(given, key)) {','if (false) {'),
                      ('siri-any-subnet','net::fromSetupAp() || !net::fromHomeNet() || !hostOk()','net::fromSetupAp() || !hostOk()'),
                      ('siri-key-in-url','g_srv->header("Authorization")','g_srv->arg("k")'),
-                     ('siri-locked-ok','if (st != provision::State::Done && st != provision::State::Legacy)','if (false)')]:
+                     ('siri-locked-ok','if (st != provision::State::Done && st != provision::State::Legacy)','if (false)'),
+                     ('siri-key-or-to-and','!= authstore::Status::Ok || !webauth::equal(given, key)','!= authstore::Status::Ok && !webauth::equal(given, key)'),
+                     ('send-guard-ignored','    if (!guard(d, K, 3)) return;','    guard(d, K, 3);'),
+                     ('siri-state-weakened','st != provision::State::Done && st != provision::State::Legacy','st == provision::State::New'),
+                     ('siri-key-in-url-spaced','g_srv->header("Authorization")','g_srv->arg( "k" )'),
+                     ('siri-no-return','siriSay(401, "De Siri-sleutel klopt niet. Kijk in de webinterface bij Systeem, Integraties.");\n        return;','siriSay(401, "De Siri-sleutel klopt niet. Kijk in de webinterface bij Systeem, Integraties.");'),
+                     ('third-admit-caller-spaced','static void handleRemoteState() { if (!authorize(false, true)) return; remoteBody(200); }','static void handleRemoteState() { const char* e; uint32_t w; ctlAdmit (1, 0, e, w); }')]:
     mutated=web.replace(old,new,1); assert mutated!=web,name
     try: tx_paths_safe(mutated,net,radio,runtime,main_src)
     except AssertionError: print('PASS TX-path guard rejects mutation',name)
