@@ -73,3 +73,41 @@ Voor SIRI-01 heeft Codex de NVS-code getoetst aan het `nvs.h`-contract van ESP-I
 - De strengere nepversie ving meteen een te strenge bewering in de eigen test: na een onbevestigd wissen is de toestand onbekend. Dat is verbeterd.
 
 **Bewust niet gedaan:** de echte NVS-code op de host draaien via een NVS-shim. Die code is door review gecontroleerd en wordt op de Heltec getest.
+
+## Ronde 3 (4eeb774): GO, drie eigenaarsgaranties PARTIAL
+Deze ronde ging over de drie garanties die de eigenaar op 18-11 vroeg:
+- de Siri-sleutel nooit in een URL of onnodig in logs, met het HTTP-risico duidelijk beschreven;
+- de WiFi-herstart onderbreekt nooit een OTA, het koppelen of een ander kritiek proces;
+- de diagnose scheidt een 403 van de ARP-fout.
+
+| ID | Ernst | Bevinding |
+|----|-------|-----------|
+| SIRI-05 | MINOR | Na een nieuwe sleutel zeiden de pagina en de bevestigingsvraag "kopieer de adressen opnieuw". De adressen bevatten de sleutel niet meer, dus de opdrachten bleven de oude sleutel gebruiken. |
+| SIRI-06 | MINOR | "Niet in logs" was te stellig. Bij een onleesbare verzoekregel of een kapotte multipart-body logt de WebServer (`log_e`, ook actief bij `CORE_DEBUG_LEVEL=2`) die regel of dat stuk naar de seriële poort. Een gewoon Siri-verzoek raakt die paden niet. |
+| SIRI-07 | MINOR | De tekst moest preciezer: een gedeelde opdracht bevat ook de header; passief meelezen bij WPA2 vraagt ook de aanmelding (handshake); "niets vanaf internet" geldt niet bij een proxy of router die het bronadres vervangt; en iemand met alleen de Siri-sleutel is iets anders dan een actieve aanvaller op HTTP. |
+| WIFI-07 | MINOR | Het koppelen via `/api/cmd` en MQTT (`orcon::PairState::Searching`) viel buiten de herstartblokkade. Ook kon een voltooide koppeling `busy()` al vrijgeven voordat `net::loop()` de geleerde identiteit had opgeslagen, terwijl de watch eerder in de lus draaide. |
+| WIFI-08 | MINOR | "Dus offline of op een ander adres" was niet bewezen. Een stil gebroken verbinding op hetzelfde adres (het access point stuurt niet door, isolatie, verlies) verklaart ARP en mDNS ook. Dat de DHCP-lease was vrijgegeven, was een aanname. |
+| WIFI-09 | MINOR | De tellers geven aanwijzingen, geen sluitend bewijs: `ip_changes` telt ook wissels na een onderbreking en mist wissels bij het opstarten en bij de overgang van het setup-AP naar het thuisnetwerk; er is geen tijdstip of oud adres; alles begint opnieuw bij een herstart, ook na de herstart door de watch. |
+| WIFI-10 | INFO | Een vlag die nooit vrijkomt (een RF-transactie die nooit afrondt, een onleesbare OTA-status) blokkeert de herstart voorgoed. Advies: de reden tonen, geen onvoorwaardelijke timeout. |
+
+**Wel in orde:**
+- De header wordt correct verwerkt: leeg, een ander schema, extra spaties en te lange waarden falen dicht. Het schema is hoofdletterongevoelig, de sleutel exact. Bij een dubbele header gebruikt de Arduino-WebServer de laatste.
+- Geen enkele route accepteert `k` als sleutel, maakt een URL met de sleutel, logt de sleutel of bewaart hem buiten `orconauth/siri`.
+- De uitspraak over OTA klopt: schrijven gebeurt synchroon in `handleClient()`.
+- Fabrieksreset, sleutelgeneratie en schrijfacties naar NVS en de sentinel kunnen niet samenvallen met de watch.
+
+## Herstel na ronde 3
+- **SIRI-05:** de bevestigingsvraag en de melding zeggen nu: zet de nieuwe sleutel in de header `Authorization` van elke opdracht; de adressen blijven gelijk. Een paginatest controleert dat.
+- **SIRI-06 en SIRI-07:** `SIRI.md` is aangepast:
+  - de uitzondering bij kapotte verzoeken (seriële poort, zonder sleutel bij een gewoon Siri-verzoek);
+  - een gedeelde opdracht bevat de header;
+  - WPA2 vraagt ook de handshake;
+  - de proxy/SNAT-voorwaarde bij "niets vanaf internet";
+  - een aparte alinea over een actieve aanvaller (zoals SEC-04, pas HTTPS sluit dit af).
+- **WIFI-07:**
+  - `restartBlock()` blokkeert ook bij `PairState::Searching`.
+  - `staWatch()` draait in `loop()` pas ná het opslaan van een geleerde identiteit (`idsDirty`, `takeLearnedFan`).
+  - Vlak vóór een nieuwe poging wordt de status nog eens gelezen, zodat een net herstelde verbinding niet wordt verbroken.
+- **WIFI-08:** de diagnose in `CODEX_WIFI_REVIEW.md` geeft nu drie hypotheses: offline, ander adres, of een stil gebroken verbinding. Alleen "403 verklaart de ARP-fout niet" is als bewezen gemarkeerd.
+- **WIFI-09:** de grenzen van de tellers staan bij de diagnose. De laatste reden van verbreken gaat nu via RTC-geheugen mee over de herstart van de watch.
+- **WIFI-10:** `restartBlock()` geeft een reden (`update`, `menu`, `pairing`, `rf-or-session`), en `/api/diag` toont die als `restart_block`. Er is bewust geen timeout die de blokkade overruled.

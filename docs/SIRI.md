@@ -58,32 +58,36 @@ Authorization: Bearer <Siri-sleutel>
   - Nooit via het setup-accesspoint.
   - De bestaande Host-controle tegen DNS-rebinding geldt ook hier.
 - **Alleen POST.** Een linkvoorbeeld in Berichten of een prefetch (GET) zet de ventilatie nooit om.
-- **Nooit in een URL.** De sleutel gaat alleen in de header `Authorization`. Een sleutel in de URL (`?k=…`) wordt genegeerd en het verzoek geweigerd. URL's komen terecht waar een header niet komt: gedeelde opdrachten, schermafbeeldingen, logs. De adressen in de webinterface bevatten alleen de stand.
-- **Niet in logs.**
+- **Nooit in een URL.** De sleutel gaat alleen in de header `Authorization`. Een sleutel in de URL (`?k=…`) wordt genegeerd en het verzoek geweigerd. De adressen in de webinterface bevatten alleen de stand.
+  - Een URL komt op meer plekken terecht dan een header: in logs van servers en proxy's, in linkvoorbeelden, in de browsergeschiedenis als je hem plakt.
+  - **Een gedeelde opdracht bevat ook de header**, dus ook de sleutel. Deel je Siri-opdrachten niet.
+- **Niet in logs bij normaal gebruik.**
   - De firmware schrijft de sleutel nergens weg: niet naar de console, niet naar de seriële poort, niet naar NVS buiten `orconauth/siri`.
-  - De WebServer van de Arduino-kern logt URL's en headers alleen op het niveau "verbose". De firmware bouwt met `CORE_DEBUG_LEVEL=2`, dus die code zit er niet in.
-  - Het maken of wissen van de sleutel komt niet in de (openbare) console.
+  - De WebServer van de Arduino-kern logt de verzoekregel, headers en body alleen op het niveau "verbose". De firmware bouwt met `CORE_DEBUG_LEVEL=2`, dus die code zit er niet in.
+  - Uitzondering: bij een kapot verzoek (een onleesbare verzoekregel of een kapotte multipart-body) schrijft de WebServer die regel of dat stuk body als fout naar de seriële poort. Daar staat de sleutel bij een gewoon Siri-verzoek niet in, want hij zit in een header. De seriële poort is alleen via USB aan het board te lezen.
+  - Het maken of wissen van de sleutel komt niet in de console, want die is zonder aanmelden leesbaar.
 - **Wachtwoord vergeten of gewijzigd:** de Siri-sleutel blijft geldig. Vervang hem zelf als je denkt dat iemand anders je wachtwoord had.
 
 ## Het resterende risico: HTTP zonder versleuteling
 De Heltec spreekt nog geen HTTPS ([`HTTPS_ONTWERP.md`](HTTPS_ONTWERP.md); het blijft een blokkade voor een publieke release). Elk Siri-verzoek gaat dus **onversleuteld** over je eigen netwerk, inclusief de header met de sleutel.
 
 **Wie de sleutel kan zien:**
-- iemand met je WiFi-wachtwoord die het verkeer opneemt (bij WPA2-Personal kan elk apparaat met het wachtwoord het verkeer van andere apparaten ontcijferen);
+- iemand met je WiFi-wachtwoord die het verkeer opneemt. Bij WPA2-Personal moet diegene ook de aanmelding van je iPhone opvangen (of afdwingen door de verbinding te verbreken); daarna is het verkeer te ontcijferen.
 - een besmet of onbetrouwbaar apparaat in je netwerk, bijvoorbeeld via ARP-spoofing;
-- je router.
+- je router;
+- iedereen met wie je een Siri-opdracht deelt (zie hierboven).
 
-**Wat zo iemand ermee kan:** alleen de stand kiezen. Steeds binnen het RF-budget (10 per minuut, 60 per uur), alleen vanaf je eigen thuisnetwerk, en alleen zolang de sleutel geldig is.
+**Wat iemand met alleen de Siri-sleutel kan:** de stand kiezen. Steeds binnen het RF-budget (10 per minuut, 60 per uur), alleen vanaf je eigen thuisnetwerk, en alleen zolang de sleutel geldig is.
 
 **Wat diegene er niet mee kan:**
 - instellingen wijzigen of je wachtwoord zien;
 - firmware installeren, koppelen of de timer gebruiken;
-- iets vanaf internet.
+- iets vanaf internet. Voorwaarde: er staat geen poort open, en er staat geen proxy of router tussen die het bronadres vervangt door een adres uit je thuisnetwerk (zie "Alleen vanaf je thuisnetwerk").
 
-**Hetzelfde geldt al voor de webinterface:** je beheerwachtwoord en de sessiecookie gaan ook onversleuteld over HTTP, zie SEC-04 in [`CODEX_PR10_SECURITY_REVIEW.md`](CODEX_PR10_SECURITY_REVIEW.md). Siri voegt dus geen nieuw soort blootstelling toe; de sleutel geeft alleen veel minder rechten.
+**Een actieve aanvaller in je netwerk is een ander verhaal.** Wie al tussen je apparaten en de Heltec zit (bijvoorbeeld met ARP-spoofing), kan ook het beheerwachtwoord en de sessiecookie van de webinterface onderscheppen of verzoeken veranderen. Dat geldt ook zonder Siri, zie SEC-04 in [`CODEX_PR10_SECURITY_REVIEW.md`](CODEX_PR10_SECURITY_REVIEW.md). Siri voegt geen nieuw soort blootstelling toe: de sleutel reist over dezelfde onversleutelde weg, maar geeft veel minder rechten. Pas HTTPS sluit dit af.
 
 **Wat je kunt doen:**
-- Vermoed je dat iemand meekeek, tik dan op **Nieuwe sleutel**; de oude werkt meteen niet meer.
+- Vermoed je dat iemand meekeek, of heb je een opdracht gedeeld, tik dan op **Nieuwe sleutel**. De oude werkt meteen niet meer; zet de nieuwe in de header van je opdrachten.
 - Gebruik voor gasten een gastnetwerk (een ander subnet), of geef ze je WiFi-wachtwoord niet.
 - Zet nooit een poort naar de Heltec open.
 

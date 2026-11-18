@@ -95,6 +95,7 @@ static char     g_ip[24]    = "0.0.0.0";   // the current address: the OLED and 
 static wifiwatch::Watch g_watch;          // the home network in normal operation (wifi_watch.h)
 static std::atomic<uint8_t> g_staReason{0};   // the network's last disconnect reason (written by the WiFi event task)
 static RTC_NOINIT_ATTR uint32_t g_watchMark;   // WATCH_MARK: the previous boot ended in the watch's restart
+static RTC_NOINIT_ATTR uint32_t g_watchReason; // the disconnect reason at that restart (valid with the mark)
 static constexpr uint32_t WATCH_MARK = 0x57a7c4e1u;
 static bool     g_watchRestarted = false;
 // Tell "offline" from "online at another address" afterwards (an old address then fails ARP by design):
@@ -1016,19 +1017,24 @@ static void wifiNote(uint8_t kind, const char* m) {
     (void)kind; Serial.println(m);
 #endif
 }
-// The watch's last resort never cuts into something running: an unconfirmed update (OWNER-10), the PRG menu,
-// an RF transaction, or a read/pair session. An OTA upload runs inside server.handleClient(), in this same
-// loop task, so the watch never runs during one; a retry only happens without a connection and only
-// touches WiFi.
-static bool mayRestartNow() {
+// What holds back the watch's last-resort restart right now (nullptr: nothing). It never cuts into: an
+// unconfirmed update (OWNER-10), the PRG menu, an RF transaction, a read/pair session (web), or a legacy
+// pairing (/api/cmd, MQTT). A learned identity is saved earlier in loop() than staWatch(). An OTA upload runs
+// inside server.handleClient(), in this same loop task, so the watch never runs during one; a retry only
+// happens without a connection and only touches WiFi. No timeout overrides these: /api/diag shows the reason
+// (Codex WIFI-10), and a flag that never clears leaves the device retrying, never restarting.
+static const char* restartBlock() {
 #if ORCON_OWNER_MODEL
-    if (ownerstore::unsettledBoot() || g_gesture.phase() != gesture::Phase::Idle) return false;
+    if (ownerstore::unsettledBoot()) return "update";
+    if (g_gesture.phase() != gesture::Phase::Idle) return "menu";
 #endif
+    if (orcon::pairState() == orcon::PairState::Searching) return "pairing";
 #if ORCON_TX_POC && !ORCON_WEB_CONTROL
-    return !txpoc::controller().status().busy;
+    if (txpoc::controller().status().busy) return "rf";
 #else
-    return !setupweb::busy();
+    if (setupweb::busy()) return "rf-or-session";
 #endif
+    return nullptr;
 }
 // The home network in normal operation (wifi_watch.h): retry a lost connection whatever the reason, keep
 // the address current (after an outage a DHCP server may hand out another one; without this the Host check
@@ -1053,7 +1059,7 @@ static void staWatch(uint32_t now) {
     wifi_ap_record_t ap;
     const bool joined = esp_wifi_sta_get_ap_info(&ap) == ESP_OK;   // associated; DHCP may still run (IDF, any core)
     const bool wasDown = g_watch.down();
-    const wifiwatch::Act act = g_watch.tick(up, joined, now, mayRestartNow());
+    const wifiwatch::Act act = g_watch.tick(up, joined, now, !restartBlock());
     if (wasDown != g_watch.down()) g_dirty = true;   // the OLED line
     if (act == wifiwatch::Act::Retry) {
         if (noted != g_watch.outages()) {        // once per outage: no flood in the console
@@ -1061,10 +1067,13 @@ static void staWatch(uint32_t now) {
             snprintf(m, sizeof(m), "WiFi: verbinding weg (reden %u), opnieuw verbinden", (unsigned)g_staReason.load(std::memory_order_relaxed));
             wifiNote(rfcon::ERR, m);
         }
-        WiFi.disconnect();                       // ends a half-finished attempt of the core's own retry
-        WiFi.begin(g_ssid.c_str(), g_pass.c_str());
+        if (WiFi.status() != WL_CONNECTED) {     // not if the link came back since the sample above
+            WiFi.disconnect();                   // ends a half-finished attempt of the core's own retry
+            WiFi.begin(g_ssid.c_str(), g_pass.c_str());
+        }
     } else if (act == wifiwatch::Act::Restart) {
         Serial.println("[wifi] 15 minutes without the home network: restart");
+        g_watchReason = g_staReason.load(std::memory_order_relaxed);   // kept over the restart for /api/diag
         g_watchMark = WATCH_MARK;
         delay(100);
         ESP.restart();
@@ -1326,6 +1335,7 @@ void begin() {
     oledInit();
     // RTC memory: random after a power cut, kept over a restart. Best-effort evidence (diagnostics only).
     g_watchRestarted = g_watchMark == WATCH_MARK && esp_reset_reason() == ESP_RST_SW;
+    if (g_watchRestarted) g_staReason.store(uint8_t(g_watchReason), std::memory_order_relaxed);   // why it gave up
     g_watchMark = 0;
     WiFi.onEvent(staEvent, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
     wifiConnect();
@@ -1425,12 +1435,12 @@ bool        wifiConnected(){ return !g_apMode && WiFi.status() == WL_CONNECTED; 
 void wifiDiag(char* out, size_t n) {
     const bool up = wifiConnected();
     snprintf(out, n, "\"wifi\":{\"up\":%s,\"rssi\":%d,\"ip\":\"%s\",\"outages\":%lu,\"retries\":%lu,\"down_s\":%lu,"
-             "\"last_outage_s\":%lu,\"ip_changes\":%lu,\"last_reason\":%u,\"watch_restart\":%s},",
+             "\"last_outage_s\":%lu,\"ip_changes\":%lu,\"last_reason\":%u,\"watch_restart\":%s,\"restart_block\":\"%s\"},",
              up ? "true" : "false", up ? (int)WiFi.RSSI() : 0, g_ip, (unsigned long)g_watch.outages(),
              (unsigned long)g_watch.retries(), (unsigned long)(g_watch.downMs(millis()) / 1000),
              (unsigned long)g_lastOutageS, (unsigned long)g_ipChanges,
              (unsigned)g_staReason.load(std::memory_order_relaxed),
-             g_watchRestarted ? "true" : "false");
+             g_watchRestarted ? "true" : "false", restartBlock() ? restartBlock() : "none");
 }
 bool        maskIds()      { return g_maskIds; }
 void        restartSoon()  { g_rebootAt = millis() + 1200; }
@@ -1468,7 +1478,6 @@ void loop() {
 #endif
     oledTick();  // runs independently of state publishing and RF activity
     apRecovery(millis());
-    staWatch(millis());
 #if ORCON_OWNER_MODEL
     if (g_apMode) g_dns.processNextRequest();
     wifiTestTick(millis());
@@ -1502,6 +1511,7 @@ void loop() {
         g_dirty = true;
     }
 #endif
+    staWatch(millis());   // after the saves above: a learned pairing is never lost to the watch's restart
 #if !RX_ONLY
     if (!g_apMode) ArduinoOTA.handle();
 #endif

@@ -10,21 +10,23 @@
 
 Na een RST werkte alles weer, met een ander DHCP-adres. Er was geen crashdump.
 
-**Diagnose: wat de meting wel en niet verklaart**
-- **ARP `incomplete` is een fout op netwerkniveau.** Op het oude adres antwoordde niemand meer op ARP. Dat ligt onder HTTP. Een webserver die met 403 weigert, beantwoordt ARP gewoon, want dat doet de netwerkstack. **Een 403 kan de ARP-fout dus niet verklaren.**
-- **Een ESP32 met verbinding stuurt elke 60 s een gratuitous ARP** (lwIP-instelling). Was het board op het oude adres verbonden geweest, dan was het `incomplete`-record vanzelf opgelost. Het board was op dat adres dus niet verbonden. Het was **offline**, of **online op een ander adres**.
-- **Offline past bij alle drie de waarnemingen.** De Arduino-kern (2.0.16) probeert alleen opnieuw te verbinden bij redenen op zijn eigen lijst. Na de eerste mislukking stopt hij voorgoed bij elke andere reden, bijvoorbeeld 202 AUTH_FAIL terwijl een access point opstart.
-  - Geen ARP en geen mDNS volgen dan vanzelf.
-  - Het OLED toonde het oude adres, omdat `g_ip` een momentopname bij het opstarten was.
-  - Na de RST gaf DHCP een ander adres, omdat het oude intussen was vrijgegeven.
-  - **Dit is de meest waarschijnlijke verklaring.**
-- **"Online op een ander adres" verklaart de ARP-fout op het oude adres ook.** Maar dan had `orcon15rf.local` naar het nieuwe adres moeten wijzen; voor de mDNS-fout is dan een extra storing nodig. **Minder waarschijnlijk.**
-- **De 403 is een apart, echt defect.** Na een reconnect met een nieuw adres weigerde de Host-controle elk verzoek naar dat nieuwe adres, want `g_ip` was verouderd. Het board leek dan via het IP-adres kapot, terwijl het online was. Dat speelt alleen in het tweede scenario, en alleen voor wie het nieuwe adres probeerde. Het is dus geen verklaring voor de ARP-meting.
-- **Achteraf is niet vast te stellen welk scenario het was.** De oude firmware had geen WiFi-diagnose en de RST wiste alles. De nieuwe `/api/diag` maakt het onderscheid de volgende keer wel:
-  - `outages`, `last_outage_s` en `last_reason` laten zien dat het board offline was, hoe lang en waarom;
-  - `ip_changes` laat zien dat het board online een ander adres kreeg. Een ARP-fout op het oude adres is dan te verwachten.
+**Diagnose: wat de meting wel en niet verklaart.** Alles hieronder zijn hypotheses. Bewezen is alleen de eerste regel.
+- **ARP `incomplete` is een fout op netwerkniveau.** Op het oude adres antwoordde niemand op ARP, gezien vanaf de Mac. Dat ligt onder HTTP. Een webserver die met 403 weigert, beantwoordt ARP gewoon, want dat doet de netwerkstack. **Een 403 kan de ARP-fout dus niet verklaren.**
+- **Mogelijke verklaringen voor de ARP-fout:**
+  1. **Offline.** De Arduino-kern (2.0.16) probeert alleen opnieuw te verbinden bij redenen op zijn eigen lijst. Na de eerste mislukking stopt hij voorgoed bij elke andere reden, bijvoorbeeld 202 AUTH_FAIL terwijl een access point opstart.
+     - Verklaart alle drie de waarnemingen: geen ARP, geen mDNS, en het oude adres op het OLED (`g_ip` was een momentopname).
+     - Dat DHCP na de RST een ander adres gaf, past hierbij, maar bewijst het niet.
+     - **Waarschijnlijkst, met de gegevens die er zijn.**
+  2. **Online op een ander adres.** Dit verklaart de ARP-fout op het oude adres ook. Maar `orcon15rf.local` had dan naar het nieuwe adres moeten wijzen, dus de mDNS-fout vraagt een extra storing.
+  3. **Een stil gebroken verbinding op hetzelfde adres.** Het board meldt zich nog verbonden, maar verkeer komt niet aan: het access point stuurt niet door, clientisolatie, pakketverlies, of een vastgelopen link. Een ESP32 stuurt elke 60 s een gratuitous ARP, maar of die aankomt is niet gegarandeerd. Dit verklaart ARP en mDNS allebei. De watch ziet dit geval **niet** (grens, WIFI-04).
+- **De 403 is een apart, echt defect.** Na een reconnect met een nieuw adres weigerde de Host-controle elk verzoek naar dat nieuwe adres, want `g_ip` was verouderd. Het board leek dan via het IP-adres kapot, terwijl het online was. Dat speelt alleen in verklaring 2, en alleen voor wie het nieuwe adres probeerde. Het verklaart de ARP-meting niet.
+- **Achteraf is niet vast te stellen welke verklaring het was.** De oude firmware had geen WiFi-diagnose en de RST wiste alles. De nieuwe `/api/diag` → `wifi` levert de volgende keer **aanwijzingen, geen sluitend bewijs**:
+  - `outages`, `last_outage_s`, `last_reason` en `retries`: het board zag zelf een onderbreking (verklaring 1), hoe lang en waarom.
+  - `ip_changes`: het board kreeg online een ander adres (verklaring 2). Dit telt alleen wissels die de watch ziet terwijl het board online is, ook na een onderbreking. Wissels bij het opstarten en bij de overgang van het setup-AP naar het thuisnetwerk telt het niet mee, en het oude adres en het tijdstip worden niet bewaard.
+  - `"up": true` zonder nieuwe onderbreking, terwijl het board onbereikbaar is: dat wijst op verklaring 3.
+  - Alle tellers beginnen bij elke herstart opnieuw, ook na de herstart door de watch. Alleen `watch_restart` en de laatste reden (`last_reason`) gaan mee over die herstart, via RTC-geheugen.
 
-Beide defecten zijn hersteld: de kern-retry door de watch, en de verouderde `g_ip` door het live adres.
+Beide defecten zijn hersteld: de kern-retry door de watch, en de verouderde `g_ip` door het live adres. Verklaring 3 blijft een open grens.
 
 **Uitvoering:**
 - Codex CLI 0.169 (VS Code-extensie), in een losse kloon van alleen deze branch, zonder remote.
@@ -77,12 +79,14 @@ Status van ronde 1: WIFI-01 PARTIAL (door WIFI-05), WIFI-02 FIXED, WIFI-03 FIXED
 - **WIFI-06:** `g_wtReason` is nu ook `std::atomic<uint8_t>`, met relaxed load en store.
 
 ## Aanvulling na ronde 2 (eigenaarsvragen, 18-11)
-- **De herstart onderbreekt niets kritieks.** `mayRestartNow()` in `src/net.cpp` staat de herstart na 15 minuten alleen toe als er niets loopt:
-  - geen onbevestigde update (OWNER-10);
-  - het PRG-menu is niet open;
-  - er is geen RF-zending bezig;
-  - er loopt geen lees- of koppelsessie (`setupweb::busy()`).
-
-  Een OTA-upload loopt helemaal binnen `server.handleClient()`, in dezelfde looptaak als de watch, dus de watch draait nooit midden in een upload. Een nieuwe poging gebeurt alleen zonder verbinding en raakt alleen WiFi, niet de 868-MHz-radio.
-- **Diagnose:** `/api/diag` → `wifi` heeft twee nieuwe velden, `last_outage_s` (duur van de laatste onderbreking) en `ip_changes` (adreswissels terwijl het board online was). Daarmee is "offline" achteraf te onderscheiden van "online op een ander adres". Zie de aangepaste diagnose bovenaan.
-- Deze aanvulling is beoordeeld in de Siri-review, ronde 3 ([`CODEX_SIRI_REVIEW.md`](CODEX_SIRI_REVIEW.md)).
+- **De herstart onderbreekt niets kritieks.** `restartBlock()` in `src/net.cpp` noemt wat de herstart na 15 minuten tegenhoudt. Er volgt pas een herstart als niets van dit loopt:
+  - een onbevestigde update (`update`, OWNER-10);
+  - het PRG-menu (`menu`);
+  - koppelen via `/api/cmd` of MQTT (`pairing`);
+  - een RF-zending of een lees- of koppelsessie via de webinterface (`rf-or-session`, `setupweb::busy()`).
+- **Een net geleerde koppeling gaat niet verloren.** De watch draait in `loop()` pas na het opslaan daarvan.
+- **OTA:** een upload loopt helemaal binnen `server.handleClient()`, in dezelfde looptaak als de watch. De watch draait dus nooit midden in een upload. Wat wel kan: een sessie die klaarstaat maar nog niet uploadt (`Ready`), gaat bij een herstart verloren. Dan begint de CLI opnieuw.
+- **Nieuwe pogingen:** alleen zonder verbinding, en alleen WiFi; de 868-MHz-radio wordt niet aangeraakt. Vlak vóór het verbreken wordt de status nog eens gelezen, zodat een net herstelde verbinding blijft staan.
+- **Geen timeout die dit overruled.** Blijft een vlag hangen, bijvoorbeeld een RF-transactie die nooit afrondt of een onleesbare OTA-status, dan herstart het board niet. Het blijft wel opnieuw verbinden. `/api/diag` toont de reden in `restart_block` (WIFI-10).
+- **Diagnose:** `/api/diag` → `wifi` heeft nu `last_outage_s`, `ip_changes` en `restart_block`. De laatste reden van verbreken gaat mee over de herstart van de watch. De grenzen staan bij de diagnose bovenaan.
+- Beoordeeld in de Siri-review, ronde 3 en 4 ([`CODEX_SIRI_REVIEW.md`](CODEX_SIRI_REVIEW.md)).

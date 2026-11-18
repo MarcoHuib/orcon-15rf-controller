@@ -234,9 +234,11 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         ok('Siri copy: the key separately, as the value for the Authorization header');
         dlg.confirm = false; p.$('siriNew').click(); await flush(); assert.equal(siriPosts.length, 1);
         dlg.confirm = true; p.$('siriNew').click(); await flush(); assert.deepEqual(siriPosts[1], { action: 'new' });
+        assert.ok(/header Authorization/.test(dlg.asked.at(-1)) && /header Authorization/.test(p.$('siriM').textContent) &&
+                  !/adressen opnieuw/.test(p.$('siriM').textContent));
         await p.$('siriKey').handlers.click[0](); await flush();
         assert.ok(p.$('siriM').textContent.endsWith('Bearer ' + KEY2));
-        ok('Siri: a new key only after confirmation; the key button then copies the new key');
+        ok('Siri: a new key only after confirmation; told to update the header (not the addresses); the key button copies it');
         dlg.confirm = false; p.$('siriOff').click(); await flush(); assert.equal(siriPosts.length, 2);
         dlg.confirm = true; p.$('siriOff').click(); await flush(); assert.deepEqual(siriPosts[2], { action: 'off' });
         assert.equal(p.$('siriOn').hidden, true); assert.equal(p.$('siriGo').hidden, false);

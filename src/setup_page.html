@@ -467,8 +467,8 @@ $('siriM').textContent=await copyText(u)?'Adres gekopieerd. Plak het in de actie
 $('siriKey').addEventListener('click',async()=>{if(!SR||!SR.on)return;const v='Bearer '+SR.key;
 $('siriM').textContent=await copyText(v)?'Sleutel gekopieerd. Plak hem als waarde van de header Authorization.':'Kopiëren lukt hier niet. Selecteer en kopieer deze waarde: '+v});
 $('siriGo').addEventListener('click',()=>act(async()=>{SR=await api('/api/siri/key',{action:'new'});$('siriM').textContent='Siri staat aan. Maak nu de vijf opdrachten.'}));
-$('siriNew').addEventListener('click',()=>{if(!confirm('Een nieuwe Siri-sleutel maken? Je bestaande Siri-opdrachten werken daarna niet meer: plak er dan de nieuwe adressen in.'))return;
-act(async()=>{SR=await api('/api/siri/key',{action:'new'});$('siriM').textContent='Nieuwe sleutel gemaakt. Kopieer de adressen opnieuw naar je opdrachten.'})});
+$('siriNew').addEventListener('click',()=>{if(!confirm('Een nieuwe Siri-sleutel maken? Je bestaande Siri-opdrachten werken daarna niet meer, tot je in elke opdracht de nieuwe sleutel als waarde van de header Authorization zet. De adressen blijven gelijk.'))return;
+act(async()=>{SR=await api('/api/siri/key',{action:'new'});$('siriM').textContent='Nieuwe sleutel gemaakt. Tik op Sleutel kopiëren en zet hem in elke opdracht als waarde van de header Authorization; de adressen blijven gelijk.'})});
 $('siriOff').addEventListener('click',()=>{if(!confirm('Siri uitzetten? Je Siri-opdrachten werken daarna niet meer.'))return;
 act(async()=>{SR=await api('/api/siri/key',{action:'off'});$('siriM').textContent='Siri staat uit.'})});
 $('remotes').addEventListener('click',e=>{const b=e.target.closest('[data-id]');if(b&&!busy){pick=b.dataset.id;act(async()=>{R=await api('/api/setup/read/start',{remote:pick});rsid=R.sid})}});
