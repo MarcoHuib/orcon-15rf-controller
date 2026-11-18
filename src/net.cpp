@@ -760,7 +760,8 @@ static void oledDraw() {
         snprintf(l2, sizeof(l2), "Mode: %s", orcon::modeName(s.mode));
     int fage = s.lastFanMs ? (int)((millis() - s.lastFanMs) / 1000) : -1;
     snprintf(l3, sizeof(l3), "fan %ds  CO2 %u", fage, s.co2);
-    if (!g_apMode && WiFi.status() != WL_CONNECTED) snprintf(l4, sizeof(l4), "WiFi: verbinden...");   // never a stale address
+    // Never a stale address. The watch's state, not a WiFi call: display code controls nothing else (CI guard).
+    if (!g_apMode && g_watch.down()) snprintf(l4, sizeof(l4), "WiFi: verbinden...");
     else snprintf(l4, sizeof(l4), g_apMode ? "AP %s" : "%s", g_ip);
 #if ORCON_TX_POC && !ORCON_WEB_CONTROL
     if (!g_pocAuthenticated && g_pocBootToken[0] && uint32_t(millis() - g_pocBootMs) < 60000) {

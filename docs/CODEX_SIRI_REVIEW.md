@@ -129,3 +129,15 @@ Eigenaarsgaranties:
 - `git diff --check` is in orde.
 
 Niet getest: de firmwarebuild (wel lokaal: 11/11) en de hardware.
+
+## Na ronde 4: twee vondsten van de lokale bewijsrun
+De bewijsrun voor de release (`tools/test_local.ps1 -Firmware`) draait ook `tools/test_tx_poc_safety.py`. De hosttests doen dat niet. Twee broncontroles faalden:
+- **OLED-regel.** De OLED-code mag geen `WiFi.` aanroepen; zo staat het in de regel uit `heltec-v2-rx-only.yml`, die lokaal wordt uitgevoerd. De regel "WiFi: verbinden..." vroeg `WiFi.status()` op. Hij leest nu de toestand van de watch (`g_watch.down()`). De regel zelf is niet aangepast.
+- **`tx_paths_safe`.** Deze controle zocht de zendpoorten lexicaal in `handleRemoteSend`. Sinds ronde 1 staan ze in `ctlAdmit()`. De controle is mee verhuisd en minstens zo streng gebleven:
+  - de vaste volgorde van de poorten en `submitCtl` als laatste, in `ctlAdmit()`;
+  - precies twee aanroepers;
+  - login en CSRF vóór `ctlAdmit()` in `handleRemoteSend`;
+  - in `handleSiri`, in deze volgorde: netwerk, Done/Legacy, de header, de sleutelcontrole, en dan `ctlAdmit()`;
+  - nooit `arg("k")`.
+
+  Er zijn zes nieuwe mutatietests bij gekomen, en alle 13 mutaties worden afgewezen. Beoordeeld in ronde 5.
