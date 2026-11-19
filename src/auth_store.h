@@ -7,7 +7,11 @@
 #include "web_auth.h"
 
 namespace authstore {
-bool load(webauth::Cred& out);          // false: no password stored (or unreadable)
+// Tri-state: an unreadable or malformed record is never "no password" (Codex OWNER-02): that would
+// reopen the first-password step of an unfinished installation.
+enum class Status : uint8_t { Absent, Ok, Unreadable };
+Status status(webauth::Cred& out);
+bool load(webauth::Cred& out);          // status() == Ok
 bool save(const webauth::Cred& in);     // one NVS blob; only on (re)set and password change
 bool kdfReady();                        // the PBKDF2 known-answer test passed (run once)
 bool kdf(const char* pw, size_t n, const uint8_t* salt, size_t saltLen, uint32_t iterations, uint8_t out[32]);

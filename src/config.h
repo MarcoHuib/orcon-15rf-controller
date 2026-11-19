@@ -209,3 +209,16 @@
 #if ORCON_TX_CONTROL && !ORCON_WEB_AUTH
 #error "the control image transmits for anyone who can use its web page: it requires the web login"
 #endif
+// Ownership model (docs/PROVISIONING.md): installation wizard over the setup access point, a
+// per-device owner key, the PRG recovery menu and the factory reset. Every build with the web login
+// and the setup web UI (not the old TX-PoC portal).
+#if ORCON_WEB_AUTH && (!ORCON_TX_POC || ORCON_WEB_CONTROL)
+#define ORCON_OWNER_MODEL 1
+#else
+#define ORCON_OWNER_MODEL 0
+#endif
+// Published releases set this (platformio build flag, docs/RELEASES.md); a release manifest (v2)
+// is never installed when older than the running release. 0 = a development build.
+#ifndef ORCON_RELEASE_VERSION
+#define ORCON_RELEASE_VERSION 0
+#endif

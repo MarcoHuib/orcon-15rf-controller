@@ -24,6 +24,10 @@
 #include <string>
 #include <vector>
 using namespace ramses;
+#ifndef PROVISION_SCENARIO
+#define PROVISION_SCENARIO 0   // 1: a new device end to end; 2: an unfinished installation, password unreadable;
+                               // 3: writes that persist but fail their read-back
+#endif
 
 static unsigned long g_ms = 100000;
 unsigned long millis() { return g_ms; }
@@ -52,11 +56,13 @@ namespace radio { uint32_t lastReceivedMs() { return g_ms; } }   // rx() deliver
 // Device side of the login (auth_store.cpp): NVS, PBKDF2, RNG and the OTA signature, faked.
 #include "auth_store.h"
 static webauth::Cred g_store;
-static bool g_storeSet = false, g_kdfOk = true;
+static bool g_storeSet = false, g_kdfOk = true, g_storeUnreadable = PROVISION_SCENARIO == 2, g_saveAmbiguous = false,
+            g_saveUnreadable = false;   // persisted, and from then on unreadable
 static uint32_t g_rng = 0x2468ACE1u;
 namespace authstore {
-bool load(webauth::Cred& c) { if (!g_storeSet) return false; c = g_store; return true; }
-bool save(const webauth::Cred& c) { g_store = c; g_storeSet = true; return true; }
+Status status(webauth::Cred& c) { if (g_storeUnreadable) return Status::Unreadable; if (!g_storeSet) return Status::Absent; c = g_store; return Status::Ok; }
+bool load(webauth::Cred& c) { return status(c) == Status::Ok; }
+bool save(const webauth::Cred& c) { g_store = c; g_storeSet = true; g_storeUnreadable = g_saveUnreadable; return !g_saveAmbiguous && !g_saveUnreadable; }   // ambiguous: persisted, read-back failed
 bool kdfReady() { return g_kdfOk; }
 bool kdf(const char* pw, size_t n, const uint8_t* salt, size_t sn, uint32_t it, uint8_t out[32]) {
     uint32_t h = 2166136261u ^ it;
@@ -78,9 +84,66 @@ namespace radio { namespace sx1276 { uint32_t restoreDiag() { return g_restoreDi
 #endif
 static bool g_wifiFake = true;
 static int g_restarts = 0, g_forgets = 0;
+#if ORCON_OWNER_MODEL
+// Ownership model: the device side (owner_store.cpp, net.cpp) faked. The key-file code is the real
+// owner_key.cpp; its primitives here are deterministic stand-ins (OpenSSL checks the real format in
+// test_owner_key). The fake device starts migrated (Legacy), so the older tests see the old rules;
+// the provisioning scenario (-DPROVISION_SCENARIO=1) starts as a new device.
+#include "owner_key.h"
+#include "owner_store.h"
+#include "provision.h"
+static provision::State g_ownState = PROVISION_SCENARIO == 1 || PROVISION_SCENARIO == 3 ? provision::State::New :
+                                     PROVISION_SCENARIO == 2 ? provision::State::Setup : provision::State::Legacy;
+static bool g_registerFails = false;
+static bool g_markFails = false;     // markSetup refuses: a write error, or a pending factory reset (Codex OWNER-13)
+static bool g_viaAp = false, g_staUp = false, g_apOnly = false, g_physical = false, g_cryptoOk = true;
+static uint8_t g_ownPub[65]; static bool g_ownPubSet = false;
+static std::string g_wtState = "idle", g_wtSsid, g_wtPass;
+static int g_wtStarts = 0, g_identityMade = 0;
+static bool fpbkdf2(const uint8_t* pw, size_t n, const uint8_t* s, size_t sn, uint32_t it, uint8_t out[32]) {
+    uint32_t h = 2166136261u ^ it;
+    for (int r = 0; r < 32; ++r) {
+        for (size_t i = 0; i < n; ++i) h = (h ^ pw[i]) * 16777619u;
+        for (size_t i = 0; i < sn; ++i) h = (h ^ s[i]) * 16777619u;
+        h = (h ^ uint32_t(r)) * 16777619u; out[r] = uint8_t(h >> 11);
+    }
+    return true;
+}
+static bool faes(bool, const uint8_t key[32], const uint8_t iv[16], const uint8_t* in, size_t n, uint8_t* out) {
+    for (size_t i = 0; i < n; ++i) out[i] = uint8_t(in[i] ^ key[i % 32] ^ iv[i % 16] ^ uint8_t(i * 7));   // invertible stand-in
+    return n % 16 == 0;
+}
+static bool fpub(const uint8_t d[32], uint8_t q[65]) {
+    uint8_t any = 0; for (int i = 0; i < 32; ++i) any |= d[i];
+    if (!any) return false;
+    q[0] = 4; for (int i = 0; i < 32; ++i) { q[1 + i] = uint8_t(d[i] ^ 0x5a); q[33 + i] = d[31 - i]; }
+    return true;
+}
+static void fsha(const uint8_t* in, size_t n, uint8_t out[32]) { fpbkdf2(in, n, nullptr, 0, 1, out); }
+static void frnd(uint8_t* o, size_t n) { authstore::random(o, n); }
+namespace ownerstore {
+static const ownerkey::Crypto C{fpbkdf2, faes, frnd, fpub, fsha};
+provision::State state() { return g_ownState; }
+bool markSetup() { if (g_markFails || !provision::installing(g_ownState)) return false; g_ownState = provision::State::Setup; return true; }
+bool ownerKey(uint8_t q[65]) { if (g_ownPubSet) memcpy(q, g_ownPub, 65); return g_ownPubSet; }
+bool registerKey(const uint8_t q[65]) { if (g_registerFails) return false; memcpy(g_ownPub, q, 65); g_ownPubSet = true; g_ownState = provision::State::Done; return true; }
+const ownerkey::Crypto& crypto() { return C; }
+bool cryptoReady() { return g_cryptoOk; }
+bool generate(uint8_t d[32], uint8_t q[65]) { frnd(d, 32); d[0] |= 1; return fpub(d, q); }
+bool physicalActive() { return g_physical; }
+uint32_t physicalLeftMs() { return g_physical ? 600000 : 0; }
+}
+#endif
 namespace net { bool apMode() { return g_apModeFake; } bool maskIds() { return true; } const char* ipAddr() { return "192.0.2.5"; }
                 bool wifiConnected() { return g_wifiFake && !g_apModeFake; } const char* ssidName() { return "Thuis \"5G\"\x01"; }
-                void restartSoon() { ++g_restarts; } void forgetWifi() { ++g_forgets; } }
+                void restartSoon() { ++g_restarts; } void forgetWifi() { ++g_forgets; }
+#if ORCON_OWNER_MODEL
+                bool fromSetupAp() { return g_viaAp; } bool staUp() { return g_staUp; } bool apOnly() { return g_apOnly; }
+                bool wifiTestStart(const char* s, const char* pw) { if (g_wtState == "testing") return false; g_wtSsid = s; g_wtPass = pw; g_wtState = "testing"; ++g_wtStarts; return true; }
+                const char* wifiTestState() { return g_wtState.c_str(); } const char* wifiTestIp() { return "192.0.2.77"; }
+                const char* storedSsid() { return "Thuis"; } bool ensureOwnIdentity() { ++g_identityMade; return true; }
+#endif
+}
 
 #if ORCON_TX_POC
 // Test-side stand-in for tx_poc_runtime.cpp: the real Controller/Owner with a fake RF
@@ -220,12 +283,232 @@ struct ProfileMemory : profiles::Storage {
     bool write(const uint8_t* in,size_t n)override{if(failWrite)return false;blob.assign(in,in+n);return true;}
 };
 static ProfileMemory profileMemory;
+#if ORCON_OWNER_MODEL && PROVISION_SCENARIO == 2
+// Codex OWNER-02: an unfinished installation whose stored password cannot be read. Unreadable is
+// never "no password": the first-password step stays closed (no takeover by another AP client).
+static int unreadableScenario() {
+    printf("Provisioning scenario: unfinished installation, stored password unreadable\n");
+    g_apModeFake = true; g_apOnly = true; g_viaAp = true;
+    CHECK(call("GET", "/api/setup/state", "", nullptr) == 200 && J["auth"]["password_set"] == true && J["setup"]["state"] == "setup",
+          "an unreadable password still counts as set");
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"overname-poging\"}", nullptr) == 403 && err("password-already-set") &&
+          g_storeUnreadable, "no first-password step over an unreadable password (no takeover)");
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"overname-poging\"}", nullptr) == 503 && err("auth-unavailable"),
+          "login reports unavailable, not 'no password set'");
+    printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");
+    return failures ? 1 : 0;
+}
+#endif
+#if ORCON_OWNER_MODEL && PROVISION_SCENARIO == 3
+// Codex OWNER-06/07: writes that persist but fail their read-back. An ambiguous first password closes
+// step 1 (only a confirmed absence keeps it open); a key registration that fails half-way still has
+// killed every release-key code issued before it.
+static int ambiguousScenario() {
+    printf("Provisioning scenario: writes that persist but fail their read-back\n");
+    g_apModeFake = true; g_apOnly = true; g_viaAp = true;
+    g_saveAmbiguous = true;
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"eerste-wachtwoord\"}", nullptr) == 503 && err("auth-write-failed") && g_storeSet,
+          "the first password persisted but its read-back failed: 503");
+    g_cookie.clear(); g_saveAmbiguous = false;
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"overname-poging\"}", nullptr) == 403 && err("password-already-set"),
+          "no second first password after an ambiguous write (OWNER-06)");
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"overname-poging\"}", nullptr) == 401, "the takeover password was never stored");
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"eerste-wachtwoord\"}", nullptr) == 200, "the stored password works (RAM mirrors storage)");
+    const std::string tok = J["token"] | "";
+    g_ownState = provision::State::Legacy; g_physical = true;           // a migrated device in the recovery mode
+    call("POST", "/api/auth/nonce", "{}", nullptr, "application/json", nullptr);
+    const std::string n = J["nonce"] | "";
+    JsonDocument d; d["manifest"] = "{\"v\":1,\"kind\":\"orcon-auth-reset\",\"mac\":\"02:00:00:00:00:0a\",\"nonce\":\"" + n + "\"}"; d["sig"] = "a1b2";
+    std::string b; serializeJson(d, b);
+    call("POST", "/api/auth/reset", b.c_str(), nullptr, "application/json", nullptr);
+    const std::string stale = J["code"] | "";
+    CHECK(stale.size() == 9, "Legacy: a release-key code is issued");
+    CHECK(call("POST", "/api/provision/key", "{\"passphrase\":\"eigen sleutelzin\"}", tok.c_str()) == 200, "recovery mode: the owner makes a key");
+    call("GET", "/api/provision/key/file", "", nullptr);
+    JsonDocument v; v["pem"] = J["pem"].as<const char*>(); v["passphrase"] = "eigen sleutelzin";
+    std::string vb; serializeJson(v, vb);
+    g_registerFails = true;
+    CHECK(call("POST", "/api/provision/key/verify", vb.c_str(), tok.c_str()) == 503 && err("key-write-failed"), "the registration write fails half-way");
+    g_cookie.clear();
+    CHECK(call("POST", "/api/auth/setup", ("{\"code\":\"" + stale + "\",\"password\":\"aanvaller-wachtw\"}").c_str(), nullptr) == 409 &&
+          err("code-required"), "the earlier release-key code is gone anyway (OWNER-07)");
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"aanvaller-wachtw\"}", nullptr) == 401, "the attacker's password never took effect");
+    // OWNER-08: a password change that persists while storage turns unreadable: the old password and every
+    // old session stop working at once (no cached credential, no surviving session).
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"eerste-wachtwoord\"}", nullptr) == 200, "logged in again");
+    const std::string t2 = J["token"] | "";
+    g_saveUnreadable = true;
+    CHECK(call("POST", "/api/auth/password", "{\"current\":\"eerste-wachtwoord\",\"password\":\"nieuw-wachtwoord\"}", t2.c_str()) == 503 &&
+          err("auth-write-failed"), "the change persisted but storage reads back unreadable: 503");
+    CHECK(call("GET", "/api/profiles", "", nullptr) == 401, "the old session no longer authorises anything (OWNER-08)");
+    g_cookie.clear();
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"eerste-wachtwoord\"}", nullptr) == 503 && err("auth-unavailable"),
+          "the old password no longer logs in (nothing cached)");
+    printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");
+    return failures ? 1 : 0;
+}
+#endif
+#if ORCON_OWNER_MODEL && PROVISION_SCENARIO == 1
+static std::string jstr(const char* k) { return J[k].is<const char*>() ? J[k].as<const char*>() : ""; }
+static std::string body(std::initializer_list<std::pair<const char*, std::string>> kv) {
+    JsonDocument d; for (auto& p : kv) d[p.first] = p.second;
+    std::string o; serializeJson(d, o); return o;
+}
+// A new device from first start to installed, then password recovery, a new key and the refusals:
+// the wizard over the setup AP only, never from the home network, never with the station up.
+static int provisionScenario() {
+    printf("Provisioning scenario: a new device (owner model)\n");
+    g_apModeFake = true; g_apOnly = true; g_viaAp = true; g_wifiFake = false;
+    CHECK(call("GET", "/api/setup/state", "", nullptr) == 200 && J["setup"]["state"] == "new" && J["setup"]["via_ap"] == true &&
+          J["auth"]["password_set"] == false, "first start: the page learns it is a new device on the setup AP");
+    CHECK(call("GET", "/api/provision/state", "", nullptr) == 200 && J["state"] == "new" && J["password_set"] == false &&
+          J["logged_in"] == false && J["key"]["registered"] == false && J["wifi"]["ssid"] == "", "wizard state: nothing set yet, no network name");
+    // The home network never reaches the wizard; nor does the AP while the station is up.
+    g_viaAp = false;
+    CHECK(call("GET", "/api/provision/state", "", nullptr) == 403 && err("setup-ap-only"), "home network: wizard state refused");
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"eerste-wachtwoord\"}", nullptr) == 403 && err("setup-ap-only") && !g_storeSet,
+          "home network: no first password");
+    g_viaAp = true; g_staUp = true;
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"eerste-wachtwoord\"}", nullptr) == 403 && err("wifi-test-running") && !g_storeSet,
+          "station up: no first password (no path to the home network at that moment)");
+    g_staUp = false;
+    // Step 1: the first password.
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"kort\"}", nullptr) == 400 && err("password-weak") &&
+          g_ownState == provision::State::New, "weak password: refused, nothing stored");
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"eerste-wachtwoord\"}", nullptr, "text/plain") == 403 && !g_storeSet,
+          "step 1 needs JSON (no cross-site form)");
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"eerste-wachtwoord\"}", nullptr, "application/json", "http://203.0.113.9") == 403 &&
+          !g_storeSet, "step 1 refuses a foreign origin");
+    g_markFails = true;
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"eerste-wachtwoord\"}", nullptr) == 503 && err("state-write-failed") &&
+          !g_storeSet && g_ownState == provision::State::New, "step 1: state not recorded (or a reset pending): no password stored");
+    g_markFails = false;
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"eerste-wachtwoord\"}", nullptr) == 200 && !g_cookie.empty() &&
+          g_storeSet && g_ownState == provision::State::Setup, "step 1: password set, state Setup, logged in");
+    const std::string tok = jstr("token");
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"tweede-wachtwoord\"}", tok.c_str()) == 403 && err("password-already-set"),
+          "never a second first password, not even logged in");
+    g_cookie.clear();
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"tweede-wachtwoord\"}", nullptr) == 403 && err("password-already-set"),
+          "another phone on the AP cannot take over after step 1");
+    // An interrupted wizard: without the session nothing else works; the login brings it back.
+    CHECK(call("POST", "/api/provision/wifi", "{\"ssid\":\"Thuis\",\"password\":\"wifi-wachtwoord\"}", nullptr) == 401 && err("login-required") &&
+          g_wtStarts == 0, "no session: no WiFi test");
+    CHECK(call("POST", "/api/provision/key", "{\"passphrase\":\"mijn sleutelzin 1\"}", nullptr) == 401 && err("login-required"),
+          "no session: no key");
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"eerste-wachtwoord\"}", nullptr) == 200, "interrupted wizard: log in again with the step-1 password");
+    const std::string t2 = jstr("token");
+    // Step 2: WiFi, tested before it is stored; the AP stays up.
+    CHECK(call("POST", "/api/provision/wifi", "{\"ssid\":\"\",\"password\":\"wifi-wachtwoord\"}", t2.c_str()) == 400 && err("bad-ssid"), "empty SSID refused");
+    CHECK(call("POST", "/api/provision/wifi", "{\"ssid\":\"Thuis\",\"password\":\"kort\"}", t2.c_str()) == 400 && err("bad-wifi-password"),
+          "WPA2 password shorter than 8 refused");
+    CHECK(call("POST", "/api/provision/wifi", "{\"ssid\":\"Thuis\",\"password\":\"wifi-wachtwoord\"}", "wrong") == 401 && g_wtStarts == 0,
+          "WiFi test needs the CSRF token");
+    CHECK(call("POST", "/api/provision/wifi", body({{"ssid", "Verborgen netwerk"}, {"password", "wifi-wachtwoord"}}).c_str(), t2.c_str()) == 202 &&
+          g_wtSsid == "Verborgen netwerk" && g_wtStarts == 1, "WiFi test started (a hidden network is joined by name)");
+    CHECK(call("POST", "/api/provision/wifi", "{\"ssid\":\"Thuis\",\"password\":\"\"}", t2.c_str()) == 409 && err("wifi-test-running"), "one test at a time");
+    g_wtState = "wrong-password";
+    CHECK(call("GET", "/api/provision/state", "", nullptr) == 200 && J["wifi"]["test"] == "wrong-password" && J["wifi"]["ssid"] == "Thuis",
+          "the result is readable; the stored name only when logged in");
+    CHECK(call("POST", "/api/provision/wifi", "{\"ssid\":\"Open Cafe\",\"password\":\"\"}", t2.c_str()) == 202 && g_wtStarts == 2,
+          "retry after a wrong password; an open network has no password");
+    g_wtState = "connected";
+    // Step 3 (profile) over the AP while installing: the read session is not refused for being on the AP.
+    CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\"}", t2.c_str()) != 403, "installing, AP only: the profile step works over the AP");
+    call("POST", "/api/setup/read/cancel", "{\"sid\":1}", t2.c_str());
+    // Step 4: the owner key.
+    CHECK(call("POST", "/api/provision/key", "{\"passphrase\":\"te kort\"}", t2.c_str()) == 400 && err("passphrase-weak"), "short passphrase refused");
+    CHECK(call("POST", "/api/provision/key", "{\"passphrase\":\"eerste-wachtwoord\"}", t2.c_str()) == 400 && err("passphrase-is-password"),
+          "the passphrase must differ from the admin password");
+    g_cryptoOk = false;
+    CHECK(call("POST", "/api/provision/key", "{\"passphrase\":\"mijn sleutelzin 1\"}", t2.c_str()) == 503 && err("crypto-unavailable"),
+          "a failed crypto self-test closes the key routes");
+    g_cryptoOk = true;
+    CHECK(call("GET", "/api/provision/key/file", "", nullptr) == 403 && err("no-key-pending"), "no key yet: no file");
+    CHECK(call("POST", "/api/provision/key", "{\"passphrase\":\"mijn sleutelzin 1\"}", t2.c_str()) == 200 && jstr("fingerprint").size() == 14,
+          "key created; only its fingerprint in the reply");
+    CHECK(call("GET", "/api/provision/key/file", "", nullptr) == 200 && jstr("filename") == "orcon-recovery-key.pem", "the file is offered for download");
+    const std::string staleFile = jstr("pem");
+    CHECK(staleFile.find("-----BEGIN ENCRYPTED PRIVATE KEY-----") != std::string::npos, "an encrypted PKCS#8 PEM");
+    CHECK(call("POST", "/api/provision/key", "{\"passphrase\":\"mijn sleutelzin 2\"}", t2.c_str()) == 200, "a second key replaces the pending one");
+    call("GET", "/api/provision/key/file", "", nullptr);
+    const std::string file = jstr("pem");
+    CHECK(call("POST", "/api/provision/key/verify", body({{"pem", file}, {"passphrase", "mijn sleutelzin 1"}}).c_str(), t2.c_str()) == 400 &&
+          err("bad-passphrase") && g_ownState == provision::State::Setup, "wrong passphrase: not registered");
+    CHECK(call("POST", "/api/provision/key/verify", body({{"pem", "geen sleutel"}, {"passphrase", "mijn sleutelzin 2"}}).c_str(), t2.c_str()) == 400 &&
+          err("bad-file"), "not a key file: not registered");
+    CHECK(call("POST", "/api/provision/key/verify", body({{"pem", staleFile}, {"passphrase", "mijn sleutelzin 1"}}).c_str(), t2.c_str()) == 409 &&
+          err("key-mismatch") && !g_ownPubSet, "the file of an earlier attempt: not registered");
+    const int restarts = g_restarts;
+    CHECK(call("POST", "/api/provision/key/verify", body({{"pem", file}, {"passphrase", "mijn sleutelzin 2"}}).c_str(), t2.c_str()) == 200 &&
+          J["installed"] == true && g_ownPubSet && g_ownState == provision::State::Done && g_restarts == restarts + 1,
+          "the saved file opens: key registered, installation done, restart onto the home network");
+    // Installed: the wizard is closed, the release key grants nothing, nothing returns the device to "new".
+    g_apOnly = false;
+    CHECK(call("POST", "/api/provision/password", "{\"password\":\"overname-poging\"}", nullptr) == 403 && err("not-installing"), "installed: no first password");
+    CHECK(call("POST", "/api/provision/key", "{\"passphrase\":\"mijn sleutelzin 3\"}", t2.c_str()) == 403 && err("physical-mode-required"),
+          "installed: a new key only in the PRG recovery mode");
+    CHECK(call("POST", "/api/provision/recover", body({{"pem", file}, {"passphrase", "mijn sleutelzin 2"}, {"password", "nieuw-wachtwoord"}}).c_str(),
+               nullptr) == 403 && err("physical-mode-required"), "installed: recovery only in the PRG recovery mode");
+    CHECK(call("POST", "/api/auth/nonce", "{}", nullptr, "application/json", nullptr) == 403 && err("owner-key-required"),
+          "the release key's password recovery is closed once an owner key exists");
+#if ORCON_WEB_CONTROL
+    CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\"}", t2.c_str()) == 403, "installed: RF control over the AP is refused again");
+#endif
+    // Forgotten password: PRG menu -> recovery mode -> the key file over the setup AP.
+    g_physical = true; g_cookie.clear();
+    for (int i = 0; i < 4; ++i)
+        CHECK(call("POST", "/api/provision/recover", body({{"pem", file}, {"passphrase", "verkeerde zin!"}, {"password", "nieuw-wachtwoord"}}).c_str(),
+                   nullptr) == 401 && err("bad-passphrase"), "recovery with a wrong passphrase refused (counts as a failed login)");
+    CHECK(call("POST", "/api/provision/recover", body({{"pem", staleFile}, {"passphrase", "mijn sleutelzin 1"}, {"password", "nieuw-wachtwoord"}}).c_str(),
+               nullptr) == 401 && err("key-mismatch") && J["retry_s"] == 30, "another (valid) key: refused, and the fifth failure locks");
+    CHECK(call("POST", "/api/provision/recover", body({{"pem", file}, {"passphrase", "mijn sleutelzin 2"}, {"password", "nieuw-wachtwoord"}}).c_str(),
+               nullptr) == 429 && err("login-locked"), "locked: even the right key waits");
+    g_ms += 31000; loopTick();
+    CHECK(call("POST", "/api/provision/recover", body({{"pem", file}, {"passphrase", "mijn sleutelzin 2"}, {"password", "nieuw-wachtwoord"}}).c_str(),
+               nullptr) == 200 && !g_cookie.empty(), "the right key file: new password, logged in");
+    g_cookie.clear();
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"eerste-wachtwoord\"}", nullptr) == 401, "the old password no longer works");
+    CHECK(call("POST", "/api/auth/login", "{\"password\":\"nieuw-wachtwoord\"}", nullptr) == 200, "the new one does");
+    const std::string t4 = jstr("token");
+    // A new key in the recovery mode (logged in) makes the old file worthless.
+    CHECK(call("POST", "/api/provision/key", "{\"passphrase\":\"nieuwe sleutelzin\"}", t4.c_str()) == 200, "recovery mode: a new key");
+    call("GET", "/api/provision/key/file", "", nullptr);
+    const std::string file2 = jstr("pem");
+    CHECK(call("POST", "/api/provision/key/verify", body({{"pem", file2}, {"passphrase", "nieuwe sleutelzin"}}).c_str(), t4.c_str()) == 200 &&
+          J["installed"] == false && g_restarts == restarts + 1, "new key registered; no restart outside the installation");
+    g_cookie.clear();
+    CHECK(call("POST", "/api/provision/recover", body({{"pem", file}, {"passphrase", "mijn sleutelzin 2"}, {"password", "nog-een-wachtwoord"}}).c_str(),
+               nullptr) == 401 && err("key-mismatch"), "the replaced key file recovers nothing");
+    // The recovery mode ends: recovery is closed again.
+    g_physical = false;
+    CHECK(call("POST", "/api/provision/recover", body({{"pem", file2}, {"passphrase", "nieuwe sleutelzin"}, {"password", "nog-een-wachtwoord"}}).c_str(),
+               nullptr) == 403 && err("physical-mode-required"), "after the recovery mode: closed");
+    // Captive portal: a phone's connectivity check on the AP goes to the wizard.
+    srv.req.clear(); srv.req["Accept-Encoding"] = "gzip"; srv.host = "captive.apple.com"; srv.sent.clear(); srv.routes["GET /"]();
+    CHECK(srv.code == 302 && srv.sent["Location"] == "http://192.0.2.5/", "captive portal: another name on the AP is redirected to the wizard");
+    // No HTTP route can reset the device or return it to "new".
+    bool resetRoute = false;
+    for (auto& r : srv.routes) resetRoute |= r.first.find("factory") != std::string::npos || r.first.find("provision/reset") != std::string::npos;
+    CHECK(!resetRoute && g_ownState == provision::State::Done, "no factory-reset route; the state never went back to new");
+    printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");
+    return failures ? 1 : 0;
+}
+#endif
+
 int main() {
     printf("Setup web API tests (RX_ONLY=%d)\n", RX_ONLY);
     orcon::begin(37, 404, 29, 202);
     profiles::store().begin(profileMemory);
     setupweb::restoreProfileSelection();
     setupweb::begin(srv);
+#if ORCON_OWNER_MODEL && PROVISION_SCENARIO == 1
+    return provisionScenario();
+#elif ORCON_OWNER_MODEL && PROVISION_SCENARIO == 2
+    return unreadableScenario();
+#elif ORCON_OWNER_MODEL && PROVISION_SCENARIO == 3
+    return ambiguousScenario();
+#endif
 
     // ---- page ------------------------------------------------------------------------------
     srv.req.clear();
@@ -904,6 +1187,56 @@ int main() {
 #endif
     }
 
+#if ORCON_OWNER_MODEL
+    {   // The ownership routes on an installed (here: migrated) device, from the home network.
+        g_viaAp = false;
+        CHECK(call("GET", "/api/provision/state", "", nullptr) == 403 && err("setup-ap-only"), "owner model: wizard state not on the home network");
+        CHECK(call("POST", "/api/provision/password", "{\"password\":\"overname-poging\"}", nullptr) == 403 && err("setup-ap-only"),
+              "owner model: no first password from the home network");
+        g_ownState = provision::State::Done;
+        CHECK(call("POST", "/api/auth/nonce", "{}", nullptr, "application/json", nullptr) == 403 && err("owner-key-required"),
+              "owner model: no release-key recovery once installed with an owner key");
+        g_ownState = provision::State::Legacy;
+    }
+    {   // Codex OWNER-11: NVS lost its owner (Arduino auto-format) while the sentinel says owned -> Locked.
+        g_ownState = provision::State::Locked; g_viaAp = true; g_physical = true;
+        CHECK(call("GET", "/api/provision/state", "", nullptr) == 200 && J["state"] == "locked", "locked: the state says so (on the AP)");
+        CHECK(call("POST", "/api/provision/password", "{\"password\":\"overname-poging\"}", nullptr) == 403 && err("factory-reset-required"),
+              "locked: no first password, even on the AP in the recovery mode");
+        CHECK(call("POST", "/api/provision/recover", "{\"pem\":\"x\",\"passphrase\":\"y\",\"password\":\"overname-poging\"}", nullptr) == 403 &&
+              err("factory-reset-required"), "locked: no recovery");
+        CHECK(call("POST", "/api/auth/nonce", "{}", nullptr, "application/json", nullptr) == 403 && err("owner-key-required"),
+              "locked: no release-key recovery");
+        g_ownState = provision::State::Legacy; g_viaAp = false; g_physical = false;
+    }
+    {   // Codex OWNER-03: a release-key code issued on a Legacy device dies when the owner registers a key.
+        g_viaAp = true; g_physical = true; g_cookie.clear();
+        auto issue = []() {
+            call("POST", "/api/auth/nonce", "{}", nullptr, "application/json", nullptr);
+            const std::string n = J["nonce"] | "";
+            JsonDocument d; d["manifest"] = "{\"v\":1,\"kind\":\"orcon-auth-reset\",\"mac\":\"02:00:00:00:00:0a\",\"nonce\":\"" + n + "\"}"; d["sig"] = "a1b2";
+            std::string b; serializeJson(d, b);
+            call("POST", "/api/auth/reset", b.c_str(), nullptr, "application/json", nullptr);
+            return std::string(J["code"] | "");
+        };
+        const std::string first = issue();
+        CHECK(first.size() == 9 && call("POST", "/api/auth/setup", ("{\"code\":\"" + first + "\",\"password\":\"legacy-wachtwoord\"}").c_str(), nullptr) == 200,
+              "Legacy: the release-key code still sets a password (until an owner key exists)");
+        const std::string tok = J["token"] | "";
+        const std::string stale = issue();                               // e.g. a release-key holder on the AP
+        CHECK(stale.size() == 9, "Legacy: a second code is issued");
+        CHECK(call("POST", "/api/provision/key", "{\"passphrase\":\"eigen sleutelzin\"}", tok.c_str()) == 200, "recovery mode: the owner makes a key");
+        call("GET", "/api/provision/key/file", "", nullptr);
+        JsonDocument v; v["pem"] = J["pem"].as<const char*>(); v["passphrase"] = "eigen sleutelzin";
+        std::string vb; serializeJson(v, vb);
+        CHECK(call("POST", "/api/provision/key/verify", vb.c_str(), tok.c_str()) == 200 && g_ownState == provision::State::Done, "owner key registered: Done");
+        g_cookie.clear();
+        CHECK(call("POST", "/api/auth/setup", ("{\"code\":\"" + stale + "\",\"password\":\"aanvaller-wachtw\"}").c_str(), nullptr) == 403 &&
+              err("owner-key-required"), "the stale release-key code no longer sets a password");
+        CHECK(call("POST", "/api/auth/login", "{\"password\":\"aanvaller-wachtw\"}", nullptr) == 401, "the attacker's password never took effect");
+        g_ownState = provision::State::Legacy; g_physical = false; g_viaAp = false;
+    }
+#endif
     printf("\n%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED", failures, failures == 1 ? "" : "s");
     return failures ? 1 : 0;
 }

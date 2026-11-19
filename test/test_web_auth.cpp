@@ -106,6 +106,8 @@ int main() {
     rn = rs.issueNonce(T, rng); rc = rs.issueCode(T, rng);
     rs.sweep(T + 1000);                                                  // fresh material survives a sweep
     CHECK(rs.takeNonce(rn.c_str(), T + 2000) && rs.use(rc.c_str(), T + 2000) == Recovery::Check::Ok);
+    rn = rs.issueNonce(T, rng); rc = rs.issueCode(T, rng); rs.clear();   // Codex OWNER-03: cleared at owner-key enrolment
+    CHECK(!rs.takeNonce(rn.c_str(), T + 1) && rs.use(rc.c_str(), T + 1) == Recovery::Check::None);
     // Recovery: one-time nonce with TTL, one-time code with 5 tries and 10 minutes.
     Recovery r;
     std::string n1 = r.issueNonce(T, rng);

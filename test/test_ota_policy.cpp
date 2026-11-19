@@ -18,10 +18,19 @@ static std::string manifest(const char* variant = "rx-only", const char* env = "
              "\"sha256\":\"%s\",\"nonce\":\"%s\"%s}", mac, env, variant, tx ? "true" : "false", COMMIT, size, SHA, NONCE, extra);
     return b;
 }
-static std::vector<uint8_t> image(std::initializer_list<const char*> parts, size_t pad = 3000) {
+// Every image of the ownership model carries OWNER_MODEL_MARKER; owner=false builds an older one.
+static std::vector<uint8_t> image(std::initializer_list<const char*> parts, size_t pad = 3000, bool owner = true) {
     std::vector<uint8_t> v(pad, 0xA5);
     for (const char* p : parts) { v.insert(v.end(), p, p + strlen(p)); v.insert(v.end(), 97, 0x00); }
+    if (owner) { v.insert(v.end(), OWNER_MODEL_MARKER, OWNER_MODEL_MARKER + strlen(OWNER_MODEL_MARKER)); v.insert(v.end(), 50, 0x00); }
     return v;
+}
+static std::string release(const char* variant = "control", const char* env = "heltec_v2_sx1276_control", bool tx = true,
+                           unsigned version = 7, const char* extra = "", const char* kind = "orcon-release") {
+    char b[600];
+    snprintf(b, sizeof(b), "{\"v\":2,\"kind\":\"%s\",\"env\":\"%s\",\"variant\":\"%s\",\"allow_tx\":%s,\"commit\":\"%s\","
+             "\"version\":%u,\"size\":4096,\"sha256\":\"%s\"%s}", kind, env, variant, tx ? "true" : "false", COMMIT, version, SHA, extra);
+    return b;
 }
 static Scanner scan(const std::vector<uint8_t>& img, size_t chunk) {
     Scanner s(COMMIT);
@@ -117,6 +126,44 @@ int main() {
       CHECK(!strcmp(checkImage(x, scan(ctl, 300), (uint32_t)ctl.size(), x.sha256), "image-not-rx-only"), "control image labelled RX-only refused (no silent TX)");
       Manifest y; parseManifest(manifest("rf-test", "heltec_v2_sx1276_rftest", true, (unsigned)ctl.size()).c_str(), y);
       CHECK(!strcmp(checkImage(y, scan(ctl, 300), (uint32_t)ctl.size(), y.sha256), "image-not-rf-test"), "control image labelled RF test refused"); }
+    // ---- ownership model: images that predate it never come back over the air ----
+    { const auto oldRx = image({COMMIT, "SX1276 direct RX (TX disabled)", "RX-ONLY TEST FIRMWARE", SIGNED_OTA_MARKER}, 3000, false);
+      Manifest x; parseManifest(manifest("rx-only", "heltec_v2_sx1276", false, (unsigned)oldRx.size()).c_str(), x);
+      CHECK(!strcmp(checkImage(x, scan(oldRx, 300), (uint32_t)oldRx.size(), x.sha256), "image-predates-owner-model"),
+            "pre-owner image refused (its recovery would trust the release key)");
+      const auto split = image({COMMIT, "SX1276 direct RX (TX disabled)", "RX-ONLY TEST FIRMWARE", SIGNED_OTA_MARKER});
+      Manifest y; parseManifest(manifest("rx-only", "heltec_v2_sx1276", false, (unsigned)split.size()).c_str(), y);
+      bool all = true;
+      for (size_t ch : {1u, 7u, 13u, 64u, 255u}) all = all && !checkImage(y, scan(split, ch), (uint32_t)split.size(), y.sha256);
+      CHECK(all, "owner-model marker found across any chunk boundary"); }
+    // ---- v2 release manifests: one signature for every board ----
+    { Manifest r;
+      CHECK(!parseManifest(release().c_str(), r) && r.v == 2 && r.version == 7 && r.variant == Variant::Control && r.allowTx && !r.mac[0] && !r.nonce[0],
+            "release manifest parsed (no board, no nonce)");
+      CHECK(!checkManifest(r, MAC, "", 0x330000, 7) && !checkManifest(r, "02:00:00:00:00:77", "", 0x330000, 0),
+            "release: any board, no nonce, same or newer version");
+      CHECK(!strcmp(checkManifest(r, MAC, "", 0x330000, 8), "older-release"), "release: never older than the running release");
+      CHECK(!strcmp(checkManifest(r, MAC, "", 4095, 0), "image-too-large"), "release: slot size still checked");
+      Manifest t; parseManifest(release("rf-test", "heltec_v2_sx1276_rftest", true).c_str(), t);
+      CHECK(!strcmp(checkManifest(t, MAC, "", 0x330000, 0), "variant-not-released"), "release: the RF test image is never published");
+      Manifest rx; parseManifest(release("rx-only", "heltec_v2_sx1276", false).c_str(), rx);
+      CHECK(!checkManifest(rx, MAC, "", 0x330000, 0), "release: RX-only accepted");
+      Manifest lie; parseManifest(release("rx-only", "heltec_v2_sx1276", true).c_str(), lie);
+      CHECK(!strcmp(checkManifest(lie, MAC, "", 0x330000, 0), "variant-mismatch"), "release: RX-only claiming TX refused");
+      Manifest z;
+      CHECK(!strcmp(parseManifest(release("control", "heltec_v2_sx1276_control", true, 7, "", "orcon-auth-reset").c_str(), z), "bad-manifest"),
+            "release: wrong kind refused");
+      CHECK(!strcmp(parseManifest(release("control", "heltec_v2_sx1276_control", true, 7, ",\"mac\":\"02:00:00:00:00:08\"").c_str(), z), "unknown-field"),
+            "release: v1 fields are not mixed in");
+      std::string noVer = release(); noVer.replace(noVer.find("\"version\":7,"), 12, "\"versio\":7,");
+      CHECK(!strcmp(parseManifest(noVer.c_str(), z), "unknown-field"), "release: version required");
+      std::string neg = release(); neg.replace(neg.find("\"version\":7"), 11, "\"version\":-1");
+      CHECK(!strcmp(parseManifest(neg.c_str(), z), "bad-manifest"), "release: negative version refused");
+      // A v1 manifest is not a release: it still needs this board and a nonce.
+      Manifest v1; parseManifest(manifest().c_str(), v1);
+      CHECK(!strcmp(checkManifest(v1, MAC, "", 0x330000, 0), "nonce-required"), "targeted manifest still needs its nonce");
+      std::string v3 = manifest(); v3.replace(v3.find("\"v\":1"), 5, "\"v\":3");
+      Manifest m3; CHECK(!parseManifest(v3.c_str(), m3) && !strcmp(checkManifest(m3, MAC, NONCE, 0x330000), "manifest-version"), "unknown version refused"); }
     printf("ota policy: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

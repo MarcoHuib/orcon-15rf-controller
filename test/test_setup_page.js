@@ -189,8 +189,8 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         dlg.confirm = true; p.$('sRestart').click(); await flush(); assert.ok(p.posts().some(c => c.key === 'POST /api/setup/restart')); assert.match(p.$('setM').textContent, /herstart/);
         ok('restart only after confirmation');
         await open('firmware'); assert.match(p.$('fwKv').innerHTML, /0123456789abcdef0123456789abcdef01234567/); assert.match(p.$('fwKv').innerHTML, /Niet vast te stellen/);
-        assert.ok(!/Update installeren|beschikbaar: v/.test(html)); await back(); assert.equal(p.location.hash, '#system');
-        ok('firmware: real version, no invented update, no install button; back -> Systeem');
+        assert.ok(!/beschikbaar: v/.test(html)); assert.equal(p.$('fwUp').hidden, true); await back(); assert.equal(p.location.hash, '#system');
+        ok('firmware: real version, no invented update; no install button without the ownership model (signed releases); back -> Systeem');
         await open('info'); const ik = p.$('infoKv').innerHTML;
         assert.ok(/1 d 1 u 1 min/.test(ik) && /167 KB/.test(ik) && /<dd>42<\/dd>/.test(ik) && /Thuis &#60;5G&#62;/.test(ik)); await back();
         ok('device info from the existing state API, escaped');
@@ -663,5 +663,94 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         ok('every login request is JSON (the controller refuses simple cross-site posts)');
     }
 
+    // ---- installation wizard (ownership model): a new device on the setup AP --------------------------------------
+    {
+        const st = { fw: 'test', auth: { enabled: true, logged_in: false, password_set: false, login_wait_s: 0 }, wifi: { ap: true },
+                     setup: { state: 'new', via_ap: true, physical: false } };
+        let W = { state: 'new', physical: false, password_set: false, logged_in: false, crypto_ok: true, sta_up: false, ap_name: 'Orcon15RF-Setup',
+                  key: { registered: false, fingerprint: '', pending: false, pending_fingerprint: '' }, wifi: { test: 'idle', ip: '', ssid: '' } };
+        const logged = () => state(CAPS_TX, { profiles: PF([], 0), auth: { enabled: true, logged_in: true },
+            wifi: { connected: false, ap: true, ap_name: 'Orcon15RF-Setup', ip: '192.168.4.1', ssid: '' }, setup: { state: W.state, via_ap: true, physical: false, key: false } });
+        const PEM = '-----BEGIN ENCRYPTED PRIVATE KEY-----\nAAAA\n-----END ENCRYPTED PRIVATE KEY-----\n';
+        const p = await page({
+            'GET /api/setup/state': () => [200, W.logged_in ? logged() : st],
+            'GET /api/provision/state': () => [200, W],
+            'POST /api/provision/password': () => { W = { ...W, state: 'setup', password_set: true, logged_in: true }; return [200, { ok: true, token: 'tok123' }]; },
+            'GET /api/scan': () => [200, [{ ssid: 'Buren', rssi: -80, lock: true }, { ssid: 'Thuis', rssi: -50, lock: true }]],
+            'POST /api/provision/wifi': () => { W = { ...W, wifi: { test: 'testing', ip: '', ssid: '' } }; return [202, { ok: true, test: 'testing' }]; },
+            'POST /api/provision/key': () => [200, { ok: true, fingerprint: 'ab12-cd34-ef56' }],
+            'GET /api/provision/key/file': () => [200, { filename: 'orcon-recovery-key.pem', fingerprint: 'ab12-cd34-ef56', pem: PEM }],
+            'POST /api/provision/key/verify': c => c.body.passphrase === 'goede sleutelzin' ? [200, { ok: true, installed: true, fingerprint: 'ab12-cd34-ef56' }] : [400, { error: 'bad-passphrase' }],
+        });
+        await p.refresh();
+        assert.equal(p.location.hash, '#wizard'); assert.equal(p.$('wizP').hidden, false); assert.equal(p.$('w1').hidden, false);
+        assert.equal(p.$('title').textContent, 'Welkom bij Orcon Controller'); assert.equal(p.$('ws1').className, 'on'); assert.equal(p.$('authP').hidden, true);
+        ok('new device on the setup AP: the wizard opens at step 1 (password), not the login');
+        p.$('w1a').value = 'Abc12345!x'; p.$('w1a').handlers.input.forEach(f => f()); assert.match(p.$('w1s').textContent, /^Sterkte: (goed|sterk)$/);
+        p.$('w1b').value = 'anders'; p.$('w1Go').click(); await flush(); assert.ok(!p.posts().some(c => c.key === 'POST /api/provision/password'));
+        assert.match(p.$('err').textContent, /verschillen/); ok('step 1: strength meter; a mismatch is refused in the page, nothing sent');
+        p.$('w1a').value = 'Abc12345!x'; p.$('w1b').value = 'Abc12345!x'; p.$('w1Go').click(); await flush(); await p.refresh();
+        const pw = p.posts().filter(c => c.key === 'POST /api/provision/password');
+        assert.equal(pw.length, 1); assert.deepEqual(pw[0].body, { password: 'Abc12345!x' }); assert.equal(pw[0].headers['Content-Type'], 'application/json'); assert.equal(p.$('w1a').value, '');
+        assert.equal(p.$('w2').hidden, false); assert.equal(p.$('wnewP').hidden, false); assert.equal(p.$('wSave').textContent, 'Verbinding testen'); assert.equal(p.$('ws1').className, 'fin');
+        ok('step 1 sent once as JSON, fields emptied; step 2 shows the WiFi screen with "Verbinding testen"');
+        p.$('wScan').click(); await flush(); assert.match(p.$('wSel').innerHTML, /Thuis.*Buren/);
+        p.$('wSsid').value = 'Thuis'; p.$('wPass').value = 'wifi-wachtwoord'; p.$('wSave').click(); await flush();
+        const wf = p.posts().find(c => c.key === 'POST /api/provision/wifi');
+        assert.deepEqual(wf.body, { ssid: 'Thuis', password: 'wifi-wachtwoord' }); assert.equal(wf.headers['X-Orcon-Token'], 'tok123');
+        assert.ok(!p.posts().some(c => c.key === 'POST /api/wifi')); assert.equal(p.$('wPass').value, '');
+        ok('step 2: networks sorted by signal; the test (not the classic save-and-restart) with the session token');
+        W = { ...W, wifi: { test: 'wrong-password', ip: '', ssid: '' } }; await p.refresh();
+        assert.match(p.$('w2M').textContent, /Onjuist WiFi-wachtwoord/); assert.equal(p.$('w2').hidden, false); ok('step 2: a wrong password is explained; still on step 2');
+        W = { ...W, wifi: { test: 'connected', ip: '192.0.2.23', ssid: 'Thuis' } }; await p.refresh();
+        assert.equal(p.$('w3').hidden, false); assert.match(p.$('w3Kv').innerHTML, /Thuis \(getest\)/); assert.equal(p.$('w3Next').textContent, 'Later doen');
+        assert.equal(p.$('w3Pair').hidden, false); ok('step 3: shows what is configured; reading and pairing offered; skippable');
+        p.$('w3Next').click(); await flush(); assert.equal(p.$('w4').hidden, false); assert.equal(p.$('w4a').hidden, false);
+        p.$('w4p1').value = 'kort'; p.$('w4p2').value = 'kort'; p.$('w4Make').click(); await flush(); assert.ok(!p.posts().some(c => c.key === 'POST /api/provision/key'));
+        p.$('w4p1').value = 'goede sleutelzin'; p.$('w4p2').value = 'goede sleutelzin'; p.$('w4Make').click(); await flush();
+        assert.deepEqual(p.posts().find(c => c.key === 'POST /api/provision/key').body, { passphrase: 'goede sleutelzin' });
+        assert.equal(p.$('w4b').hidden, false); assert.equal(p.$('w4Fp').textContent, 'ab12-cd34-ef56'); assert.match(p.$('w4Pem').value, /BEGIN ENCRYPTED PRIVATE KEY/);
+        assert.equal(p.$('w4p1').value, ''); ok('step 4: a short passphrase is refused in the page; the key is made, the passphrase cleared; download and copy offered');
+        p.$('w4Dl').click(); await flush(); assert.match(p.$('w4M').textContent, /Downloaden lukt hier niet|Download gestart/); ok('download: a fallback is explained where the browser cannot save files');
+        p.$('w4In').files = []; p.$('w4Paste').value = p.$('w4Pem').value; p.$('w4p3').value = 'foute zin!!'; p.$('w4Check').click(); await flush();
+        assert.match(p.$('err').textContent, /wachtwoordzin klopt niet/); assert.equal(p.$('w4p3').value, ''); assert.equal(p.$('w5').hidden, true);
+        ok('verify: a wrong passphrase is refused by the controller; not finished; the field is emptied');
+        p.$('w4p3').value = 'goede sleutelzin'; p.$('w4Check').click(); await flush();
+        assert.equal(p.$('w5').hidden, false); assert.match(p.$('w5T').textContent, /Thuis.*192\.0\.2\.23/); assert.equal(p.$('w4Pem').value, '');
+        ok('verified: installation done; how to reconnect is shown; the key text is no longer kept');
+    }
+    {   // forgotten password on an installed device: instructions from the home network, the key page in the recovery mode
+        const st = { fw: 'test', auth: { enabled: true, logged_in: false, password_set: true, login_wait_s: 0 }, wifi: { ap: false }, setup: { state: 'done', via_ap: false, physical: false } };
+        const p = await page({ 'GET /api/setup/state': () => [200, st], 'POST /api/provision/recover': () => [200, { ok: true, token: 'tok9' }] });
+        await p.refresh(); assert.equal(p.location.hash, '#login');
+        p.$('aForgot').click(); await flush();
+        assert.equal(p.$('aHintOwn').hidden, false); assert.equal(p.$('aCodeBox').hidden, true); assert.equal(p.$('aHint').hidden, true);
+        assert.match(p.$('aHintOwn').textContent, /RST.*PRG 15 seconden.*Herstelmodus/);
+        ok('installed device, forgotten password: the PRG recovery steps; no code entry (the release key grants no recovery)');
+        st.setup = { state: 'done', via_ap: true, physical: true }; await p.refresh();
+        p.$('aForgot').click(); await flush(); assert.equal(p.location.hash, '#recover'); assert.equal(p.$('recP').hidden, false);
+        p.$('rIn').files = []; p.$('rPaste').value = '-----BEGIN ENCRYPTED PRIVATE KEY-----\nAAAA\n-----END ENCRYPTED PRIVATE KEY-----\n'; p.$('rPass').value = 'goede sleutelzin';
+        p.$('rNew').value = 'nieuw-wachtwoord'; p.$('rNew2').value = 'ander'; p.$('rGo').click(); await flush();
+        assert.ok(!p.posts().some(c => c.key === 'POST /api/provision/recover')); ok('recovery: mismatching new passwords are refused in the page');
+        p.$('rNew2').value = 'nieuw-wachtwoord'; p.$('rGo').click(); await flush();
+        const rc = p.posts().find(c => c.key === 'POST /api/provision/recover');
+        assert.match(rc.body.pem, /BEGIN ENCRYPTED/); assert.equal(rc.body.passphrase, 'goede sleutelzin'); assert.equal(rc.body.password, 'nieuw-wachtwoord');
+        assert.equal(p.$('rPass').value, ''); assert.equal(p.$('rNew').value, ''); assert.equal(p.$('rPaste').value, '');
+        ok('recovery mode on the AP: key file, passphrase and new password in one request; every field emptied');
+        st.setup = { state: 'legacy', via_ap: false, physical: false };
+        const q = await page({ 'GET /api/setup/state': () => [200, st] }); await q.refresh(); q.$('aForgot').click(); await flush();
+        assert.equal(q.$('aCodeBox').hidden, false); assert.equal(q.$('aHint').hidden, false); assert.equal(q.$('aHintOwn').hidden, true);
+        ok('migrated device without an owner key: the existing signed-code recovery stays');
+        st.setup = { state: 'setup', via_ap: true, physical: false };
+        const r = await page({ 'GET /api/setup/state': () => [200, st] }); await r.refresh();
+        assert.equal(r.location.hash, '#login'); assert.match(r.$('sub').textContent, /Installatie hervatten/);
+        r.$('aForgot').click(); await flush(); assert.match(r.$('aHintOwn').textContent, /fabrieksreset/);
+        ok('interrupted installation: log in with the step-1 password; forgotten -> factory reset (no key exists yet)');
+        st.setup = { state: 'locked', via_ap: true, physical: false }; st.auth.password_set = false;
+        const lq = await page({ 'GET /api/setup/state': () => [200, st] }); await lq.refresh();
+        assert.equal(lq.location.hash, '#login'); assert.equal(lq.$('aLogin').hidden, true); assert.equal(lq.$('aCodeBox').hidden, true);
+        assert.equal(lq.$('aBack').hidden, true); assert.match(lq.$('aHintOwn').textContent, /kwijtgeraakt.*Fabrieksreset/);
+        ok('locked (NVS lost its owner): no login, no setup, no code entry; only the PRG factory reset is explained');
+    }
     console.log(`setup page: ${n} checks, 0 failures`);
 })().catch(e => { console.error(e); process.exit(1); });

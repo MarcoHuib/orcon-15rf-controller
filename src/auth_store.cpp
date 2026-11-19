@@ -7,22 +7,28 @@
 #include <esp_system.h>
 #include <mbedtls/md.h>
 #include <mbedtls/pkcs5.h>
+#include <nvs.h>
 #include <string.h>
 
 namespace authstore {
 
 static const char NS[] = "orconauth", KEY[] = "cred";
 
-bool load(webauth::Cred& out) {
-    Preferences p;
-    if (!p.begin(NS, true)) return false;            // read-only: a missing namespace is "no password"
+Status status(webauth::Cred& out) {
+    nvs_handle_t h;
+    const esp_err_t e = nvs_open(NS, NVS_READONLY, &h);
+    if (e == ESP_ERR_NVS_NOT_FOUND) return Status::Absent;            // never written (or factory reset)
+    if (e != ESP_OK) return Status::Unreadable;
     webauth::Cred c{};
-    const bool ok = p.isKey(KEY) && p.getBytesLength(KEY) == sizeof(c) && p.getBytes(KEY, &c, sizeof(c)) == sizeof(c);
-    p.end();
-    if (!ok || !webauth::credValid(c)) return false;
+    size_t n = sizeof(c);
+    const esp_err_t g = nvs_get_blob(h, KEY, &c, &n);
+    nvs_close(h);
+    if (g == ESP_ERR_NVS_NOT_FOUND) return Status::Absent;
+    if (g != ESP_OK || n != sizeof(c) || !webauth::credValid(c)) return Status::Unreadable;   // malformed counts too
     out = c;
-    return true;
+    return Status::Ok;
 }
+bool load(webauth::Cred& out) { return status(out) == Status::Ok; }
 bool save(const webauth::Cred& in) {
     Preferences p;
     if (!p.begin(NS, false)) return false;

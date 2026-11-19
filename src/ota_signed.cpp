@@ -55,6 +55,10 @@ static RTC_NOINIT_ATTR Crumb g_crumb;
 static uint32_t g_prevUptimeS = 0;
 static bool g_prevKnown = false, g_pending = false;
 static bool g_hold = false;   // rollback test: this trial boot refuses to confirm itself (RAM only)
+#define ORCON_STR2(x) #x
+#define ORCON_STR(x) ORCON_STR2(x)
+// The release number as text in the image: tools/orcon.py release refuses a bundle whose version differs.
+static const char RELEASE_STAMP[] = "ORCON-RELEASE " ORCON_STR(ORCON_RELEASE_VERSION) ";";
 
 static const char* variantOfThisBuild() {
 #if ORCON_TX_MAX_PER_BOOT
@@ -119,15 +123,16 @@ static void handleInfo() {
     const esp_partition_t* run = esp_ota_get_running_partition();
     const esp_partition_t* boot = esp_ota_get_boot_partition();
     const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
-    char b[512];
+    char b[600];
     snprintf(b, sizeof(b),
              "{\"signed_ota\":\"%s\",\"fw\":\"%s\",\"variant\":\"%s\",\"running\":\"%s\",\"running_state\":\"%s\","
              "\"boot\":\"%s\",\"next\":\"%s\",\"next_state\":\"%s\",\"slot_size\":%lu,\"session\":\"%s\",\"last_error\":\"%s\","
-             "\"nonce_active\":%s,\"hold\":%s}",
+             "\"nonce_active\":%s,\"hold\":%s,\"owner_model\":\"%s\",\"release\":%lu,\"release_stamp\":\"%s\"}",
              otap::SIGNED_OTA_MARKER, FW_VERSION, variantOfThisBuild(), run ? run->label : "?", stateName(run),
              boot ? boot->label : "?", next ? next->label : "?", stateName(next), (unsigned long)(next ? next->size : 0),
              g_st == St::Idle ? "idle" : g_st == St::Ready ? "ready" : g_st == St::Writing ? "writing" : g_st == St::Done ? "done" : "failed",
-             g_err, g_nonce[0] && millis() - g_nonceMs < NONCE_TTL_MS ? "true" : "false", g_hold ? "true" : "false");
+             g_err, g_nonce[0] && millis() - g_nonceMs < NONCE_TTL_MS ? "true" : "false", g_hold ? "true" : "false",
+             otap::OWNER_MODEL_MARKER, (unsigned long)ORCON_RELEASE_VERSION, RELEASE_STAMP);
     reply(200, b);
 }
 
@@ -147,8 +152,19 @@ static void handleHold() {
 #endif
 
 // ---- POST /api/ota/nonce -----------------------------------------------------------------
+// The release key proves an image is official; it does not authorise installing it here. On
+// ownership-model builds every install step needs the owner's logged-in session (with its CSRF
+// token), so neither a LAN attacker nor the release-key holder can install anything on their own.
+static bool ownerConsent() {
+#if ORCON_OWNER_MODEL
+    return setupweb::authorize(true);
+#else
+    if (!hostOk()) { fail(403, "forbidden-request"); return false; }
+    return true;
+#endif
+}
 static void handleNonce() {
-    if (!hostOk()) { fail(403, "forbidden-request"); return; }
+    if (!ownerConsent()) return;
     if (g_st == St::Writing) { fail(409, "update-busy"); return; }
     if (g_pending) { fail(409, "confirm-running-image-first"); return; }
     uint8_t r[16]; esp_fill_random(r, sizeof(r));
@@ -178,7 +194,7 @@ bool verifySignature(const char* text, size_t n, const char* sigHex) {
 
 // ---- POST /api/ota/begin {"manifest":"<json text>","sig":"<DER hex>"} --------------------
 static void handleBegin() {
-    if (!hostOk()) { fail(403, "forbidden-request"); return; }
+    if (!ownerConsent()) return;
     if (g_st == St::Writing) { fail(409, "update-busy"); return; }
     if (g_pending) { fail(409, "confirm-running-image-first"); return; }
     const String body = g_s->arg("plain");
@@ -197,7 +213,7 @@ static void handleBegin() {
     const char* e = otap::parseManifest(text, m);
     char mac[18]; ownMac(mac);
     g_part = esp_ota_get_next_update_partition(nullptr);
-    if (!e) e = otap::checkManifest(m, mac, fresh ? nonce : "", g_part ? g_part->size : 0);
+    if (!e) e = otap::checkManifest(m, mac, fresh ? nonce : "", g_part ? g_part->size : 0, ORCON_RELEASE_VERSION);
     if (e) { g_err = e; note(rfcon::WARN, "OTA geweigerd: %s", e); fail(409, e); return; }
     g_m = m; g_scan = otap::Scanner(m.commit); g_st = St::Ready; g_err = "none";
     note(rfcon::INFO, "OTA klaar voor upload: %s %.7s (%lu B) naar %s", otap::variantName(m.variant), m.commit,
@@ -216,6 +232,9 @@ static void handleUploadData() {
     HTTPUpload& up = g_s->upload();
     if (up.status == UPLOAD_FILE_START) {
         if (g_st != St::Ready || !hostOk()) { g_st = St::Failed; g_err = "not-ready"; return; }
+#if ORCON_OWNER_MODEL
+        if (!setupweb::uploadAuthorized()) { g_st = St::Failed; g_err = "login-required"; return; }
+#endif
         if (esp_ota_begin(g_part, OTA_WITH_SEQUENTIAL_WRITES, &g_h) != ESP_OK) { g_st = St::Failed; g_err = "ota-begin-failed"; return; }
         mbedtls_sha256_init(&g_sha); mbedtls_sha256_starts_ret(&g_sha, 0);
         g_rx = 0; g_st = St::Writing;
@@ -244,7 +263,8 @@ static void handleUploadDone() {
     if (g_st == St::Writing) abortWrite("upload-incomplete");
     if (g_st != St::Done) {
         note(rfcon::WARN, "OTA mislukt: %s (opstartpartitie ongewijzigd)", g_err);
-        fail(g_st == St::Failed && !strcmp(g_err, "not-ready") ? 409 : 422, g_err); g_st = St::Idle; return;
+        fail(g_st == St::Failed && !strcmp(g_err, "login-required") ? 401 : g_st == St::Failed && !strcmp(g_err, "not-ready") ? 409 : 422, g_err);
+        g_st = St::Idle; return;
     }
     note(rfcon::INFO, "OTA geschreven en geverifieerd: herstart naar %s (proefstart met rollback)", g_part->label);
     char b[128]; snprintf(b, sizeof(b), "{\"ok\":true,\"restarting\":true,\"boot\":\"%s\"}", g_part->label);

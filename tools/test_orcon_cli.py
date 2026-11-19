@@ -87,10 +87,16 @@ check(run([OLD] * 30).startswith('ROLLED BACK'), 'new image never came up: repor
 check(run([NEW_P] * 200).startswith('NO CONFIRMATION'), 'stuck in trial: no false success')
 check(run([OLD, NEW_V]).startswith('NO TRIAL BOOT'), 'valid on first sight (core confirmed it at boot): not reported as success')
 calls = []
-check(run([OLD, NEW_P, NEW_P, NEW_P, OLD], on_trial=lambda: calls.append(1)).startswith('ROLLED BACK') and calls == [1],
+check(run([OLD, NEW_P, NEW_P, NEW_P, OLD], on_trial=lambda: calls.append(1) or True).startswith('ROLLED BACK') and calls == [1],
       'rollback test: hold sent exactly once in the trial boot, then the old image is reported')
-calls.clear(); run([OLD, NEW_V], on_trial=lambda: calls.append(1))
+calls.clear(); run([OLD, NEW_V], on_trial=lambda: calls.append(1) or True)
 check(calls == [], 'rollback test: no hold for an image that is already confirmed')
+calls.clear()
+check(run([OLD, NEW_P, NEW_P, NEW_P, OLD], on_trial=lambda: calls.append(1) or len(calls) == 2).startswith('ROLLED BACK') and calls == [1, 1],
+      'rollback test: a failed hold is retried at the next poll of the trial boot, and not after it was accepted')
+calls.clear()
+check(run([OLD, NEW_P, NEW_V], on_trial=lambda: calls.append(1) or False).startswith('CONFIRMED') and calls == [1],
+      'rollback test: a hold that never lands ends as CONFIRMED (the CLI then warns), no retry after the trial')
 # Two images of ONE commit (RX-only rollback image in app0, control image written to app1): only the
 # slot tells them apart. Found on hardware 2026-11-13: a real rollback was reported as CONFIRMED.
 SAME_OLD = {'fw': 'n' * 40, 'variant': 'rx-only', 'running': 'app0', 'running_state': 'valid'}
@@ -111,9 +117,81 @@ hdr = {'Cookie': f'orcon_sid={SID}', 'X-Orcon-Token': 'f' * 32, 'Origin': 'http:
 hold = orcon.rollback_hold('orcon15rf.local', 'pw-123456', login_fn=lambda h, pw: seq.append(('login', h, pw)) or hdr,
                            post=lambda h, path, body, headers=None: seq.append(('post', path, body, headers)) or (200, {'ok': True}))
 check(seq == [], 'rollback test: nothing is sent before the trial boot')
-hold()
-check(seq == [('login', 'orcon15rf.local', 'pw-123456'), ('post', '/api/ota/hold', {}, hdr)],
+check(hold() is True and seq == [('login', 'orcon15rf.local', 'pw-123456'), ('post', '/api/ota/hold', {}, hdr)],
       'rollback test: log in inside the trial boot, then hold with cookie, CSRF token and origin')
+def refused(h, pw): raise SystemExit('login refused (HTTP 401 bad-password)')
+def down(h, path, body, headers=None): raise urllib.error.URLError('timed out')
+check(orcon.rollback_hold('b', 'pw', login_fn=refused)() is False, 'rollback test: a refused login is "not held yet", never an abort')
+check(orcon.rollback_hold('b', 'pw', login_fn=lambda h, pw: hdr, post=down)() is False, 'rollback test: a network error is "not held yet"')
+check(orcon.rollback_hold('b', 'pw', login_fn=lambda h, pw: hdr, post=lambda *a, **k: (409, {'error': 'not-a-trial-boot'}))() is False,
+      'rollback test: a hold the board refused is not counted as held')
+# ota-install --test-rollback on firmware without the owner model: the password is checked BEFORE anything is
+# written, because a hold that cannot log in would let the test image confirm itself.
+import argparse, getpass, types
+def ota_args(wt): return argparse.Namespace(host='b', worktree=str(wt), env='heltec_v2_sx1276', yes=True, tx_ack='', test_rollback=True)
+def fake_run(cmd, **kw): return types.SimpleNamespace(stdout='c' * 40 + '\n' if cmd[0] == 'git' else 'VERIFIED', stderr='', returncode=0)
+saved = orcon.subprocess.run, orcon.http, orcon.login, getpass.getpass
+try:
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / '.flashtools').mkdir(); (Path(d) / '.flashtools' / 'board.mac').write_text('02:00:00:00:00:01\n')
+        order = []
+        before = {'signed_ota': 'ORCON-SIGNED-OTA v1', 'running_state': 'valid', 'fw': 'o' * 40, 'running': 'app1'}
+        orcon.subprocess.run, getpass.getpass = fake_run, lambda prompt='': 'typo'
+        orcon.http = lambda h, path, body=None, **k: order.append(path) or ((200, before) if path == '/api/ota' else (403, {}))
+        orcon.login = refused
+        try: orcon.cmd_ota_install(ota_args(d)); check(False, 'test-rollback: wrong password stops before writing')
+        except SystemExit as e: check('login refused' in str(e) and order == ['/api/ota'], 'test-rollback: wrong password stops before writing')
+        order.clear(); orcon.login = lambda h, pw: order.append(('login', pw)) or {}
+        try: orcon.cmd_ota_install(ota_args(d))
+        except SystemExit: pass
+        check(order == ['/api/ota', ('login', 'typo'), '/api/ota/nonce'], 'test-rollback: the password is verified before the nonce request')
+finally:
+    orcon.subprocess.run, orcon.http, orcon.login, getpass.getpass = saved
+# backup-check: the board against an NVS dump; the output names fields, never values
+import zlib
+def profile_blob(items, active):
+    b = b'OCRP\x01' + bytes([len(items)]) + (9).to_bytes(4, 'little') + active.to_bytes(4, 'little')
+    for pid, name, remote, unit in items:
+        b += pid.to_bytes(4, 'little') + name.encode().ljust(49, b'\0') + remote.to_bytes(4, 'little') + unit.to_bytes(4, 'little') + bytes(66)
+    return b + zlib.crc32(b).to_bytes(4, 'little')
+vals = {('orcon', 'uc'): (37).to_bytes(4, 'little'), ('orcon', 'us'): (123).to_bytes(4, 'little'),
+        ('orcon', 'fc'): (29).to_bytes(4, 'little'), ('orcon', 'fs'): (456).to_bytes(4, 'little'),
+        ('orcon', 'ssid'): b'Thuisnet\0', ('orcon', 'oled_mode'): b'auto\0',
+        ('orconprofiles', 'data'): profile_blob([(2, 'Huis', 32 << 18 | 7, 29 << 18 | 456)], 2)}
+bv = orcon.backup_view(vals)
+check(bv == {'own': '37:000123', 'unit': '29:000456', 'oled': 'auto', 'ssid': 'Thuisnet', 'active': 2,
+             'profiles': [{'id': 2, 'name': 'Huis', 'remote': '32:000007', 'unit': '29:000456'}]},
+      'backup-check: IDs, WiFi name, OLED mode and profiles decoded from the dump as the API shows them')
+api = {'/api/state': {'us_id': '37:000123', 'fan_id': '29:000456', 'oled_mode': 'auto'}, '/api/netcfg': {'ssid': 'Thuisnet'},
+       '/api/profiles': {'active': 2, 'items': [{'id': 2, 'name': 'Huis', 'remote': '32:000007', 'unit': '29:000456', 'control_mapping': True}]}}
+board = orcon.board_view('b', hdr, get=lambda h, path, headers=None: (200, api[path]))
+rows = orcon.backup_rows(bv, board)
+check(len(rows) == 6 and all(r.startswith('gelijk') for r in rows), 'backup-check: an identical board gives "gelijk" on every field')
+board['profiles'][0]['unit'] = '29:000457'
+rows = orcon.backup_rows(bv, board)
+check([r.split()[0] for r in rows] == ['gelijk', 'gelijk', 'ANDERS', 'gelijk', 'gelijk', 'gelijk'], 'backup-check: a changed profile is reported')
+check(not any(v in ''.join(rows) for v in ('37:000123', '29:000456', '29:000457', 'Thuisnet', 'Huis', '32:000007')),
+      'backup-check: no ID, name or network name in the output')
+blob = vals[('orconprofiles', 'data')]; bad = dict(vals); bad[('orconprofiles', 'data')] = blob[:-1] + bytes([blob[-1] ^ 1])
+try: orcon.backup_view(bad); check(False, 'backup-check: a damaged profile blob is refused')
+except ValueError: check(True, 'backup-check: a damaged profile blob is refused')
+# Release bundles (v2): one signature for every board; the image must be built as that release.
+with tempfile.TemporaryDirectory() as d:
+    fw = Path(d) / 'firmware.bin'; fw.write_bytes(b'\xe9' + os.urandom(3000) + b'ORCON-RELEASE 7;' + os.urandom(100))
+    m = json.loads(orcon.release_manifest('heltec_v2_sx1276_control', 'c' * 40, fw, 7))
+    check(m == {'v': 2, 'kind': 'orcon-release', 'env': 'heltec_v2_sx1276_control', 'variant': 'control', 'allow_tx': True, 'commit': 'c' * 40,
+                'version': 7, 'size': fw.stat().st_size, 'sha256': hashlib.sha256(fw.read_bytes()).hexdigest()},
+          'release manifest: no board, no nonce; variant, TX statement, version, size and hash of the exact image')
+    for bad, why in ((lambda: orcon.release_manifest('heltec_v2_sx1276_rftest', 'c' * 40, fw, 7), 'the RF test image is never released'),
+                     (lambda: orcon.release_manifest('heltec_v2_sx1276_control', 'c' * 40, fw, 8), 'an image built as another release is refused'),
+                     (lambda: orcon.release_manifest('heltec_v2_sx1276_control', 'c' * 40, fw, -1), 'a negative version is refused')):
+        try: bad(); check(False, why)
+        except ValueError: check(True, why)
+    b = Path(d) / 'x.orconfw'; text = json.dumps(m, separators=(',', ':'))
+    orcon.write_bundle(b, text, 'ab' * 40, fw)
+    raw = b.read_bytes(); nl = raw.index(b'\n'); head = json.loads(raw[:nl])
+    check(head == {'manifest': text, 'sig': 'ab' * 40} and raw[nl + 1:] == fw.read_bytes() and raw[:nl].isascii(),
+          'bundle: one ASCII JSON line {manifest, sig}, a newline, then exactly the image (what the web page splits)')
 # Install record for heltec_v2.sh recover: "<sha256 of the image> <label>", private file, appended
 with tempfile.TemporaryDirectory() as d:
     fw = Path(d) / 'fw.bin'; fw.write_bytes(b'\xe9image'); rec = Path(d) / 'o' / 'installed.txt'

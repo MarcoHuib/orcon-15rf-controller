@@ -18,6 +18,7 @@ void tick(uint32_t now);                                           // timeouts (
 // JSON; then a logged-in session (with its CSRF token for a mutation). Sends the refusal itself.
 // Builds without the web login: always true (unchanged legacy behaviour).
 bool authorize(bool mutation, bool allowAp = false);
+bool uploadAuthorized();   // a multipart upload: own host, a logged-in session and its CSRF token (no reply)
 #if ORCON_WEB_CONTROL
 void consumeTxResults(uint32_t now); // before draining RX, so prompt bind replies are not lost
 // Web-control pairing just completed with this unit: consume once so net.cpp can

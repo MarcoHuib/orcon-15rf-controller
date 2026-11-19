@@ -48,6 +48,10 @@ bool requestAllowed(const char* type, const char* origin, const char* host) {
     return !strncmp(origin, "http://", 7) && host[0] && !strcmp(origin + 7, host);
 }
 
+bool apClient(uint32_t local, uint32_t remote, uint32_t apIp, uint32_t apMask) {
+    return apIp && apMask && local == apIp && remote != apIp && (remote & apMask) == (apIp & apMask);
+}
+
 bool hostAllowed(const char* host, const char* ip) {
     size_t n = strcspn(host, ":");                 // without ":port"
     if (!n || (host[n] && strcmp(host + n, ":80"))) return false;
