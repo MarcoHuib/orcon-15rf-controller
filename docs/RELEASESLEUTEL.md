@@ -2,7 +2,9 @@
 
 > Status: ontwerp. De sleutel wordt niet gewisseld zonder een apart akkoord van de maintainer. Alleen de beveiliging tegen het per ongeluk publiceren van een privésleutel is al actief (`tools/check_privacy.py`).
 >
-> Besluit 2026-11-19 (nog niet gebouwd): officiële releases worden straks ondertekend door een gecontroleerde GitHub-releasejob, met de releasesleutel als secret van een beveiligde GitHub Environment (zie [`RELEASES.md`](RELEASES.md)). De offline sleutelceremonie en het lokaal tekenen hieronder worden in de releasefase daarop aangepast.
+> Besluit 2026-11-19: officiële releases worden ondertekend door de job `sign` van `.github/workflows/release-control.yml`, met de sleutel als secret `ORCON_OTA_SIGNING_KEY` van de beveiligde GitHub Environment `orcon-production-release` (alleen `main`, goedkeuring door de eigenaar). **Gebouwd** op `feature/github-releases-control-ota`; zie [`RELEASES.md`](RELEASES.md). Er wordt **niet geroteerd**: de huidige controller vertrouwt alleen K_dev (`src/ota_pubkey.h`, SPKI e71543f1…), dus releases worden met K_dev getekend.
+>
+> **Bevinding 2026-11-19:** op een controller in de toestand *legacy* (nog geen herstelsleutel van de eigenaar, zoals het huidige board) is K_dev ook een **herstelsleutel voor het beheerderswachtwoord** (`orcon.py auth-code`, `vendorRecoveryOk()`). Het secret is daarom nog niet gezet: registreer eerst een herstelsleutel op het board (dan geeft K_dev geen toegang meer), of accepteer dat risico bewust. Het exacte commando staat in [`RELEASES.md`](RELEASES.md#sleutel-wat-nog-ontbreekt). De offline ceremonie hieronder blijft het ontwerp voor een latere, aparte releasesleutel K_rel.
 
 ## Drie geheimen, elk met één taak
 
@@ -12,7 +14,7 @@
 | Privé-deel | versleutelde PKCS#8 op twee offline dragers (oorspronkelijk ontwerp, zie het besluit bovenaan) | `orcon-recovery-key.pem` (versleuteld), bij de eigenaar | in het hoofd of de wachtwoordmanager van de eigenaar |
 | Op het apparaat | alleen de publieke sleutel, in de firmware | alleen de publieke sleutel, in NVS | alleen een PBKDF2-hash, in NVS |
 | Bewijst | "deze firmware is officieel" | "ik ben de eigenaar van dit apparaat" | "ik mag bedienen en updates goedkeuren" |
-| Kan niet | toegang geven tot een apparaat, of zonder de sessie van de eigenaar installeren | firmware ondertekenen | firmware echt maken |
+| Kan niet | toegang geven tot een apparaat (uitzondering: een *legacy*-apparaat zonder herstelsleutel, zie de bevinding bovenaan), of zonder de sessie van de eigenaar installeren | firmware ondertekenen | firmware echt maken |
 
 **Waar het privé-deel van de releasesleutel nooit mag staan**
 - In GitHub: repo, issues, releases, artifacts of workflowlogs, of als secret dat gewone push-, PR- of testworkflows kunnen lezen. Wel toegestaan (besluit 2026-11-19): als secret van een beveiligde GitHub Environment, alleen leesbaar voor de gecontroleerde ondertekeningsjob van een officiële release.
