@@ -160,7 +160,7 @@ if ($Firmware) {
         $firmwareText = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes((Join-Path $dest 'firmware.bin')))
         $imageOk = $firmwareText.Contains($commit)
         if ($isV2) {
-            foreach ($forbidden in @('ArduinoOTA','auth_upload','Updater.cpp')) { if ($firmwareText.Contains($forbidden)) { $imageOk = $false } }
+            foreach ($forbidden in @('Firmware update (OTA)','ArduinoOTA','auth_upload','Updater.cpp')) { if ($firmwareText.Contains($forbidden)) { $imageOk = $false } }
             if ($envName -eq 'heltec_v2_sx1276_rftest') {
                 # RF test image: the capped RF marker, never the RX-only/dry-run markers.
                 $imageOk = $imageOk -and ($firmwareText -match 'SX1276 direct RX \+ txpoc packet TX \(RF TEST: max \d+ packets per boot\)') -and
@@ -172,7 +172,7 @@ if ($Firmware) {
                     -not $firmwareText.Contains('tx-poc-dryrun')
             } else {
                 $imageOk = $imageOk -and $firmwareText.Contains('SX1276 direct RX (TX disabled)')
-                if ($envName -eq 'heltec_v2_sx1276') { $imageOk = $imageOk -and $firmwareText.Contains('RX-ONLY TEST FIRMWARE') -and -not $firmwareText.Contains('tx-poc-dryrun') }
+                if ($envName -eq 'heltec_v2_sx1276') { $imageOk = $imageOk -and $firmwareText.Contains('RX-ONLY TEST FIRMWARE') -and -not $firmwareText.Contains('tx-poc-dryrun') -and $firmwareText.Contains('/api/oled') -and $firmwareText.Contains('oled_mode') }
                 else { $imageOk = $imageOk -and $firmwareText.Contains('tx-poc-dryrun') }
             }
             $null = Invoke-Check ('partitions-' + $envName) 'python3' @('-B','tools/check_parts.py',(Join-Path $dest 'partitions.bin'))

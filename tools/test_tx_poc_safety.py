@@ -1,6 +1,6 @@
 """Local-only phase 1 source guards and negative capability compiles. No hardware/network."""
 from pathlib import Path
-import argparse, configparser, re, subprocess, textwrap
+import argparse, configparser, re, subprocess
 
 p=argparse.ArgumentParser()
 p.add_argument('--compiler',default='g++')
@@ -22,11 +22,75 @@ for inserted in ('g_radio.transmit(', 'startTransmit(', 'transmitDirect(', 'getR
     try: sx_safe(mutated)
     except AssertionError: pass
     else: raise AssertionError('guard accepted mutation '+inserted)
-# Execute the EXISTING guard body locally, not the workflow itself.
-workflow=Path('.github/workflows/heltec-v2-rx-only.yml').read_text()
-section=workflow.split('      - name: Verify listen-only safety guards\n',1)[1]
-code=section.split("python3 - <<'PY'\n",1)[1].split('\n          PY',1)[0]
-exec(compile(textwrap.dedent(code),'existing-guards-executed-locally','exec'))
+# The listen-only guards of the (no longer run) workflow step "Verify listen-only safety guards", moved here
+# verbatim so they run locally without reading .github/workflows (which stays unchanged for now).
+def listen_only_guards():
+    from pathlib import Path
+
+    main = Path("src/main.cpp").read_text()
+    radio = Path("src/ramses_radio.cpp").read_text()
+    config = Path("platformio.ini").read_text()
+
+    # the backend block is the one carrying the RX_ONLY #error (include blocks also test RADIO_SX1276)
+    sx = radio.split('#error "SX1276 backend is receive-only', 1)
+    assert len(sx) == 2, "SX1276 backend (with its RX_ONLY #error) not found"
+    tx = sx[1].split("bool sendFrame(const ramses::Frame& f) {", 1)
+    assert len(tx) == 2, "SX1276 sendFrame not found"
+    tx_body = tx[1].split("bool poll(ramses::Frame& out)", 1)[0]
+
+    assert "g_radio.transmit(" not in tx_body, "SX1276 TX path is active"
+    assert "return false;" in tx_body, "SX1276 sendFrame is not blocked"
+    sx_body = sx[1].split("#endif // RADIO_SX1276", 1)[0]
+    for bad in ("g_radio.transmit", "startTransmit", "transmitDirect", "RADIOLIB_SX127X_TX"):
+        assert bad not in sx_body, f"SX1276 backend references {bad}"
+    # RadioLib FSK getRSSI() with default args = startReceive()+standby(): kills direct RX
+    assert "getRSSI()" not in sx_body, "SX1276 backend calls getRSSI() without skipReceive"
+
+    import re
+    net = Path("src/net.cpp").read_text()
+    rxo = Path("src/rx_only.h").read_text()
+    test = Path("test/test_orcon.cpp").read_text()
+    # every applyCommand key must be in the test's refused list or the UI allowlist
+    body = net.split("static const char* applyCommand(JsonDocument& d) {", 1)[1].split("\n}\n", 1)[0]
+    keys = set(re.findall(r'd\["(\w+)"\]', body))
+    allow = set(re.findall(r'"(\w+)"', rxo.split("OK[] = {", 1)[1].split("}", 1)[0]))
+    tested = set(re.findall(r'"(\w+)"', test.split("TX[] = {", 1)[1].split("};", 1)[0]))
+    assert allow == {"maskids", "showfilter", "roomidx"}, f"RX-only allowlist changed: {allow}"
+    assert keys - allow <= tested, f"applyCommand keys not covered by test_orcon: {keys - allow - tested}"
+    assert "#if RX_ONLY\n    for (JsonPair kv" in body, "applyCommand lacks the RX-only gate"
+    for frag in ("ArduinoOTA.begin()", "ArduinoOTA.handle()", 'server.on("/update"'):
+        i = net.index(frag)
+        assert net.rfind("#if !RX_ONLY", 0, i) > net.rfind("#endif", 0, i), f"{frag} not gated by !RX_ONLY"
+    # unit selection: the log page never fills our unit from the single "seen fan" slot
+    web = Path("src/web_page.h").read_text()
+    log_page = web.split("static const char LOG_HTML[]", 1)[1].split(')LOG";', 1)[0]
+    assert "seen_fan" not in log_page and "seenF" not in log_page, "log page uses seen_fan for selection"
+    clone = log_page.split("$('#clone').onclick=", 1)[1].split("\n", 1)[0]
+    assert "#fan" not in clone, "Use-detected/clone button fills the unit"
+    print("PASS: RX-only command, OTA and update gates present; unit is selected explicitly")
+    # periodic TX: tick() is called for TX builds only (tools/check_tick.py, also used by
+    # heltec_v2.sh verify), and tick() refuses itself on RX-only
+    import subprocess
+    subprocess.run(["python3", "tools/check_tick.py"], input=main, text=True, check=True)
+    orcon_src = Path("src/orcon.cpp").read_text()
+    tick_body = orcon_src.split("void tick(uint32_t now) {", 1)[1].lstrip()
+    assert tick_body.startswith("if (RX_ONLY) return;"), "tick() does not refuse first on RX-only"
+    assert "[env:heltec_v2_sx1276]\n" in config
+    assert "platform = espressif32@6.7.0" in config
+    print("PASS: SX1276 transmission path is blocked")
+    # OLED power-save must stay local to the display. Radio diagnostics
+    # (name/RSSI) are read-only; no task or network/radio control here.
+    oled = net.split("// OLED\n", 1)[1].split("// WiFi\n", 1)[0]
+    oled += Path("src/oled_power.h").read_text()
+    for bad in (r"\besp_\w*sleep\w*\s*\(", r"\bvTask(?:Suspend|Delete)\s*\(",
+                r"\bWiFi\.", r"\bmqtt\.", r"\bSPI\.",
+                r"\bradio::(?:begin|startReceive|sendFrame|poll)\s*\("):
+        assert not re.search(bad, oled), f"OLED code controls a non-display subsystem: {bad}"
+    print("PASS: OLED power-save does not sleep the CPU or control RX/WiFi/MQTT")
+listen_only_guards()
+# Also from the workflow (flash-tooling step): check_tick.py refuses a tick() call outside #if !RX_ONLY.
+mut=re.sub(r'^#if !RX_ONLY$','',Path('src/main.cpp').read_text(),flags=re.M)
+assert run(['python3','tools/check_tick.py'],input=mut).returncode!=0,'check_tick.py accepted a tick() call outside #if !RX_ONLY'
 
 for path in list(Path('src').glob('tx_poc*.cpp'))+list(Path('src').glob('tx_poc*.h')):
     text=path.read_text()
