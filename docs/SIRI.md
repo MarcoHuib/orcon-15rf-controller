@@ -13,7 +13,7 @@ Je iPhone stuurt het commando via je thuisnetwerk rechtstreeks naar de Heltec. E
 - Een iPhone met de app **Opdrachten**, verbonden met je thuisnetwerk.
 
 ## Instellen (eenmalig, op je iPhone)
-1. Open de webinterface op je iPhone, meld je aan en ga naar **Systeem → Integraties → Siri**. Of tik op het dashboard op de kaart **Siri**.
+1. Open de webinterface op je iPhone, meld je aan en tik op het dashboard op de kaart **Siri** (dat opent Integraties → Siri).
 2. Tik op **Siri aanzetten**. De Heltec maakt een eigen Siri-sleutel en toont vijf opdrachten.
 3. Maak in de app **Opdrachten** een nieuwe opdracht (**+**):
    1. **Voeg actie toe** → **Haal inhoud van URL op**.

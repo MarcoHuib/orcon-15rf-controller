@@ -29,7 +29,7 @@ button{width:100%;font:inherit;color:#04121f;background:var(--acc);border:0;bord
 <div class="card small">
 The build output is at<br><span style="color:var(--fg)">.pio/build/heltec_v3_cc1101_ota/firmware.bin</span><br><br>
 Settings, WiFi and saved fan presets are kept across an update.<br><br>
-<a href="/dashboard">&larr; back to control</a>
+<a href="/">&larr; back to control</a>
 </div>
 <script>
 const $=s=>document.getElementById(s);
@@ -43,10 +43,9 @@ $('go').onclick=()=>{
  x.onload=()=>{let ok=false;try{ok=JSON.parse(x.responseText).ok==1;}catch(e){}
    $('msg').textContent=ok?'Flashed — rebooting, this page reloads in a few seconds…':'Update failed (bad file or out of space).';
    $('bar').style.background=ok?'var(--ok)':'var(--warn)';
-   if(ok)setTimeout(()=>location.href='/dashboard',9000);};
+   if(ok)setTimeout(()=>location.href='/',9000);};
  x.onerror=()=>{$('msg').textContent='Upload error — connection dropped.';};
  $('msg').textContent='Starting upload…';
  x.send(fd);
 };
 </script></body></html>)UPD";
-

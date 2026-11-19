@@ -146,7 +146,7 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
     }
     {   // WiFi + Systeem screens: in-app, back on every sub-screen, existing APIs only, confirmation before a reboot
         let x = { uptime_ms: 90061000, heap_min: 171008, rf_frames: 42, oled_available: true, oled_mode: 'auto', oled_on: false, mqtt_on: false, mqtt_connected: false };
-        const nc = { ssid: 'Thuis <5G>', mqtt: '', mqtt_on: false }, wifiPosts = [], oledPosts = [];
+        const nc = { ssid: 'Thuis <5G>' }, wifiPosts = [], oledPosts = [];
         const wifi = { connected: true, ap: false, ap_name: 'Orcon15RF-Setup', ip: '192.0.2.5', ssid: 'Thuis <5G>' };
         const p = await page({
             'GET /api/setup/state': () => [200, state({ ...CAPS_RX, settings_pages: true }, { wifi, fw: '0123456789abcdef0123456789abcdef01234567', profiles: PF([PI(2, 'Washok', '29:000101')], 2) })],
@@ -207,7 +207,7 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         const KEY = '0123456789abcdef0123456789abcdef', KEY2 = 'fedcba9876543210fedcba9876543210';
         let sk = { on: false, key: '' }; const siriPosts = [];
         const x = { uptime_ms: 1000, heap_min: 171008, rf_frames: 1, oled_available: false, mqtt_on: false, mqtt_connected: false };
-        const base = { 'GET /api/state': () => [200, x], 'GET /api/netcfg': () => [200, { ssid: 'Thuis', mqtt: '', mqtt_on: false }] };
+        const base = { 'GET /api/state': () => [200, x], 'GET /api/netcfg': () => [200, { ssid: 'Thuis' }] };
         const p = await page({ ...base,
             'GET /api/setup/state': () => [200, state({ ...CAPS_TX, settings_pages: true, siri_supported: true }, { profiles: PF([PI(2, 'Washok', '29:000101')], 2) })],
             'GET /api/siri/key': () => [200, sk],

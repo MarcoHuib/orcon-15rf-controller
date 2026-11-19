@@ -25,12 +25,12 @@ compileert niet (`#error`).
 |---|---|
 | Radio | SX1276-backend heeft geen TX-pad; `sendFrame()` weigert; CI weigert `transmit`/`startTransmit`/`transmitDirect` in de backend |
 | Logica (`orcon.cpp`) | elke TX-, pairing-, keeper- en selftestfunctie weigert vóór enige toestandswijziging (`RX_ONLY_REFUSE`); `tx()` registreert alleen echt verzonden frames; `tick()` doet niets |
-| API | `/api/cmd`: elke sleutel buiten `maskids`/`showfilter`/`roomidx` → hele verzoek geweigerd (403 `{"err":"rx-only"}`), geen gedeeltelijke toepassing, geen NVS-schrijfactie |
+| API | het RX-only-image registreert `/api/cmd` en `/api/ids` niet. Alleen de oude build zonder webaanmelding had `/api/cmd`: daar werd elke sleutel buiten `maskids`/`showfilter`/`roomidx` geweigerd (403 `{"err":"rx-only"}`), zonder gedeeltelijke toepassing of NVS-schrijfactie |
 | Netwerkupdate | ArduinoOTA en `/update` zijn weggecompileerd; CI controleert dat het image die strings niet bevat |
 | MQTT | verwijderd: geen broker, Home Assistant-discovery of Domoticz. `/api/state` meldt `mqtt_on:false` en `mqtt_connected:false` voor bestaande lezers (`tools/rxmon_soak.py`). De oude NVS-sleutels `mqtt` en `r0`–`r6` blijven ongemoeid, zodat een ouder image na een rollback ze nog vindt. |
 | Zichtbaarheid | state-JSON `rx_only:true`, `fw`, `tx_refused`, `cmd_rejected`; de webinterface toont *Verbonden · alleen ontvangen* en bij Firmware *RX-only: alleen ontvangen*; de seriële opstartuitvoer meldt `RX-ONLY TEST FIRMWARE` (ook de OTA-markering van dit image) |
 
-Beperkingen: er is geen authenticatie op de web-API. Een LAN-gebruiker kan UI-instellingen en `/api/ids`/`/api/wifi` wijzigen, maar kan niet zenden en geen firmware uploaden. USB-flashen blijft altijd mogelijk.
+Instellingen (`/api/wifi`, `/api/oled`, `/api/netcfg`, `/api/scan`) vragen de webaanmelding; `/api/state` en de RF-console zijn openbaar en alleen-lezen. Firmware komt er alleen via ondertekende OTA op (aanmelden vereist) of via USB-flashen.
 
 ## Ontvangst onder netwerkbelasting
 
@@ -54,7 +54,7 @@ Model (`test_rxpipe`), géén hardware: bij een DNS-storing van 5 s, trage HTTP 
 
 ## Unitselectie
 
-- **Unitstatus** komt alleen van de **expliciet gekozen** unit: `fan_id`, opgeslagen in NVS en in te stellen via `/api/ids`. In RX-only wordt nooit automatisch een unit gekozen; zonder gekozen unit is er geen unitstatus.
+- **Unitstatus** komt alleen van de **expliciet gekozen** unit: `fan_id`, opgeslagen in NVS (gezet bij het koppelen in het control-image; het RX-only-image wijzigt hem niet). In RX-only wordt nooit automatisch een unit gekozen; zonder gekozen unit is er geen unitstatus.
 - **Een 22F1 van een afstandsbediening aan die unit** wordt apart bewaard in `remote_cmd`/`remote_id`/`remote_age`. `remote_confirmed` wordt pas waar als de unit zelf binnen 10 s die stand meldt. `mode` en `mode_age` komen alleen van de unit.
 - **`/api/setup/state` → `remotes`** toont de recent gehoorde afstandsbedieningen (rol op basis van berichten). Dat is alleen discovery en kiest nooit iets; de oude `/log`-pagina en `/api/log` zijn verwijderd (de RF-console van de webinterface toont het RF-verkeer).
 
