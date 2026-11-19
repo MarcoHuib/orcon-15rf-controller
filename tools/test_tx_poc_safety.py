@@ -293,6 +293,30 @@ ota_src=Path('src/ota_signed.cpp').read_text(); hold_safe(ota_src)
 try: hold_safe(ota_src.replace('if (!setupweb::authorize(true)) return;','',1))
 except AssertionError: print('PASS hold guard rejects mutation unauthenticated-hold')
 else: raise AssertionError('hold guard accepted mutation unauthenticated-hold')
+# Release update check (fw_update_esp.cpp, docs/UPDATECONTROLE.md): it can install firmware, so every route asks the owner's
+# session first (the install and the check also CSRF + same origin), TLS always verifies against the pinned roots, nothing
+# disables verification, and the download URL is never taken from the request.
+def update_safe(src):
+    for h,mut in (('static void handleStatus() {','authorize(false)'),('static void handleCheck() {','authorize(true)'),('static void handleInstall() {','authorize(true)')):
+        assert fn(src,h).lstrip().startswith('if (!setupweb::authorize(%s)) return;'%mut.split('(')[1].rstrip(')')),(h,'must ask the owner first')
+    assert src.count('c.connect(ip, 443, host, FWUP_ROOTS_PEM, nullptr, nullptr)')==1,'TLS must verify against the pinned roots'
+    allsrc='\n'.join(x.read_text() for x in Path('src').glob('*.[ch]*'))
+    for bad in ('setInsecure','MBEDTLS_SSL_VERIFY_NONE','MBEDTLS_SSL_VERIFY_OPTIONAL','setCACertBundle','HTTPUpdate'):
+        assert bad not in allsrc,('forbidden in the firmware',bad)   # (Update.begin: legacy non-V2 /update in net.cpp; the image scanner refuses it)
+    body=fn(src,'static void handleInstall() {')
+    assert 'arg("url")' not in body and 'arg("plain")' in body and 'g_offer.m.version == want' in body,'install: only the offered version, never a URL'
+    assert 'ota::claimDownload()' in src and 'ota::releaseSink()' in src,'install must use the signed-OTA writer'
+upd=Path('src/fw_update_esp.cpp').read_text(); update_safe(upd)
+for name,old,new in (('status-without-login','if (!setupweb::authorize(false)) return; statusBody(200);','statusBody(200);'),
+                     ('install-without-login','static void handleInstall() {\n    if (!setupweb::authorize(true)) return;','static void handleInstall() {'),
+                     ('check-without-csrf','static void handleCheck() {\n    if (!setupweb::authorize(true)) return;','static void handleCheck() {\n    if (!setupweb::authorize(false)) return;'),
+                     ('tls-without-roots','c.connect(ip, 443, host, FWUP_ROOTS_PEM, nullptr, nullptr)','c.connect(ip, 443)'),
+                     ('install-from-url','g_offer.m.version == want','g_s->arg("url").length()'),):
+    m=upd.replace(old,new,1); assert m!=upd,name
+    try: update_safe(m)
+    except AssertionError: print('PASS update guard rejects mutation',name)
+    else: raise AssertionError('update guard accepted mutation '+name)
+print('PASS update check: owner session first, pinned TLS roots, no insecure TLS, signed-OTA writer only')
 # Workflows: none runs today (builds, tests and signing are local), but Actions are not banned for good. Every
 # workflow file is pinned by content, because text checks on YAML can be bypassed (blank lines, if: false,
 # continue-on-error, a second job, ...). The old RX-only workflow is pinned as an inert stub (manual start only,
@@ -302,7 +326,127 @@ else: raise AssertionError('hold guard accepted mutation unauthenticated-hold')
 # future release build, is added deliberately: first its own security checks here (least permissions; the OTA
 # signing key only in the release-signing job, from a protected GitHub Environment secret, never in the repository
 # or in push, PR or test workflows; nothing installed on a board without the owner's consent), then name and hash.
-WORKFLOWS={'heltec-v2-rx-only.yml':'fbf3af64a87be3822246c0adc17ba3cb5ec42c1ddb725c455153f8fd4ea7a563'}   # file -> sha256 of the reviewed content
+# The official release workflow (release-control.yml, docs/RELEASES.md) is the one workflow that runs. Besides its pin, its
+# security properties are checked here on the parsed file, and every check has a mutation that must be refused: the pin
+# says "changed", these say WHAT would be wrong (a trigger, a secret outside the signing job, a write token, an
+# unpinned action, an expression in a script, another image, a skipped check, hardware access, ...).
+def yaml_subset(text):
+    """A strict reader for the YAML the release workflow uses: block mappings and sequences, '|' block scalars, plain
+    and quoted scalars, {} and [a, b] flow items. Anything else (anchors, tags, folded scalars, odd indentation,
+    duplicate keys) raises AssertionError: fail closed."""
+    lines=text.replace('\r\n','\n').split('\n')
+    ind=lambda l: len(l)-len(l.lstrip(' '))
+    def nocomment(s):
+        out,q='',None
+        for i,c in enumerate(s):
+            if q:
+                out+=c
+                if c==q: q=None
+            elif c in '\'"' and (not out.strip() or out.rstrip().endswith((':','-','[',','))): q=c; out+=c
+            elif c=='#' and (i==0 or s[i-1] in ' \t'): break
+            else: out+=c
+        assert q is None,('unterminated quote',s)
+        return out.rstrip()
+    def scalar(s):
+        s=s.strip()
+        if s=='{}': return {}
+        if s.startswith('[') and s.endswith(']'): return [scalar(x) for x in s[1:-1].split(',') if x.strip()]
+        if len(s)>=2 and s[0]==s[-1] and s[0] in '\'"': return s[1:-1]
+        assert s and not s.startswith(('&','*','!','{','[','>','|','@','`')),('unsupported YAML value',s)
+        return True if s=='true' else False if s=='false' else s
+    def skip(i):
+        while i<len(lines) and (not lines[i].strip() or lines[i].lstrip().startswith('#')): i+=1
+        return i
+    def node(i,parent):
+        i=skip(i)
+        if i>=len(lines) or ind(lines[i])<=parent: return None,i
+        return (seq if lines[i].lstrip().startswith('- ') else mapping)(i,ind(lines[i]))
+    def mapping(i,n):
+        d={}
+        while True:
+            i=skip(i)
+            if i>=len(lines) or ind(lines[i])<n: return d,i
+            assert ind(lines[i])==n and '\t' not in lines[i][:n],('bad indentation',lines[i])
+            line=nocomment(lines[i].strip())
+            m=re.fullmatch(r'([A-Za-z_][\w.-]*):(?: (.*))?',line)
+            assert m and not line.startswith('- '),('not a mapping entry',line)
+            k,v=m.group(1),(m.group(2) or '').strip()
+            assert k not in d,('duplicate key',k)
+            if v=='|':
+                i+=1; body=[]
+                while i<len(lines) and (not lines[i].strip() or ind(lines[i])>n): body.append(lines[i]); i+=1
+                while body and not body[-1].strip(): body.pop()
+                bi=min(ind(l) for l in body if l.strip())
+                d[k]='\n'.join(l[bi:] for l in body)+'\n'
+            elif v: d[k]=scalar(v); i+=1
+            else: d[k],i=node(i+1,n)
+    def seq(i,n):
+        out=[]
+        while True:
+            i=skip(i)
+            if i>=len(lines) or ind(lines[i])<n: return out,i
+            assert ind(lines[i])==n and lines[i].lstrip().startswith('- '),('bad sequence item',lines[i])
+            rest=lines[i][n+2:]
+            if re.match(r'[A-Za-z_][\w.-]*:( |$)',rest):
+                lines[i]=' '*(n+2)+rest; v,i=mapping(i,n+2)
+            else: v=scalar(nocomment(rest)); i+=1
+            out.append(v)
+    doc,i=mapping(0,0)
+    assert skip(i)==len(lines),('unparsed YAML at line',i+1)
+    return doc
+REL_GUARD="github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'MarcoHuib/orcon-15rf-controller'"
+REL_ACTIONS=('actions/checkout','actions/setup-python','actions/upload-artifact','actions/download-artifact')
+REL_PERMS={'prepare':{'contents':'read'},'build':{'contents':'read'},'sign':{'contents':'read'},'verify':{'contents':'read'},'publish':{'contents':'write'}}
+REL_NEEDS={'prepare':None,'build':'prepare','sign':['prepare','build'],'verify':['prepare','build','sign'],'publish':['prepare','build','sign','verify']}
+def release_workflow_safe(text):
+    d=yaml_subset(text)
+    assert set(d)=={'name','on','permissions','concurrency','defaults','env','jobs'},('top-level keys',sorted(d))
+    assert list(d['on'])==['workflow_dispatch'],('trigger: manual workflow_dispatch only',d['on'])
+    inputs=d['on']['workflow_dispatch']['inputs']
+    assert set(inputs)=={'version','notes'} and all(x['type']=='string' for x in inputs.values()),('inputs',inputs)
+    assert d['permissions']=={},'top-level permissions must be empty'
+    assert d['concurrency']=={'group':'orcon-release-control','cancel-in-progress':False},'one release at a time, never cancelled midway'
+    assert d['env']['RELEASE_ENV']=='heltec_v2_sx1276_control','only the control image is released'
+    jobs=d['jobs']
+    assert set(jobs)==set(REL_PERMS),('jobs',sorted(jobs))
+    for name,j in jobs.items():
+        assert set(j)<= {'name','needs','if','runs-on','timeout-minutes','environment','permissions','outputs','steps'},(name,'job keys',sorted(j))
+        assert j['runs-on']=='ubuntu-24.04' and int(j['timeout-minutes'])<=75,(name,'runner/timeout')
+        assert j.get('permissions')==REL_PERMS[name],(name,'permissions',j.get('permissions'))
+        assert j.get('needs')==REL_NEEDS[name],(name,'needs',j.get('needs'))
+        assert ('environment' in j)==(name=='sign') and j.get('environment',name if name!='sign' else '')!='', (name,'environment only on the signing job')
+        if name=='sign': assert j['environment']=='orcon-production-release',('signing environment',j['environment'])
+        assert j.get('if') in ((REL_GUARD,) if name in ('prepare','sign') else (None,)),(name,'job guard',j.get('if'))
+        for st in j['steps']:
+            assert set(st)<= {'name','id','uses','with','env','run'} and ('uses' in st)!=('run' in st),(name,'step keys',sorted(st))
+            if 'uses' in st:
+                assert re.fullmatch(r'(%s)@[0-9a-f]{40}'%'|'.join(map(re.escape,REL_ACTIONS)),st['uses']),(name,'unpinned or unapproved action',st['uses'])
+                if st['uses'].startswith('actions/checkout@'): assert st['with']=={'ref':'${{ github.sha }}','persist-credentials':False},(name,'checkout: exact commit, no stored credentials')
+            else:
+                assert '${{' not in st['run'],(name,'expression inside a script (use env)',st['run'][:60])
+            for k,v in (st.get('env') or {}).items():
+                assert ('secrets.' in str(v))==(name=='sign' and k=='ORCON_OTA_SIGNING_KEY'),(name,'secret outside the signing step',k)
+            if name=='sign' and 'secrets.' in str(st.get('env')):
+                assert st['env']=={'ORCON_OTA_SIGNING_KEY':'${{ secrets.ORCON_OTA_SIGNING_KEY }}'} and st['run'].strip()=='python3 -I tools/release_ci.py sign --dist dist',('sign step',st)
+    flat=text.replace('\r\n','\n')
+    assert flat.count('secrets.')==1 and 'secrets: inherit' not in flat,'the signing key is referenced exactly once, in the signing step'
+    for bad in ('pull_request','push:','schedule:','workflow_run','repository_dispatch','release:','issue_comment','issues:','continue-on-error',
+                'always()','actions/cache','write-all','id-token','heltec_v2_sx1276_tx_poc','dryrun','rftest','webctl','write_flash','erase_flash','heltec_v2.sh',
+                'ota-install','/dev/tty','/dev/cu','setInsecure','--insecure','curl -k'):
+        assert bad not in flat,('forbidden in the release workflow',bad)
+    runs=lambda job:'\n'.join(st.get('run','') for st in jobs[job]['steps'])
+    for job,need in (('prepare','tools/release_ci.py source'),('prepare','tools/release_ci.py version'),('build','--require-hashes'),
+                     ('build','tools/release_ci.py packages'),('build','bash test/run_host_tests.sh'),('build','-fsanitize=address'),
+                     ('build','tools/test_tx_poc_safety.py'),('build','tools/check_privacy.py'),('build','tools/release_ci.py verify-build'),
+                     ('build','tools/check_elf_tx.py'),('build','tools/test_release_ci.py'),('build','tools/release_ci.py manifest'),
+                     ('sign','tools/release_ci.py manifest'),('sign','tools/release_ci.py package'),('verify','tools/release_ci.py verify-package'),
+                     ('publish','sha256sum -c SHA256SUMS'),('publish','git/refs'),('publish','--verify-tag --draft'),('publish','--draft=false')):
+        assert need in runs(job)+str(jobs[job]['steps']),(job,'required check missing',need)
+    assert [l.strip() for l in flat.split('\n') if 'pio run' in l]==['pio run -e "$RELEASE_ENV"'],'exactly one firmware build: the control env'
+    assert not any('uses' in st and st['uses'].startswith('actions/checkout@') for st in jobs['publish']['steps']),'publish runs no repository code'
+    assert all(('uses' in st and st['uses'].split('@')[0] in REL_ACTIONS[:1]+REL_ACTIONS[2:]) or 'run' in st for st in jobs['sign']['steps']),'signing job: no setup actions'
+WORKFLOWS={'heltec-v2-rx-only.yml':'fbf3af64a87be3822246c0adc17ba3cb5ec42c1ddb725c455153f8fd4ea7a563',   # file -> sha256 of the reviewed content
+           'release-control.yml':'cf7ff106d6b542cc9b30e444345d8696b740367fda91eedf7b41093d9fdd3831'}
 def workflows_reviewed(files):   # files: name -> bytes (None: not a regular file) of every *.yml/*.yaml entry
     assert sorted(files)==sorted(WORKFLOWS),('workflow files differ from the reviewed list',sorted(files))
     for n,data in files.items():
@@ -335,5 +479,56 @@ for name,files in [('stub-push-trigger',{**wf_files,'heltec-v2-rx-only.yml':push
     try: workflows_reviewed(files)
     except AssertionError: print('PASS workflow guard rejects',name)
     else: raise AssertionError('workflow guard accepted '+name)
+rel=wf_files['release-control.yml'].decode().replace('\r\n','\n')
+release_workflow_safe(rel)
+print('PASS release workflow: manual trigger only, least permissions, key only in the signing step of the protected environment')
+def rel_mut(old,new,count=1):
+    assert rel.count(old)>=1,('mutation anchor missing',old); return rel.replace(old,new,count)
+REL_MUTATIONS={
+  'push-trigger': rel_mut('  workflow_dispatch:\n','  push:\n    branches: [main]\n  workflow_dispatch:\n'),
+  'tag-trigger': rel_mut('  workflow_dispatch:\n','  push:\n    tags: [v*]\n  workflow_dispatch:\n'),
+  'pr-target-trigger': rel_mut('  workflow_dispatch:\n','  pull_request_target:\n  workflow_dispatch:\n'),
+  'pr-trigger': rel_mut('  workflow_dispatch:\n','  pull_request:\n  workflow_dispatch:\n'),
+  'release-trigger': rel_mut('  workflow_dispatch:\n','  release:\n    types: [published]\n  workflow_dispatch:\n'),
+  'schedule': rel_mut('  workflow_dispatch:\n','  schedule:\n    - cron: 0 3 * * *\n  workflow_dispatch:\n'),
+  'secret-in-build': rel_mut('          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n','          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n          KEY: ${{ secrets.ORCON_OTA_SIGNING_KEY }}\n'),
+  'secret-in-prepare': rel_mut('          GH_TOKEN: ${{ github.token }}\n','          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n'),
+  'secrets-inherit': rel_mut('    environment: orcon-production-release\n','    environment: orcon-production-release\n    secrets: inherit\n'),
+  'environment-on-build': rel_mut('    timeout-minutes: 75\n','    timeout-minutes: 75\n    environment: orcon-production-release\n'),
+  'other-environment': rel_mut('    environment: orcon-production-release\n','    environment: development\n'),
+  'secret-in-other-sign-step': rel_mut('          WANT: ${{ needs.build.outputs.firmware_sha256 }}\n','          WANT: ${{ needs.build.outputs.firmware_sha256 }}\n          K: ${{ secrets.ORCON_OTA_SIGNING_KEY }}\n'),
+  'key-to-other-command': rel_mut('        run: python3 -I tools/release_ci.py sign --dist dist\n','        run: echo "$ORCON_OTA_SIGNING_KEY" > key.pem\n'),
+  'other-branch': rel_mut("github.ref == 'refs/heads/main'","github.ref == 'refs/heads/develop'",2),
+  'no-guard-on-sign': rel_mut("    if: "+REL_GUARD+"\n    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n    environment","    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n    environment"),
+  'write-token-in-build': rel_mut('    timeout-minutes: 75\n    permissions:\n      contents: read\n','    timeout-minutes: 75\n    permissions:\n      contents: write\n'),
+  'write-all': rel_mut('permissions: {}\n','permissions: write-all\n'),
+  'id-token': rel_mut('    permissions:\n      contents: write\n','    permissions:\n      contents: write\n      id-token: write\n'),
+  'unpinned-action': rel_mut('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1','actions/checkout@v7'),
+  'third-party-action': rel_mut('actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0','someone/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0'),
+  'stored-credentials': rel_mut('          persist-credentials: false\n','          persist-credentials: true\n'),
+  'expression-in-script': rel_mut('python3 -I tools/release_ci.py version "$VERSION"','python3 -I tools/release_ci.py version "${{ inputs.version }}"'),
+  'continue-on-error': rel_mut('      - name: Host tests\n','      - name: Host tests\n        continue-on-error: true\n'),
+  'dry-run-image': rel_mut('pio run -e "$RELEASE_ENV"','pio run -e heltec_v2_sx1276_tx_poc_dryrun'),
+  'rf-test-image': rel_mut('  RELEASE_ENV: heltec_v2_sx1276_control\n','  RELEASE_ENV: heltec_v2_sx1276_rftest\n'),
+  'rx-only-image': rel_mut('  RELEASE_ENV: heltec_v2_sx1276_control\n','  RELEASE_ENV: heltec_v2_sx1276\n'),
+  'second-build': rel_mut('          pio run -e "$RELEASE_ENV"\n','          pio run -e "$RELEASE_ENV"\n          pio run -e heltec_v2_sx1276\n'),
+  'skip-build-checks': rel_mut('          python -I tools/release_ci.py verify-build','          true'),
+  'skip-old-workflow-guards': rel_mut('          python tools/test_tx_poc_safety.py\n',''),
+  'skip-package-verify': rel_mut('          python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept\n',''),
+  'cache': rel_mut('      - name: Python\n','      - name: Cache\n        uses: actions/cache@0000000000000000000000000000000000000000\n      - name: Python\n'),
+  'hardware': rel_mut('          pio run -e "$RELEASE_ENV"\n','          pio run -e "$RELEASE_ENV"\n          bash tools/heltec_v2.sh flash rollback\n'),
+  'publish-runs-repo-code': rel_mut('      - name: The verified files\n','      - name: Code\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n        with:\n          ref: ${{ github.sha }}\n          persist-credentials: false\n      - name: The verified files\n'),
+  'cancel-in-progress': rel_mut('  cancel-in-progress: false\n','  cancel-in-progress: true\n'),
+  'yaml-anchor': rel_mut('  RELEASE_ENV: heltec_v2_sx1276_control\n','  RELEASE_ENV: &e heltec_v2_sx1276_control\n'),
+  'duplicate-key': rel_mut('  PYTHONDONTWRITEBYTECODE: \'1\'\n','  PYTHONDONTWRITEBYTECODE: \'1\'\n  RELEASE_ENV: heltec_v2_sx1276_rftest\n'),
+}
+for name,txt in REL_MUTATIONS.items():
+    assert txt!=rel,name
+    try: release_workflow_safe(txt)
+    except AssertionError as e: print('PASS release workflow guard rejects',name,'-',str(e)[:90])
+    else: raise AssertionError('release workflow guard accepted '+name)
+    try: workflows_reviewed({**wf_files,'release-control.yml':txt.encode()})
+    except AssertionError: pass
+    else: raise AssertionError('pin accepted mutation '+name)
 print('PASS workflows match the reviewed, pinned list (the old RX-only workflow stays an inert stub)')
 print('PASS local source safety, guard mutations and capability compiles')
