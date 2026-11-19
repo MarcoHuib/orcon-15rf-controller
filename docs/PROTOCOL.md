@@ -228,6 +228,9 @@ The `ramses_codec` layer is radio‑independent and host‑tested, so only the t
 
 ## 7. Radio back-ends in practice (CC1101, SX1276, SX1262)
 
+> This firmware now targets the Heltec V2 only: §7.2 (SX1276) is the one back-end in the
+> code. The CC1101 and SX1262 notes below are background; their build macros no longer exist.
+
 The decisive capability is a **transparent / continuous FSK mode**: the chip
 outputs the raw demodulated NRZ bitstream on a GPIO, which we clock into a
 hardware UART at 38400 8N1 (the RAMSES per-byte framing *is* 38400 8N1) and hand

@@ -1,11 +1,11 @@
-// main.cpp — Orcon 15RF emulator for Heltec WiFi LoRa 32 V3 (ESP32-S3 + SX1262)
+// main.cpp — Orcon 15RF emulator for the Heltec WiFi LoRa 32 V2 (ESP32 + SX1276)
 //
 // Emulates the Orcon 15RF display controller over 868.3 MHz RAMSES-II, exposes
 // control via an onboard web UI + MQTT, and shows live status on the OLED.
 //
 // Layers:
 //   ramses_codec   protocol (host-tested)      <- the hard part, proven correct
-//   ramses_radio   SX1262 GFSK + SW Manchester (CC1101 fallback via -D RADIO_CC1101)
+//   ramses_radio   SX1276 direct-mode RX (+ the txpoc packet TX on RF builds)
 //   orcon          15RF device emulation + state
 //   net            WiFi / web / MQTT / OLED
 #include <Arduino.h>
@@ -16,35 +16,11 @@
 #include "ramses_radio.h"
 #include "orcon.h"
 #include "net.h"
-#include "display.h"
 #include "orcon_log.h"
 #if !ORCON_TX_POC || ORCON_WEB_CONTROL
 #include "setup_web.h"
 #endif
 #include "ota_signed.h"
-
-#if defined(PINTEST)
-// ---- GPIO mapper: drives each CC1101 GPIO HIGH (others LOW) for 2.5s in turn.
-// Probe each CC1101 solder point with a meter to confirm which GPIO it lands on,
-// independent of the (suspect) board schematic.
-static const int PT_PINS[] = {48, 47, 41, 40, 2, 1};
-void setup() {
-    Serial.begin(115200); delay(400);
-    Serial.println("\n=== CC1101 GPIO MAPPER ===");
-    Serial.println("Each pin goes HIGH (3.3V) for 2.5s; the rest stay LOW (0V).");
-    for (unsigned i = 0; i < sizeof(PT_PINS)/sizeof(PT_PINS[0]); i++) {
-        pinMode(PT_PINS[i], OUTPUT); digitalWrite(PT_PINS[i], LOW);
-    }
-}
-void loop() {
-    static unsigned i = 0;
-    for (unsigned k = 0; k < sizeof(PT_PINS)/sizeof(PT_PINS[0]); k++) digitalWrite(PT_PINS[k], LOW);
-    digitalWrite(PT_PINS[i], HIGH);
-    Serial.printf("HIGH -> GPIO%d   (all others LOW)\n", PT_PINS[i]);
-    i = (i + 1) % (sizeof(PT_PINS)/sizeof(PT_PINS[0]));
-    delay(2500);
-}
-#else
 
 static uint32_t g_loopMaxUs = 0;
 
@@ -56,7 +32,6 @@ void setup() {
 #if ORCON_TX_POC
     txpoc::budgetBegin();      // the RF budget history kept in RTC memory, before any TX path runs
 #endif
-    display::begin();          // init the panel (if any) before the radio takes the shared SPI
 
     if (!radio::begin()) {
         Serial.println("[FATAL] radio init failed - check wiring / build flags");
@@ -133,10 +108,6 @@ void loop() {
     ota::tick(millis());               // confirm a freshly installed image, or roll back
 #endif
 
-    // 4) on-screen UI + touch (4848S040 panel; no-op on Heltec)
-    display::loop();
-
     const uint32_t loopUs = micros() - loopStart;   // longest main-loop pass = worst network stall
     if (loopUs > g_loopMaxUs) g_loopMaxUs = loopUs;
 }
-#endif  // PINTEST

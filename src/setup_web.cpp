@@ -39,12 +39,8 @@
 namespace setupweb {
 using namespace setupflow;
 
-// Capabilities from the build, never from the page. The SX1262 path cannot decode RAMSES.
-#if defined(RADIO_SX1262)
-static const bool CAN_RX = false;
-#else
+// Capabilities from the build, never from the page.
 static const bool CAN_RX = true;
-#endif
 #if ORCON_TX_POC
 // Web-control build: the txpoc layer serves pair/control. "simulated" tells the page
 // the RF stage is a dry run (no bytes on air) — every status stays truthful about it.
