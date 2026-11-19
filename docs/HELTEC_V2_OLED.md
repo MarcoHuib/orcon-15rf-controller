@@ -36,7 +36,7 @@ scherminstelling, geen commando.
 
 De firmware gebruikt uitsluitend U8g2 `setPowerSave(1)` / `setPowerSave(0)` voor
 de SSD1306 en verstuurt geen schermbuffers zolang het scherm uit staat. De ESP32,
-SX1276-ontvangst, WiFi, MQTT (indien ingeschakeld) en webserver blijven actief.
+SX1276-ontvangst, WiFi en webserver blijven actief.
 Vext blijft ingeschakeld; er wordt geen ESP32-slaapstand gebruikt.
 Zie de [U8g2-documentatie](https://github.com/olikraus/u8g2/wiki/u8g2reference#setpowersave).
 
@@ -54,7 +54,7 @@ zonder de opgeslagen stand aan te passen.
 `/api/state` bevat op V2 `oled_available:true`, `oled_mode` en `oled_on`.
 Op de andere builds is `oled_available:false` en is `/api/oled` niet geregistreerd.
 De instelling gebruikt een apart lokaal endpoint; de RX-only-allowlist van
-`/api/cmd` en MQTT is ongewijzigd. TX, pairing en netwerkupdates blijven geblokkeerd.
+`/api/cmd` is ongewijzigd. TX, pairing en netwerkupdates blijven geblokkeerd.
 
 ## Controle
 

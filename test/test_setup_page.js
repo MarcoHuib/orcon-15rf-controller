@@ -183,9 +183,9 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.match(p.$('setM').textContent, /Orcon15RF-Setup.*192\.168\.4\.1/); ok('forget WiFi: only after confirmation, guarded request, recovery via the setup AP explained');
         await back(); await open('system');
         assert.equal(p.location.hash, '#system'); assert.equal(p.$('title').textContent, 'Systeem'); assert.equal(p.$('fwSub').textContent, 'Versie 0123456');
-        assert.equal(p.$('oledSub').textContent, 'Automatisch: uit na 30 seconden'); assert.equal(p.$('intSub').textContent, 'MQTT uit');
+        assert.equal(p.$('oledSub').textContent, 'Automatisch: uit na 30 seconden');
         assert.ok(!/href="\/dashboard"/.test(html) && !p.dom.all.some(e => e.attrs.href === '/dashboard'));
-        ok('Systeem: firmware, restart, device info, OLED and integrations; no legacy dashboard link (removed)');
+        assert.ok(!/id="cInt"/.test(html)); ok('Systeem: firmware, restart, device info and OLED; no legacy dashboard link or MQTT card (removed)');
         dlg.confirm = false; p.$('sRestart').click(); await flush(); assert.ok(!p.posts().some(c => c.key.endsWith('/restart')));
         dlg.confirm = true; p.$('sRestart').click(); await flush(); assert.ok(p.posts().some(c => c.key === 'POST /api/setup/restart')); assert.match(p.$('setM').textContent, /herstart/);
         ok('restart only after confirmation');
@@ -199,13 +199,9 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         p.$('oMode').click({ target: { closest: () => ({ dataset: { om: 'on' }, disabled: false }) } }); await flush();
         p.$('oWake').click(); await flush(); assert.deepEqual(oledPosts, [{ mode: 'on' }, { toggle: 1 }]); assert.match(p.$('oMode').innerHTML, /aria-checked="true" data-om="on"/);
         await back(); ok('OLED moved to Systeem: existing modes and wake toggle, same /api/oled');
-        await open('integr'); assert.equal(p.$('mqOn').checked, false); assert.equal(p.$('mqHost').value, '');
-        p.$('mqSave').click(); await flush(); assert.match(p.$('err').textContent, /niets gewijzigd/);
-        p.$('mqOn').checked = true; p.$('mqSave').click(); await flush(); assert.match(p.$('err').textContent, /broker/);
-        p.$('mqHost').value = '192.0.2.9'; p.$('mqSave').click(); await flush();
-        assert.deepEqual(wifiPosts[1], { mqtt_on: true, mqtt: '192.0.2.9' }); assert.equal(wifiPosts.length, 2);
-        ok('MQTT under Systeem > Integraties: never switched on implicitly, only MQTT fields sent (WiFi kept)');
-        await back(); await back(); assert.equal(p.location.hash, '#control');
+        assert.ok(!/mqtt|MQTT|Domoticz|Home Assistant/.test(html)); assert.equal(wifiPosts.length, 1);
+        ok('no MQTT, Home Assistant or Domoticz settings left in the page (integration removed)');
+        await back(); assert.equal(p.location.hash, '#control');
     }
     {   // Siri under Systeem > Integraties: off -> key -> five copyable addresses; new key and off only after confirmation
         const KEY = '0123456789abcdef0123456789abcdef', KEY2 = 'fedcba9876543210fedcba9876543210';
@@ -630,7 +626,7 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
     // ---- web login: no default password, recovery code, login, logout, account, RF budget messages -------
     {
         const st = { fw: 'test', auth: { enabled: true, logged_in: false, password_set: false, login_wait_s: 0 }, wifi: { ap: false } };
-        const full = state({ ...CAPS_TX, profile_control_supported: true, settings_pages: true, tx_per_minute: 10, tx_per_hour: 60, mqtt_supported: false },
+        const full = state({ ...CAPS_TX, profile_control_supported: true, settings_pages: true, tx_per_minute: 10, tx_per_hour: 60 },
                            { profiles: PF([PI(2, 'Thuis', '29:000101')], 2), auth: { enabled: true, logged_in: true }, token: 'csrf1' });
         let logged = false, rs = { id: 0, phase: 'idle', confirm: 'none', budget: { minute: 3, minute_max: 10, hour: 9, hour_max: 60, air_ms_hour: 120, retry_s: 0 } };
         const routes = {
@@ -665,8 +661,8 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.deepEqual(setCall.body, { code: 'ABCD-EFGH', password: 'nieuw-wachtwoord' });
         assert.equal(p.location.hash, '#control'); assert.equal(p.$('authP').hidden, true); assert.equal(p.$('logout').hidden, false);
         ok('code + password: logged in, on to the dashboard; "Afmelden" in the header');
-        assert.equal(p.$('cInt').hidden, true); assert.equal(p.$('cAcct').hidden, false);
-        ok('control image: no MQTT card, an Account card');
+        assert.equal(p.$('cAcct').hidden, false);
+        ok('control image: an Account card');
         assert.match(p.$('ctlM').textContent, /Zendbudget: nog 7 van 10 deze minuut, 51 van 60 dit uur/);
         ok('control screen shows the remaining RF budget');
         p.keys[4].click(); await flush();

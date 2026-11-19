@@ -77,7 +77,7 @@ TX-PoC/web-control-builds); de WiFi- en Systeemkaart zijn anders uitgeschakeld.
 Alleen in builds met `settings_pages`. Body `{}`, dezelfde POST-bewaking als hierboven;
 `409 session-busy` tijdens uitlezen of koppelen. Antwoord `{"ok":true,"restarting":true}`,
 daarna herstart de controller na ongeveer 1,2 s. `wifi/forget` wist alleen SSID en wachtwoord
-(NVS `orcon`); profielen, MQTT, OLED en ID's blijven. Zonder SSID start de controller het
+(NVS `orcon`); profielen, OLED en ID's blijven. Zonder SSID start de controller het
 accesspoint `Orcon15RF-Setup` (standaard op 192.168.4.1) om opnieuw in te stellen.
 `remotes` is alleen discovery: apparaten die in de laatste 30 min een `22F1`/`22F3` stuurden
 (uit `rlog`). Er wordt nooit iets automatisch gekozen. De pagina maskeert ID's als
@@ -224,9 +224,9 @@ Een verzonden aanbod kan niet worden ingetrokken. Na `cancel` loopt het venster 
 | `#wifinew` | scannen, lijst, SSID (ook verborgen), wachtwoord (leeg = huidig behouden, tonen/verbergen); opslaan herstart | WiFi |
 | `#system` | Firmware, Herstarten (met bevestiging), Apparaatinformatie, OLED-scherm, Integraties | dashboard |
 | `#firmware` | geïnstalleerde commit; geen updatecontrole en geen installatieknop (updates via de USB-procedure) | Systeem |
-| `#info` | netwerk, IP, uptime, laagste vrije heap, RF-ontvanger, frames, OLED, MQTT (uit `/api/state`) | Systeem |
+| `#info` | netwerk, IP, uptime, laagste vrije heap, RF-ontvanger, frames, OLED (uit `/api/state`) | Systeem |
 | `#oled` | stand Altijd aan / Automatisch (30 s) / Uit en *Scherm nu aan of uit* via `/api/oled`; PRG-knop toelichting | Systeem |
-| `#integr` | MQTT aan/uit + broker via `/api/wifi` met alleen de MQTT-velden; Siri-toelichting | Systeem |
+| `#integr` | Siri (alleen het control-image; geopend via de Siri-kaart op het dashboard) | Systeem |
 
 - Een op `#new` gekozen naam wordt na de zes knoppen automatisch opgeslagen
   (`/api/profiles/save` slaat op én activeert atomair). Pas als het antwoord dit profiel
@@ -250,17 +250,12 @@ Een verzonden aanbod kan niet worden ingetrokken. Na `cancel` loopt het venster 
 - Een kaart openen vervangt het dashboard; de afstandsbediening is alleen op `#control`
   zichtbaar. Daaronder staat de technische status (statuskaart met unitmelding en de chips
   Geaccepteerd/Verzonden/Terugmelding) standaard ingeklapt.
-- WiFi- en MQTT-wijzigingen gaan via de bestaande `/api/wifi`, die altijd herstart. De
-  WiFi-pagina stuurt alleen `ssid`/`pass` (MQTT blijft), de integratiepagina alleen
-  `mqtt_on`/`mqtt` (WiFi blijft). Een leeg wachtwoord behoudt het opgeslagen wachtwoord, ook
-  bij een ander netwerk; open netwerken zonder wachtwoord zijn daardoor niet in te stellen
-  zolang er een wachtwoord is opgeslagen. MQTT uitschakelen wist het brokeradres (bestaand
-  gedrag) en vraagt eerst bevestiging; ongewijzigd opslaan wordt geweigerd.
-- MQTT in deze firmware: statuspublicatie met Home Assistant-auto-discovery
-  (`homeassistant/…/config`, ook door Domoticz gelezen) en het `domoticz/out`-kanaal; alleen
-  niet-RX-only-builds nemen commando's aan via `…/cmd`. Het is een algemene integratie en
-  geen Siri-functie, daarom staat het onder Systeem → Integraties. Siri vraagt een brug
-  (bijvoorbeeld Home Assistant met HomeKit Bridge, of Homebridge) en is niet gebouwd.
+- WiFi-wijzigingen gaan via de bestaande `/api/wifi` (`ssid`/`pass`), die altijd herstart.
+  Een leeg wachtwoord behoudt het opgeslagen wachtwoord, ook bij een ander netwerk; open
+  netwerken zonder wachtwoord zijn daardoor niet in te stellen zolang er een wachtwoord is
+  opgeslagen.
+- MQTT, Home Assistant-auto-discovery en Domoticz zijn uit de firmware verwijderd; Systeem →
+  Integraties bevat alleen Siri (control-image).
 - De klassieke `/api/wifi`, `/api/oled` en `/api/scan` hebben geen token-bewaking (zie
   *Beveiliging van POST*); de twee nieuwe acties wel.
 - Polling: 1 s tijdens uitlezen en bij een openstaande bevestiging, 2 s tijdens koppelen,

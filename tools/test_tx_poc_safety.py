@@ -222,6 +222,10 @@ assert ini['platformio']['default_envs']=='heltec_v2_sx1276'   # Heltec V2 only;
 for p in sorted(Path('src').iterdir())+[Path('platformio.ini')]:
     for m in ('RADIO_SX1262','RADIO_CC1101','USE_CC1101_TX','BOARD_4848S040','PINTEST','NO_OLED'):
         assert m not in p.read_text(),(str(p),m)
+# Phase-2 cleanup: no MQTT client, MQTT build switch or MQTT code (Home Assistant/Domoticz integration removed).
+for p in sorted(Path('src').iterdir())+[Path('platformio.ini')]:
+    for m in ('MQTT_ENABLED','PubSubClient','mqtt.'):
+        assert m not in p.read_text(),(str(p),m)
 assert all(n.startswith('env:heltec_v2_sx1276') for n in ini.sections() if n.startswith('env:') and n!='env:native'),ini.sections()
 baseline=ini['env:heltec_v2_sx1276']['build_flags']
 assert 'ORCON_TX_POC' not in baseline and 'ORCON_TX_RF_ENABLE' not in baseline
@@ -233,13 +237,13 @@ assert [n for n in ini.sections() if 'ORCON_TX_CONTROL=1' in ini[n].get('build_f
 assert 'MAX_PER_BOOT' not in ini['env:heltec_v2_sx1276_control']['build_flags']
 
 base=['RADIO_SX1276=1','BOARD_HELTEC_V2=1']
-valid=[('rx-default',base,{'RX_ONLY':'1','ORCON_TX_POC':'0','ORCON_TX_RF_ENABLE':'0','MQTT_ENABLED':'1'}),
-       ('dryrun',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=0'],{'RX_ONLY':'1','ORCON_TX_POC':'1','MQTT_ENABLED':'0'}),
-       ('rf-web',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1'],{'RX_ONLY':'1','ORCON_TX_POC':'1','ORCON_TX_RF_ENABLE':'1','ORCON_WEB_CONTROL':'1','MQTT_ENABLED':'0'}),
-       ('rf-test-cap',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_MAX_PER_BOOT=50'],{'ORCON_TX_RF_ENABLE':'1','ORCON_TX_MAX_PER_BOOT':'50','ORCON_TX_PAIR':'0','MQTT_ENABLED':'0'}),
+valid=[('rx-default',base,{'RX_ONLY':'1','ORCON_TX_POC':'0','ORCON_TX_RF_ENABLE':'0'}),
+       ('dryrun',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=0'],{'RX_ONLY':'1','ORCON_TX_POC':'1'}),
+       ('rf-web',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1'],{'RX_ONLY':'1','ORCON_TX_POC':'1','ORCON_TX_RF_ENABLE':'1','ORCON_WEB_CONTROL':'1'}),
+       ('rf-test-cap',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_MAX_PER_BOOT=50'],{'ORCON_TX_RF_ENABLE':'1','ORCON_TX_MAX_PER_BOOT':'50','ORCON_TX_PAIR':'0'}),
        ('rf-test-pair',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_MAX_PER_BOOT=50','ORCON_TX_PAIR=1'],{'ORCON_TX_PAIR':'1','ORCON_TX_MAX_PER_BOOT':'50'}),
        ('control',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_PAIR=1','ORCON_TX_CONTROL=1'],
-        {'ORCON_TX_CONTROL':'1','ORCON_TX_PAIR':'1','ORCON_TX_MAX_PER_BOOT':'0','ORCON_WEB_AUTH':'1','MQTT_ENABLED':'0'}),
+        {'ORCON_TX_CONTROL':'1','ORCON_TX_PAIR':'1','ORCON_TX_MAX_PER_BOOT':'0','ORCON_WEB_AUTH':'1'}),
        ('rx-default-login',base,{'ORCON_WEB_AUTH':'1','ORCON_TX_CONTROL':'0'}),
        ('no-board-no-login',[],{'ORCON_WEB_AUTH':'0'})]
 for name,defs,wanted in valid:

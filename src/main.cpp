@@ -1,13 +1,13 @@
 // main.cpp — Orcon 15RF emulator for the Heltec WiFi LoRa 32 V2 (ESP32 + SX1276)
 //
 // Emulates the Orcon 15RF display controller over 868.3 MHz RAMSES-II, exposes
-// control via an onboard web UI + MQTT, and shows live status on the OLED.
+// control via an onboard web UI, and shows live status on the OLED.
 //
 // Layers:
 //   ramses_codec   protocol (host-tested)      <- the hard part, proven correct
 //   ramses_radio   SX1276 direct-mode RX (+ the txpoc packet TX on RF builds)
 //   orcon          15RF device emulation + state
-//   net            WiFi / web / MQTT / OLED
+//   net            WiFi / web / OLED
 #include <Arduino.h>
 #include "config.h"
 #if ORCON_TX_POC
@@ -107,7 +107,7 @@ void loop() {
     orcon::tick(millis());
 #endif
 
-    // 3) web / MQTT / OLED
+    // 3) web / OLED
     net::loop();
 #if ORCON_SIGNED_OTA
     ota::tick(millis());               // confirm a freshly installed image, or roll back

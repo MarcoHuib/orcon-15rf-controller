@@ -25,7 +25,7 @@ const caps = {
   rx_supported: true, tx_supported: true, read_supported: true, pair_supported: true,
   control_supported: true, simulated: false, timer_supported: false,
   profile_control_supported: true, settings_pages: true, tx_max_per_boot: 0,
-  tx_per_minute: 10, tx_per_hour: 60, mqtt_supported: false,
+  tx_per_minute: 10, tx_per_hour: 60,
 };
 const profileItems = [
   { id: 1, name: 'Woonkamer', remote: '29:000101', unit: '29:000202', control_mapping: true, paired: false },
@@ -145,7 +145,7 @@ const server = http.createServer(async (req, res) => {
       uptime_ms: 90061000, heap_min: 171008, rf_frames: 42, oled_available: true,
       oled_mode: 'auto', oled_on: false, mqtt_on: false, mqtt_connected: false,
     });
-    if (req.method === 'GET' && url.pathname === '/api/netcfg') return json(res, 200, { ssid: 'Demo Thuisnetwerk', mqtt: '', mqtt_on: false });
+    if (req.method === 'GET' && url.pathname === '/api/netcfg') return json(res, 200, { ssid: 'Demo Thuisnetwerk' });
     if (req.method === 'GET' && url.pathname === '/api/remote/state') return json(res, 200, scenario === 'dashboard'
       ? { supported: true, id: 1, key: '2', minutes: 0, accepted: true, sent: true, confirm: 'confirmed', age_s: 1, phase: 'unit-reported-mode', unit_mode: 'medium', unit_age_s: 0, next_request: 2, budget: { minute: 1, minute_max: 10, hour: 1, hour_max: 60, air_ms_hour: 11, retry_s: 0 } }
       : { supported: true, id: 0, key: '', minutes: 0, accepted: false, sent: false, confirm: 'none', age_s: 0, phase: 'idle', next_request: 1, budget: { minute: 0, minute_max: 10, hour: 0, hour_max: 60, air_ms_hour: 0, retry_s: 0 } });

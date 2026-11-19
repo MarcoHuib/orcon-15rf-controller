@@ -78,7 +78,6 @@ $suites = [ordered]@{
     orcon_rx=(@('-DRX_ONLY=1','test/test_orcon.cpp') + $orcon)
     orcon_v3=(@('-DRX_ONLY=0','test/test_orcon.cpp') + $orcon)
     rxpipe=@('-pthread','test/test_rxpipe.cpp','src/rx_stream.cpp','src/ramses_codec.cpp')
-    netcfg=@('test/test_netcfg.cpp')
     oled=@('test/test_oled_power.cpp')
     tx_poc=@('-pthread','-Wall','-Wextra','-Werror','test/test_tx_poc.cpp','src/tx_poc.cpp','src/ramses_codec.cpp','src/orcon_frames.cpp')
     rf_console=@('-Wall','-Wextra','-Werror','test/test_rf_console.cpp','src/rf_console.cpp','src/ramses_codec.cpp')
