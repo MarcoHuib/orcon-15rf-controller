@@ -1,0 +1,11 @@
+# PlatformIO packages of heltec_v2_sx1276_control as resolved on 2026-11-19 (platform espressif32@6.7.0).
+# tools/release_ci.py packages compares `pio pkg list` with this list in the release workflow.
+espressif32 6.7.0
+framework-arduinoespressif32 3.20016.0
+tool-esptoolpy 1.40501.0
+tool-openocd-esp32 2.1100.20220706
+toolchain-riscv32-esp 8.4.0+2021r2-patch5
+toolchain-xtensa-esp32 8.4.0+2021r2-patch5
+ArduinoJson 7.4.3
+RadioLib 7.8.1
+U8g2 2.36.18

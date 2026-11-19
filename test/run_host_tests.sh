@@ -78,6 +78,8 @@ else
 fi
 python3 tools/test_check_privacy.py | tail -1
 python3 tools/test_nvs_keys.py | tail -1
+python3 tools/test_ab_transition.py | tail -1
+python3 tools/test_release_ci.py | tail -1
 python3 tools/test_sx1276_tx.py
 python3 tools/gen_setup_page.py --check
 node test/test_setup_page.js | tail -1
