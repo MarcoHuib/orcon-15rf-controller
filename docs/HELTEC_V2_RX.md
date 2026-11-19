@@ -265,7 +265,7 @@ Niet te verifiëren zonder extra meetapparatuur: dat er werkelijk geen 868 MHz-e
 
 ## Impact op de TX-builds (V3/CC1101, V3/SX1262, 4848)
 
-Compileren elk in CI (`build-other-envs`), getest op host met `RX_ONLY=0` (`test_orcon`). Niet op hardware getest.
+Historisch: deze builds en de CI-job `build-other-envs` zijn verwijderd (Heltec V2 only). `RX_ONLY=0` wordt nog op de host getest (`test_orcon`).
 
 | Wijziging | Effect op V3 |
 |---|---|

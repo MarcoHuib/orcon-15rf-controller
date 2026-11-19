@@ -218,8 +218,8 @@ remote/CO₂ sensor and keep the serial unique.
   * **RX:** program the SX1262 hardware **sync word** to a slice of the known
     on‑air pattern (preamble tail + start of SYNC, <= 8 bytes), receive into the
     FIFO, then software‑deframe + Manchester‑decode. Works, but is the riskier
-    half — hence the build‑time **CC1101 fallback** (`-D RADIO_CC1101`) that does
-    framing in hardware if SX1262 RX proves flaky.
+    half — hence the **CC1101 fallback** (a former build option, since removed) that
+    does framing in hardware if SX1262 RX proves flaky.
 
 The `ramses_codec` layer is radio‑independent and host‑tested, so only the thin
 `ramses_radio` layer differs between SX1262 and CC1101.
