@@ -32,7 +32,7 @@
 #if (ORCON_TX_POC != 0 && ORCON_TX_POC != 1) || (ORCON_TX_RF_ENABLE != 0 && ORCON_TX_RF_ENABLE != 1) || (ORCON_WEB_CONTROL != 0 && ORCON_WEB_CONTROL != 1)
 #error "PoC capabilities must be 0 or 1"
 #endif
-#if ORCON_TX_POC && (!defined(BOARD_HELTEC_V2) || !defined(RADIO_SX1276) || RX_ONLY != 1 || defined(RADIO_SX1262) || defined(RADIO_CC1101) || defined(RADIO_CC1101_ASYNC) || defined(USE_CC1101_TX) || defined(PINTEST) || defined(BOARD_4848S040))
+#if ORCON_TX_POC && (!defined(BOARD_HELTEC_V2) || !defined(RADIO_SX1276) || RX_ONLY != 1)
 #error "PoC requires the exclusive Heltec V2 SX1276 backend and RX_ONLY=1"
 #endif
 #if ORCON_WEB_CONTROL && !ORCON_TX_POC

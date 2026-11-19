@@ -156,7 +156,12 @@ for name,old,new in [('no-profile-gate','if(!profile){e="profile-required";retur
     except AssertionError: print('PASS TX-path guard rejects mutation',name)
     else: raise AssertionError('TX-path guard accepted mutation '+name)
 ini=configparser.ConfigParser(interpolation=None); ini.read('platformio.ini')
-assert ini['platformio']['default_envs']=='heltec_v3_cc1101_ota' # existing default unchanged
+assert ini['platformio']['default_envs']=='heltec_v2_sx1276'   # Heltec V2 only; the safe default is the RX-only image
+# No other radio or board back-end may come back next to the SX1276 (the PoC #error no longer lists them).
+for p in sorted(Path('src').iterdir())+[Path('platformio.ini')]:
+    for m in ('RADIO_SX1262','RADIO_CC1101','USE_CC1101_TX','BOARD_4848S040','PINTEST','NO_OLED'):
+        assert m not in p.read_text(),(str(p),m)
+assert all(n.startswith('env:heltec_v2_sx1276') for n in ini.sections() if n.startswith('env:') and n!='env:native'),ini.sections()
 baseline=ini['env:heltec_v2_sx1276']['build_flags']
 assert 'ORCON_TX_POC' not in baseline and 'ORCON_TX_RF_ENABLE' not in baseline
 assert '-DORCON_TX_RF_ENABLE=0' in ini['env:heltec_v2_sx1276_tx_poc_dryrun']['build_flags']
@@ -175,7 +180,7 @@ valid=[('rx-default',base,{'RX_ONLY':'1','ORCON_TX_POC':'0','ORCON_TX_RF_ENABLE'
        ('control',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_PAIR=1','ORCON_TX_CONTROL=1'],
         {'ORCON_TX_CONTROL':'1','ORCON_TX_PAIR':'1','ORCON_TX_MAX_PER_BOOT':'0','ORCON_WEB_AUTH':'1','MQTT_ENABLED':'0'}),
        ('rx-default-login',base,{'ORCON_WEB_AUTH':'1','ORCON_TX_CONTROL':'0'}),
-       ('other-board-no-login',['RADIO_CC1101_ASYNC=1'],{'ORCON_WEB_AUTH':'0'})]
+       ('no-board-no-login',[],{'ORCON_WEB_AUTH':'0'})]
 for name,defs,wanted in valid:
     result=run([a.compiler,'-std=c++11','-I','src','-x','c++','-dM','-E','-']+['-D'+x for x in defs],input='#include "config.h"\n')
     assert result.returncode==0,(name,result.stderr)
@@ -185,15 +190,13 @@ for name,defs,wanted in valid:
 invalid=[('rf-alone',['ORCON_TX_RF_ENABLE=1'],'RF TX requires'),
          ('rf-wrong-board',['RADIO_SX1276=1','ORCON_TX_POC=1','RX_ONLY=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1'],'PoC requires'),
          ('rf-legacy-unlocked',base+['ORCON_TX_POC=1','RX_ONLY=0','ORCON_TX_RF_ENABLE=1'],'PoC requires'),
-         ('rf-v3-radio',['BOARD_HELTEC_V2=1','RADIO_CC1101_ASYNC=1','ORCON_TX_POC=1','RX_ONLY=1','ORCON_TX_RF_ENABLE=1'],'PoC requires'),
+         ('rf-missing-radio',['BOARD_HELTEC_V2=1','ORCON_TX_POC=1','RX_ONLY=1','ORCON_TX_RF_ENABLE=1'],'PoC requires'),
          ('web-alone',['ORCON_WEB_CONTROL=1'],'Web control requires'),
          ('invalid-web',base+['ORCON_WEB_CONTROL=2'],'capabilities must be 0 or 1'),
          ('missing-board',['RADIO_SX1276=1','ORCON_TX_POC=1','RX_ONLY=1'],'PoC requires'),
          ('legacy-unlocked',base+['ORCON_TX_POC=1','RX_ONLY=0'],'PoC requires'),
          ('nonboolean-legacy',base+['ORCON_TX_POC=1','RX_ONLY=2'],'PoC requires'),
-         ('wrong-radio',['BOARD_HELTEC_V2=1','RADIO_SX1262=1','ORCON_TX_POC=1','RX_ONLY=1'],'PoC requires'),
-         ('dual-radio',base+['RADIO_CC1101_ASYNC=1','ORCON_TX_POC=1','RX_ONLY=1'],'PoC requires'),
-         ('pintest',base+['PINTEST=1','ORCON_TX_POC=1','RX_ONLY=1'],'PoC requires'),
+         ('missing-radio',['BOARD_HELTEC_V2=1','ORCON_TX_POC=1','RX_ONLY=1'],'PoC requires'),
          ('invalid-capability',base+['ORCON_TX_POC=2'],'capabilities must be 0 or 1'),
          ('cap-without-rf',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_MAX_PER_BOOT=1'],'ORCON_TX_MAX_PER_BOOT is 0, or 1..100'),
          ('pair-without-cap',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_PAIR=1'],'ORCON_TX_PAIR requires'),
@@ -205,7 +208,7 @@ invalid=[('rf-alone',['ORCON_TX_RF_ENABLE=1'],'RF TX requires'),
          ('control-without-pair',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_CONTROL=1'],'ORCON_TX_CONTROL is'),
          ('control-dryrun',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_WEB_CONTROL=1','ORCON_TX_PAIR=1','ORCON_TX_CONTROL=1'],'ORCON_TX_PAIR requires'),
          ('control-without-login',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_PAIR=1','ORCON_TX_CONTROL=1','ORCON_WEB_AUTH=0'],'requires the web login'),
-         ('login-without-signed-ota',['RADIO_CC1101_ASYNC=1','ORCON_WEB_AUTH=1'],'ORCON_WEB_AUTH needs ORCON_SIGNED_OTA')]
+         ('login-without-signed-ota',['ORCON_WEB_AUTH=1'],'ORCON_WEB_AUTH needs ORCON_SIGNED_OTA')]
 for name,defs,diagnostic in invalid:
     result=run([a.compiler,'-std=c++11','-I','src','-x','c++','-fsyntax-only','-']+['-D'+x for x in defs],input='#include "config.h"\n')
     assert result.returncode!=0 and diagnostic in result.stderr,(name,result.returncode,result.stderr)

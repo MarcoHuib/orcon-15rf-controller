@@ -213,23 +213,3 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 14
-
-  build-other-envs:
-    # Shared code (codec, orcon, net, main) must keep compiling for the TX builds.
-    name: Build ${{ matrix.env }} (compile check, not published)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        env: [heltec_v3_cc1101_ota, heltec_v3_1262_ota, esp32-480480s040]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install pinned PlatformIO
-        shell: bash
-        run: |
-          python3 -m venv .venv
-          .venv/bin/python -m pip install --disable-pip-version-check "platformio==6.1.18"
-      - name: Build ${{ matrix.env }}
-        shell: bash
-        run: .venv/bin/pio run -e ${{ matrix.env }}

@@ -10,9 +10,6 @@
 #include "oled_power.h"
 #include "wifi_watch.h"
 #include <atomic>
-#if defined(USE_CC1101_TX) || defined(RADIO_CC1101_ASYNC)
-#include "cc1101_tx.h"
-#endif
 #include "web_page.h"
 #include "setup_web.h"
 #include "rf_console.h"
@@ -63,10 +60,8 @@ static uint32_t g_pocBootMs = 0;
 static bool g_pocIdentityValid = false, g_pocAuthenticated = false;
 #endif
 
-#if !defined(NO_OLED)
 static U8G2_SSD1306_128X64_NONAME_F_HW_I2C
     oled(U8G2_R0, PIN_OLED_RST, PIN_OLED_SCL, PIN_OLED_SDA);
-#endif
 #if defined(BOARD_HELTEC_V2)
 static oledpower::Power g_oledPower;
 #endif
@@ -240,8 +235,6 @@ static size_t buildStateJson(char* out, size_t cap) {
     d["oled_available"] = true;
     d["oled_mode"] = oledpower::modeName(g_oledPower.mode());
     d["oled_on"] = g_oledPower.awake();
-#else
-    d["oled_available"] = false;  // this setting only controls the Heltec V2 OLED
 #endif
     char uid[16], fid[16];
     idStr(orcon::ids().us,  uid, sizeof(uid));
@@ -314,10 +307,6 @@ static size_t buildStateJson(char* out, size_t cap) {
     for (int i = 0; i < 7; i++) ridx.add(g_roomIdx[i]);
     d["dom_rx"]   = g_domRx;                                 // diag: domoticz/out message count
     d["dom_last"] = g_domLastIdx;
-#if defined(USE_CC1101_TX) || defined(RADIO_CC1101_ASYNC)
-    d["cc1101"]    = cc1101tx::version();
-    d["urx"]       = cc1101tx::uartBytes();   // bytes seen on the GDO2 RX line (diag)
-#endif
     size_t need = measureJson(d);
     if (need >= cap) { Serial.printf("[net] state JSON %u B > %u B buffer: skipped\n", (unsigned)need, (unsigned)cap); return 0; }
     return serializeJson(d, out, cap);
@@ -692,10 +681,6 @@ static void oledTick() {
 #endif
 }
 
-#if defined(NO_OLED)
-static void oledInit() {}
-static void oledDraw() {}
-#else
 static void oledInit() {
     pinMode(PIN_VEXT, OUTPUT); digitalWrite(PIN_VEXT, LOW);
     pinMode(PIN_OLED_RST, OUTPUT);
@@ -797,7 +782,6 @@ static void oledDraw() {
     if (s.fault) oled.drawStr(104, 11, "!");
     oled.sendBuffer();
 }
-#endif
 
 #if ORCON_OWNER_MODEL
 static void notice(const char* a, const char* b, const char* c, uint32_t ms) {
@@ -913,12 +897,8 @@ static void handleOledSave() {
 // ---------------------------------------------------------------------------
 // WiFi
 // ---------------------------------------------------------------------------
-// Setup-AP password. Boards with an OLED: random per device (stored once), shown on the OLED while
-// the setup AP runs and nowhere else (no serial, HTTP or MQTT). The OLED-less 4848 keeps the
-// configured WIFI_AP_PASS (it has no screen to show a random one on).
-#if defined(NO_OLED)
-static const char* apPassword() { return WIFI_AP_PASS; }
-#else
+// Setup-AP password: random per device (stored once), shown on the OLED while the setup AP runs
+// and nowhere else (no serial, HTTP or MQTT).
 static char g_apPass[13] = "";             // 12 of 31 symbols: ~59 bits against an offline WPA2 attack
 static const char* apPassword() {
     if (g_apPass[0]) return g_apPass;
@@ -934,7 +914,6 @@ static const char* apPassword() {
     prefs.begin("orcon", false); prefs.putString("appw", g_apPass); prefs.end();   // once per device
     return g_apPass;
 }
-#endif
 static void startAp(bool only) {
     g_apMode = true; g_apOnly = only;
     WiFi.mode(only ? WIFI_AP : WIFI_AP_STA);

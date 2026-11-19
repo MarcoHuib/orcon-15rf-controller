@@ -7,8 +7,8 @@
 #endif
 #include <Arduino.h>
 #include <RadioLib.h>
-#if defined(USE_CC1101_TX) || defined(RADIO_CC1101_ASYNC)
-#include "cc1101_tx.h"
+#if !defined(RADIO_SX1276) || !defined(BOARD_HELTEC_V2)
+#error "Heltec WiFi LoRa 32 V2 (SX1276) only: build one of the heltec_v2_sx1276* environments"
 #endif
 #if defined(RADIO_SX1276)
 #include <HardwareSerial.h>
@@ -24,177 +24,7 @@ namespace radio { namespace sx1276 { bool txActive(); } }
 
 namespace radio {
 
-static volatile bool   g_rxFlag = false;
 static float           g_rssi   = -127.0f;
-static uint8_t         g_onair[ramses::MAX_ONAIR];
-
-#if defined(ESP32)
-IRAM_ATTR
-#endif
-static void onDio() { g_rxFlag = true; }
-
-// ===========================================================================
-//  SX1262 back-end (built-in Heltec radio). RX always; TX via SX1262 unless
-//  USE_CC1101_TX is set, in which case an external CC1101 does the transmit.
-// ===========================================================================
-#if defined(RADIO_SX1262)
-
-static SX1262 g_radio = new Module(PIN_SX_NSS, PIN_SX_DIO1, PIN_SX_RST, PIN_SX_BUSY);
-
-static const size_t  RX_WINDOW = 96;
-static uint8_t       g_syncWord[2] = { 0x55, 0x53 };
-
-#if defined(USE_CC1101_TX)
-const char* name() { return "SX1262rx+CC1101tx"; }
-#else
-const char* name() { return "SX1262"; }
-#endif
-
-static bool configure() {
-    int st = g_radio.beginFSK(RF_FREQ_MHZ, RF_BITRATE_KBPS, RF_DEVIATION_KHZ,
-                              RF_RXBW_KHZ, 10 /*dBm*/, 16 /*preamble bits*/);
-    if (st != RADIOLIB_ERR_NONE) { Serial.printf("[radio] beginFSK=%d\n", st); return false; }
-    // Heltec V3/V4: the antenna is connected to the SX1262 through an RF switch
-    // driven by DIO2. Without this, the receiver is electrically disconnected
-    // from the antenna -> dead-flat ~-112 dBm RSSI no matter the antenna. REQUIRED.
-    g_radio.setDio2AsRfSwitch(true);
-    g_radio.setTCXO(1.6);                       // Heltec uses a DIO3-powered TCXO
-    g_radio.setSyncWord(g_syncWord, sizeof(g_syncWord));
-    g_radio.setCRC(0);
-    g_radio.setDataShaping(RADIOLIB_SHAPING_0_5);
-    g_radio.setEncoding(RADIOLIB_ENCODING_NRZ);
-    g_radio.fixedPacketLengthMode(RX_WINDOW);
-    g_radio.setDio1Action(onDio);
-    return true;
-}
-
-void startReceive() {
-    g_rxFlag = false;
-    g_radio.startReceive();
-}
-
-bool begin() {
-    SPI.begin(PIN_SX_SCK, PIN_SX_MISO, PIN_SX_MOSI, PIN_SX_NSS);
-    bool ok = configure();
-#if defined(USE_CC1101_TX)
-    cc1101tx::begin();          // CC1101 handles transmit; SX1262 keeps RX
-#endif
-    return ok;
-}
-
-bool sendFrame(const ramses::Frame& f) {
-#if defined(USE_CC1101_TX)
-    bool ok = cc1101tx::send(f);    // transmit via CC1101 async UART
-    startReceive();                 // keep the SX1262 listening
-    return ok;
-#else
-    size_t bits = 0;
-    size_t n = ramses::encodeFrame(f, g_onair, sizeof(g_onair), RF_PREAMBLE_BYTES, &bits);
-    if (!n) return false;
-    static uint8_t txSync[2] = { 0x55, 0x55 };
-    g_radio.setSyncWord(txSync, sizeof(txSync));
-    g_radio.fixedPacketLengthMode((uint8_t)n);
-    int st = g_radio.transmit(g_onair, n);
-    g_radio.setSyncWord(g_syncWord, sizeof(g_syncWord));
-    g_radio.fixedPacketLengthMode(RX_WINDOW);
-    startReceive();
-    if (st != RADIOLIB_ERR_NONE) { Serial.printf("[radio] tx=%d\n", st); return false; }
-    return true;
-#endif
-}
-
-bool poll(ramses::Frame& out) {
-    if (!g_rxFlag) return false;
-    g_rxFlag = false;
-    uint8_t buf[RX_WINDOW];
-    int st = g_radio.readData(buf, RX_WINDOW);
-    g_rssi = g_radio.getRSSI();
-    startReceive();
-    if (st != RADIOLIB_ERR_NONE && st != RADIOLIB_ERR_CRC_MISMATCH) return false;
-    bool ok = ramses::decodeFrame(buf, RX_WINDOW, RX_WINDOW * 8, out);
-#if DEBUG_RX_HEX
-    if (ok) {
-        Serial.printf("[rx %.0fdBm] cmd=%04X len=%u :", g_rssi, out.cmd, out.len);
-        for (uint8_t i = 0; i < out.len; i++) Serial.printf("%02X", out.payload[i]);
-        Serial.println();
-    }
-#endif
-    return ok;
-}
-
-#endif // RADIO_SX1262
-
-// ===========================================================================
-//  CC1101 stand-alone packet back-end (legacy fallback, -D RADIO_CC1101)
-// ===========================================================================
-#if defined(RADIO_CC1101)
-
-static CC1101 g_radio = new Module(PIN_CC_NSS, PIN_CC_GDO0, RADIOLIB_NC, PIN_CC_GDO2);
-static const size_t RX_WINDOW = 96;
-
-const char* name() { return "CC1101"; }
-
-static bool configure() {
-    int st = g_radio.begin(RF_FREQ_MHZ, RF_BITRATE_KBPS, RF_DEVIATION_KHZ,
-                           RF_RXBW_KHZ, 10 /*dBm*/, RF_PREAMBLE_BYTES);
-    if (st != RADIOLIB_ERR_NONE) { Serial.printf("[radio] cc begin=%d\n", st); return false; }
-    g_radio.setSyncWord(0x55, 0x53);
-    g_radio.setCrcFiltering(false);
-    g_radio.setEncoding(RADIOLIB_ENCODING_NRZ);
-    g_radio.fixedPacketLengthMode(RX_WINDOW);
-    g_radio.setGdo0Action(onDio, RISING);
-    return true;
-}
-
-bool begin() {
-    SPI.begin(PIN_SX_SCK, PIN_SX_MISO, PIN_SX_MOSI, PIN_CC_NSS);
-    return configure();
-}
-
-void startReceive() { g_rxFlag = false; g_radio.startReceive(); }
-
-bool sendFrame(const ramses::Frame& f) {
-    size_t bits = 0;
-    size_t n = ramses::encodeFrame(f, g_onair, sizeof(g_onair), RF_PREAMBLE_BYTES, &bits);
-    if (!n) return false;
-    int st = g_radio.transmit(g_onair, n);
-    startReceive();
-    return st == RADIOLIB_ERR_NONE;
-}
-
-bool poll(ramses::Frame& out) {
-    if (!g_rxFlag) return false;
-    g_rxFlag = false;
-    uint8_t buf[RX_WINDOW];
-    int st = g_radio.readData(buf, RX_WINDOW);
-    g_rssi = g_radio.getRSSI();
-    startReceive();
-    if (st != RADIOLIB_ERR_NONE && st != RADIOLIB_ERR_CRC_MISMATCH) return false;
-    return ramses::decodeFrame(buf, RX_WINDOW, RX_WINDOW * 8, out);
-}
-
-#endif // RADIO_CC1101
-
-// ===========================================================================
-//  CC1101 async-serial back-end — RX *and* TX on ONE CC1101 (the evofw3 way).
-//  No SX1262. Receive = the mirror of transmit: CC1101 demodulates onto GDO2,
-//  the UART re-frames the wire bytes, software decodes them.
-// ===========================================================================
-#if defined(RADIO_CC1101_ASYNC)
-const char* name() { return "CC1101 async RX+TX"; }
-bool begin() { return cc1101tx::begin(); }
-void startReceive() { cc1101tx::startRx(); }
-bool sendFrame(const ramses::Frame& f) {
-    bool ok = cc1101tx::send(f);
-    cc1101tx::startRx();                 // straight back to listening
-    return ok;
-}
-bool poll(ramses::Frame& out) {
-    bool ok = cc1101tx::poll(out);
-    g_rssi = (float)cc1101tx::rssiDbm();
-    return ok;
-}
-#endif // RADIO_CC1101_ASYNC
 
 // ===========================================================================
 //  SX1276 back-end (Heltec WiFi LoRa 32 V2) — single-board RX+TX, NO CC1101.
@@ -558,10 +388,5 @@ RxDiagnostics rxDiagnostics() {
 }
 
 float lastRssi() { return g_rssi; }
-#if !defined(RADIO_SX1276)
-uint32_t lastSeq() { return 0; }
-bool pollSync(SyncInfo&) { return false; }
-uint32_t syncInfoDrops() { return 0; }
-#endif
 
 } // namespace radio

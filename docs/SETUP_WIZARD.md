@@ -21,8 +21,6 @@ symbooltabel van de PoC-ELF is identiek aan die van de basis (`33a6914`).
 | Build | `rx_supported` | `tx_supported` | `read_supported` | `pair_supported` | `control_supported` |
 |---|---|---|---|---|---|
 | `heltec_v2_sx1276` (RX_ONLY) | ja | nee | ja | nee | nee |
-| `heltec_v3_cc1101_ota`, `esp32-480480s040` | ja | ja | ja | ja | ja |
-| `heltec_v3_1262_ota` (SX1262 decodeert geen RAMSES) | nee | ja | nee | nee | ja |
 | `heltec_v2_sx1276_tx_poc_dryrun` | Wizard en API niet aanwezig | | | | |
 
 In RX_ONLY-builds is er geen code die `startPairing`, `setMode` of `setTimer` aanroept;

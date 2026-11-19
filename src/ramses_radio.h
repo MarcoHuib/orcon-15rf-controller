@@ -1,10 +1,8 @@
 // ramses_radio.h — thin RF transport for RAMSES-II frames.
 //
-// Two back-ends selected at compile time (see config.h):
-//   RADIO_SX1262  : Heltec V3 built-in SX1262. GFSK + *software* Manchester.
-//                   TX sends the fully pre-encoded on-air buffer; RX captures a
-//                   raw window and runs the host-tested software decoder.
-//   RADIO_CC1101  : external CC1101 with hardware Manchester/async framing.
+// One back-end: the Heltec V2's on-board SX1276 (RADIO_SX1276). RX in continuous
+// FSK mode (DIO2 -> UART -> software decoder); the only TX path is the txpoc packet
+// path in ramses_radio.cpp (RF builds only).
 //
 // The protocol logic lives entirely in ramses_codec; this file is only "get
 // these bytes on/off the air".
@@ -73,7 +71,7 @@ struct SyncInfo { uint32_t seq = 0, ms = 0; int16_t rssi = 0; uint8_t pre = 0; }
 bool pollSync(SyncInfo& out);
 uint32_t syncInfoDrops();
 
-// Human-readable back-end name ("SX1262" / "CC1101").
+// Human-readable back-end name (the SX1276 variant marker, e.g. "SX1276 direct RX (TX disabled)").
 const char* name();
 
 } // namespace radio

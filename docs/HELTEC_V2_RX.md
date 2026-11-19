@@ -227,7 +227,7 @@ gedaan en wordt niet herhaald in de passieve duurmeting.
 ## Oorspronkelijk scenario 24–72 uur (WiFi + MQTT): referentie, niet uitvoeren
 
 **Vooraf (stop als één punt niet klopt)**
-- Firmware = een commit met lokale testbewijzen: V2-builds, gewone hostsuites, UBSan, web- en flashtests en de V3/CC1101-, V3/SX1262- en 4848-build. ASan/TSan worden alleen als PASS vermeld als ze betrouwbaar uitgevoerd zijn. Flashen alleen na expliciet akkoord, via `tools/heltec_v2.sh flash`.
+- Firmware = een commit met lokale testbewijzen: V2-builds, gewone hostsuites, UBSan, web- en flashtests. ASan/TSan worden alleen als PASS vermeld als ze betrouwbaar uitgevoerd zijn. Flashen alleen na expliciet akkoord, via `tools/heltec_v2.sh flash`.
 - WiFi (STA) en MQTT zijn ingesteld. Unit 29:000202 is gekozen via `/api/ids`. Het MAC-adres van het bord staat in `.flashtools/board.mac`.
 - Productietopic `orcon15rf/state` en de HA-entiteiten van het productiebord zijn vastgelegd. Na de test moeten ze ongewijzigd zijn.
 
@@ -265,7 +265,7 @@ Niet te verifiëren zonder extra meetapparatuur: dat er werkelijk geen 868 MHz-e
 
 ## Impact op de TX-builds (V3/CC1101, V3/SX1262, 4848)
 
-Compileren elk in CI (`build-other-envs`), getest op host met `RX_ONLY=0` (`test_orcon`). Niet op hardware getest.
+Historisch: deze builds en de CI-job `build-other-envs` zijn verwijderd (Heltec V2 only). `RX_ONLY=0` wordt nog op de host getest (`test_orcon`).
 
 | Wijziging | Effect op V3 |
 |---|---|

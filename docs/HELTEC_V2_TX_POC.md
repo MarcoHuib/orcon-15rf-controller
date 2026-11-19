@@ -12,13 +12,13 @@ are used. Serial access, flash and reset need separate hardware consent. RF is b
 | `heltec_v2_sx1276_tx_poc_dryrun` | 1 explicitly | 1 | no hardware TX implementation |
 | `heltec_v2_sx1276_tx_poc` | 1 explicitly | 1 | intentionally fails compilation |
 
-`tx_poc_caps.h` rejects RF enablement, invalid capability values, wrong/multiple
-radio backends, an unlocked legacy command layer and diagnostic pin-test builds.
+`tx_poc_caps.h` rejects RF enablement, invalid capability values, a build without
+the Heltec V2 SX1276 identity and an unlocked legacy command layer.
 Removing the RF compile error alone cannot implement transmission: there is no
 SX1276 TX backend in this PoC. No web endpoint can arm RF.
 
-The existing project-wide default environment is still the V3/CC1101 build.
-It has not been silently changed. The V2 default remains RX-only. Always select
+The project-wide default environment is the V2 RX-only build (`heltec_v2_sx1276`);
+the V3/CC1101, V3/SX1262 and 4848 builds were removed (Heltec V2 only). Always select
 an explicit environment or use the local runner below.
 
 The old `sendFrame()` refusal, `rx_only.h` allowlist, Orcon command refusals,
@@ -198,8 +198,8 @@ which now runs `tx_poc` too), new golden vectors/transaction/
 security/concurrency/fault tests, original source guards executed locally,
 negative capability compiles, privacy including new files, actual emitted page
 scripts, OLED regressions and, with `-Firmware`, the flash tooling on simulated
-boards (`tools/test_precheck.sh`). `-Firmware` builds V2 RX, V2 dry-run, V3/CC1101,
-V3/SX1262 and 4848 locally. It only invokes `pio run -e <allowlisted environment>`;
+boards (`tools/test_precheck.sh`). `-Firmware` builds V2 RX, V2 dry-run, the RF test
+image and the control image locally. It only invokes `pio run -e <allowlisted environment>`;
 there is no upload target or hardware tooling.
 
 `RESULTS.json` records commit, dirty state, commands and exit codes;

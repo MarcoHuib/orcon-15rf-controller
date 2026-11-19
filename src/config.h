@@ -5,14 +5,11 @@
 #include <stdint.h>
 
 // ---------------------------------------------------------------------------
-// Radio selection
+// Hardware: Heltec WiFi LoRa 32 V2 (ESP32 + on-board SX1276) only
 // ---------------------------------------------------------------------------
-// Default: use the Heltec WiFi LoRa 32 V3 built-in SX1262 (software Manchester).
-// To use an external CC1101 instead, build with  -D RADIO_CC1101  (see
-// platformio.ini [env:heltec_v3_cc1101]) and wire it per README.
-#if !defined(RADIO_SX1262) && !defined(RADIO_CC1101) && !defined(RADIO_CC1101_ASYNC) && !defined(RADIO_SX1276)
-  #define RADIO_SX1262 1
-#endif
+// platformio.ini [env] defines RADIO_SX1276 and BOARD_HELTEC_V2 for every firmware build
+// (ramses_radio.cpp refuses a build without them). Host tests leave them out on purpose to
+// exercise the build switches below.
 
 // RX-only builds: the SX1276 backend has no TX path. RX_ONLY additionally gates
 // every command, pairing and network firmware-update path (orcon.cpp, net.cpp).
@@ -34,20 +31,14 @@
 #define RF_FREQ_MHZ        868.300f
 #define RF_BITRATE_KBPS    38.4f
 #define RF_DEVIATION_KHZ   50.78f
-#if defined(BOARD_HELTEC_V2)
 #define RF_RXBW_KHZ        250.0f      // SX1276 max RxBw — wide enough for RAMSES
-#else
-#define RF_RXBW_KHZ        312.0f      // nearest SX1262-valid step to the protocol's 325k
-                                       // (CC1101 path maps this to ~325k automatically)
-#endif
 #define RF_PREAMBLE_BYTES  6
 
 // ---------------------------------------------------------------------------
-// Heltec WiFi LoRa 32 V3 (ESP32-S3) pin map
+// Heltec WiFi LoRa 32 V2 pin map
 // ---------------------------------------------------------------------------
-#if defined(BOARD_HELTEC_V2)
-// On-board SX1276 (Heltec WiFi LoRa 32 V2, ESP32). In continuous/direct FSK mode
-// the demodulated NRZ data stream comes out on DIO2 — we read it with a UART.
+// On-board SX1276. In continuous/direct FSK mode the demodulated NRZ data stream
+// comes out on DIO2 — we read it with a UART.
 #define PIN_SX_NSS    18
 #define PIN_SX_SCK     5
 #define PIN_SX_MOSI   27
@@ -56,40 +47,8 @@
 #define PIN_SX_DIO0   26
 #define PIN_SX_DIO1   35
 #define PIN_SX_DIO2   34     // demod data out (continuous mode) -> ESP UART RX (input-only GPIO, fine)
-#else
-// On-board SX1262 (fixed on the Heltec V3/V4)
-#define PIN_SX_NSS    8
-#define PIN_SX_SCK    9
-#define PIN_SX_MOSI   10
-#define PIN_SX_MISO   11
-#define PIN_SX_RST    12
-#define PIN_SX_BUSY   13
-#define PIN_SX_DIO1   14
-#endif
 
-#if defined(BOARD_4848S040)
-// ---------------------------------------------------------------------------
-// Guition ESP32-4848S040 (ESP32-S3 + 480x480 RGB TFT). No SSD1306 OLED.
-// Solder the CC1101 directly to the ESP32 pins. The radio SHARES the display/
-// SD SPI bus (idle after the display init); the three free relay/audio pins
-// carry chip-select and the two async data lines.
-// IMPORTANT: lift R21/R22/R23 (the audio 0R jumpers) so the NS4168 amp doesn't
-// load these lines; lift R25/R26/R27 too if the relay board is fitted.
-// ---------------------------------------------------------------------------
-#define NO_OLED       1
-#define PIN_OLED_SDA  17      // (unused on this board — OLED code is compiled out)
-#define PIN_OLED_SCL  18
-#define PIN_OLED_RST  21
-#define PIN_VEXT      21      // NOT 36 here (GPIO36 is OPI-PSRAM); never driven
-#define PIN_CC_SCK    48      // shared SPI clock (display 9-bit init / SD)
-#define PIN_CC_MOSI   47      // shared SPI MOSI
-#define PIN_CC_MISO   41      // shared SPI MISO (SD DO)
-#define PIN_CC_NSS    40      // free pin (relay1 / audio DIN)
-#define PIN_CC_GDO0   2       // free pin (relay2 / audio LRCLK) -> async UART TX
-#define PIN_CC_GDO2   1       // free pin (relay3 / audio BCLK)  -> async UART RX
-#elif defined(BOARD_HELTEC_V2)
-// On-board SSD1306 OLED (Heltec V2): different I2C pins than V3.
-// No external CC1101 — the on-board SX1276 does RX (direct) + TX (packet).
+// On-board SSD1306 OLED.
 #define PIN_OLED_SDA  4
 #define PIN_OLED_SCL  15
 #define PIN_OLED_RST  16
@@ -98,24 +57,6 @@
                               // strapping pin: read-only use (INPUT_PULLUP, never
                               // driven), so reset+hold still enters the ROM
                               // flasher and short presses only wake the OLED.
-#else
-// On-board SSD1306 OLED (Heltec V3/V4): I2C + Vext power + reset
-#define PIN_OLED_SDA  17
-#define PIN_OLED_SCL  18
-#define PIN_OLED_RST  21
-#define PIN_VEXT      36      // drive LOW to power OLED/Vext rail on V3
-
-// External CC1101 (used when -D USE_CC1101_TX / -D RADIO_CC1101_ASYNC).
-// The SX1262's SPI (GPIO 8-14) is NOT broken out on the Heltec V3/V4 headers,
-// so the CC1101 gets its OWN dedicated SPI bus on the SAFE free header pins
-// {1,2,4,5,6,7,47,48}. (GPIO26 and 33-38 are flash/SubSPI on the S3 — unusable.)
-#define PIN_CC_SCK    4     // CC1101 SCLK
-#define PIN_CC_MOSI   2     // CC1101 MOSI
-#define PIN_CC_MISO   1     // CC1101 MISO
-#define PIN_CC_NSS    7     // CC1101 CSN
-#define PIN_CC_GDO0   5     // CC1101 GDO0 = async serial data line (UART TX)
-#define PIN_CC_GDO2   6     // CC1101 GDO2 (optional / status)
-#endif
 
 // ---------------------------------------------------------------------------
 // Device identities (RAMSES device IDs:  class:serial, serial is 18-bit)
@@ -153,7 +94,6 @@
 #define WIFI_SSID        ""            // empty => start SoftAP setup portal
 #define WIFI_PASSWORD    ""
 #define WIFI_AP_NAME     "Orcon15RF-Setup"
-#define WIFI_AP_PASS     "orconsetup"  // ONLY the OLED-less 4848; boards with an OLED use a random per-device password
 
 #if ORCON_TX_POC
 #define MQTT_ENABLED     0          // no broker, discovery or command route in phase 1

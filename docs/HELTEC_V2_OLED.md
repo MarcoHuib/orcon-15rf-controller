@@ -43,8 +43,7 @@ SX1276-ontvangst, WiFi, MQTT (indien ingeschakeld) en webserver blijven actief.
 Vext blijft ingeschakeld; er wordt geen ESP32-slaapstand gebruikt.
 Zie de [U8g2-documentatie](https://github.com/olikraus/u8g2/wiki/u8g2reference#setpowersave).
 
-De instelling geldt alleen voor `heltec_v2_sx1276`. De twee Heltec V3-builds en
-de 4848-TFT-build behouden hun bestaande schermgedrag.
+De instelling geldt alleen voor `heltec_v2_sx1276`.
 
 ## API
 

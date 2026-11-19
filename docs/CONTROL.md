@@ -84,7 +84,6 @@ Onderstaand pad met de OTA-sleutel werkt alleen nog op een gemigreerd apparaat (
 - Een opgeslagen wachtwoord van 10 tekens (van oudere firmware) wordt bij de eerste start vervangen; het OLED toont het nieuwe.
 - Het staat alleen op het OLED, zolang het accesspoint aan staat. Het scherm blijft dan aan.
 - Het adres is `http://192.168.4.1`.
-- `orconsetup` geldt alleen nog voor het 4848-board zonder OLED.
 
 **Wat kan in deze modus**
 - Aanmelden en WiFi instellen. Via het accesspoint wordt een nieuw netwerk eerst getest en pas na een gelukte verbinding opgeslagen.

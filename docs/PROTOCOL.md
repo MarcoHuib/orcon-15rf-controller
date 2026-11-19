@@ -218,8 +218,8 @@ remote/CO₂ sensor and keep the serial unique.
   * **RX:** program the SX1262 hardware **sync word** to a slice of the known
     on‑air pattern (preamble tail + start of SYNC, <= 8 bytes), receive into the
     FIFO, then software‑deframe + Manchester‑decode. Works, but is the riskier
-    half — hence the build‑time **CC1101 fallback** (`-D RADIO_CC1101`) that does
-    framing in hardware if SX1262 RX proves flaky.
+    half — hence the **CC1101 fallback** (a former build option, since removed) that
+    does framing in hardware if SX1262 RX proves flaky.
 
 The `ramses_codec` layer is radio‑independent and host‑tested, so only the thin
 `ramses_radio` layer differs between SX1262 and CC1101.
@@ -227,6 +227,9 @@ The `ramses_codec` layer is radio‑independent and host‑tested, so only the t
 ---
 
 ## 7. Radio back-ends in practice (CC1101, SX1276, SX1262)
+
+> This firmware now targets the Heltec V2 only: §7.2 (SX1276) is the one back-end in the
+> code. The CC1101 and SX1262 notes below are background; their build macros no longer exist.
 
 The decisive capability is a **transparent / continuous FSK mode**: the chip
 outputs the raw demodulated NRZ bitstream on a GPIO, which we clock into a
