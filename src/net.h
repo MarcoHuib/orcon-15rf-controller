@@ -1,5 +1,6 @@
 // net.h — WiFi + web UI + MQTT + OLED glue.
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 
 namespace net {
@@ -13,6 +14,7 @@ const char* ipAddr();
 const char* ssidName();
 bool        apMode();
 bool        wifiConnected();  // station mode and associated with the configured network
+void        wifiDiag(char* out, size_t n);   // /api/diag: "wifi":{signal, address, outages, last reason},
 const char* mqttHost();
 bool        mqttConnected();
 bool        maskIds();        // privacy setting: mask device IDs in the UI
@@ -21,6 +23,7 @@ void        forgetWifi();     // drop the stored network; the next boot starts t
 
 // Ownership model (ORCON_OWNER_MODEL builds; docs/PROVISIONING.md)
 bool        fromSetupAp();    // this request arrived on the setup AP (socket addresses, not headers)
+bool        fromHomeNet();    // this request came over the station from the home network's own subnet (Siri)
 bool        staUp();          // the station is associated, or a WiFi test is running
 bool        apOnly();         // setup AP without a station: installing, or a PRG recovery boot
 bool        wifiTestStart(const char* ssid, const char* pass);   // the AP stays up; stored only on success

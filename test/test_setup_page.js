@@ -129,7 +129,8 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.equal(p.$('wifiSub').textContent, 'Verbonden met Thuis <5G>'); assert.ok(!p.$('cWifi').classList.contains('off'));
         assert.equal(p.$('profName').textContent, 'Geen profiel geselecteerd'); assert.ok(!p.$('cProf').classList.contains('on'));
         ok('WiFi card shows the network as text; no profile -> "Geen profiel geselecteerd"');
-        assert.ok(p.dom.all.some(e => e.attrs.class === 'choice card off' && e.attrs['aria-disabled'] === 'true')); ok('Siri is a disabled placeholder');
+        assert.ok(p.$('cSiri').disabled && p.$('cSiri').classList.contains('off') && /Niet beschikbaar/.test(p.$('siriSub').textContent));
+        ok('Siri card disabled on firmware without Siri');
         assert.equal(p.$('sysSub').textContent, 'Firmware, herstarten en informatie'); assert.equal(p.$('cSys').dataset.open, 'system'); ok('Systeem card opens the in-app Systeem screen');
         assert.equal(p.$('tech').hidden, false); assert.ok(!('open' in p.$('tech').attrs)); assert.match(html, /<details class="tech" id="tech" hidden><summary><span>Technische status tonen<\/span>/);
         assert.ok(html.indexOf('id="mins"') < html.indexOf('id="tech"') && html.indexOf('id="tech"') < html.indexOf('id="ctlP"') && html.indexOf('id="ctlP"') < html.indexOf('</details>', html.indexOf('id="tech"')) && html.indexOf('id="ctlP"') < html.indexOf('id="notice"'));
@@ -205,6 +206,50 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.deepEqual(wifiPosts[1], { mqtt_on: true, mqtt: '192.0.2.9' }); assert.equal(wifiPosts.length, 2);
         ok('MQTT under Systeem > Integraties: never switched on implicitly, only MQTT fields sent (WiFi kept)');
         await back(); await back(); assert.equal(p.location.hash, '#control');
+    }
+    {   // Siri under Systeem > Integraties: off -> key -> five copyable addresses; new key and off only after confirmation
+        const KEY = '0123456789abcdef0123456789abcdef', KEY2 = 'fedcba9876543210fedcba9876543210';
+        let sk = { on: false, key: '' }; const siriPosts = [];
+        const x = { uptime_ms: 1000, heap_min: 171008, rf_frames: 1, oled_available: false, mqtt_on: false, mqtt_connected: false };
+        const base = { 'GET /api/state': () => [200, x], 'GET /api/netcfg': () => [200, { ssid: 'Thuis', mqtt: '', mqtt_on: false }] };
+        const p = await page({ ...base,
+            'GET /api/setup/state': () => [200, state({ ...CAPS_TX, settings_pages: true, siri_supported: true }, { profiles: PF([PI(2, 'Washok', '29:000101')], 2) })],
+            'GET /api/siri/key': () => [200, sk],
+            'POST /api/siri/key': c => { siriPosts.push(c.body); sk = c.body.action === 'new' ? { on: true, key: siriPosts.length === 1 ? KEY : KEY2 } : { on: false, key: '' }; return [200, sk]; },
+        }, 'integr');
+        assert.equal(p.location.hash, '#integr'); assert.equal(p.$('siriP').hidden, false); assert.equal(p.$('siriGo').hidden, false);
+        assert.equal(p.$('siriOn').hidden, true); assert.match(p.$('siriStat').textContent, /uit/); assert.equal(siriPosts.length, 0);
+        ok('Siri card: off, one button to switch it on, nothing sent by opening it');
+        p.$('siriGo').click(); await flush();
+        assert.deepEqual(siriPosts, [{ action: 'new' }]); assert.equal(p.posts().at(-1).headers['X-Orcon-Token'], 'tok123');
+        assert.equal(p.$('siriOn').hidden, false); assert.equal(p.$('siriGo').hidden, true); assert.match(p.$('siriStat').textContent, /aan/);
+        const li = p.$('siriList').innerHTML;
+        assert.equal((li.match(/data-siri=/g) || []).length, 5); assert.ok(/Ventilatie stand 1/.test(li) && /Ventilatie afwezig/.test(li) && !li.includes(KEY));
+        ok('Siri on: five named shortcuts, the key never written into the page markup');
+        await p.$('siriList').handlers.click[0]({ target: { closest: () => ({ dataset: { siri: 'afwezig' } }) } }); await flush();
+        assert.ok(p.$('siriM').textContent.endsWith('http://orcon15rf.local/api/siri?stand=afwezig') && !p.$('siriM').textContent.includes(KEY));
+        ok('Siri copy: the address carries only the stand, never the key (shown for manual copying without a clipboard)');
+        await p.$('siriKey').handlers.click[0](); await flush();
+        assert.ok(p.$('siriM').textContent.endsWith('Bearer ' + KEY));
+        ok('Siri copy: the key separately, as the value for the Authorization header');
+        dlg.confirm = false; p.$('siriNew').click(); await flush(); assert.equal(siriPosts.length, 1);
+        dlg.confirm = true; p.$('siriNew').click(); await flush(); assert.deepEqual(siriPosts[1], { action: 'new' });
+        assert.ok(/header Authorization/.test(dlg.asked.at(-1)) && /header Authorization/.test(p.$('siriM').textContent) &&
+                  !/adressen opnieuw/.test(p.$('siriM').textContent));
+        await p.$('siriKey').handlers.click[0](); await flush();
+        assert.ok(p.$('siriM').textContent.endsWith('Bearer ' + KEY2));
+        ok('Siri: a new key only after confirmation; told to update the header (not the addresses); the key button copies it');
+        dlg.confirm = false; p.$('siriOff').click(); await flush(); assert.equal(siriPosts.length, 2);
+        dlg.confirm = true; p.$('siriOff').click(); await flush(); assert.deepEqual(siriPosts[2], { action: 'off' });
+        assert.equal(p.$('siriOn').hidden, true); assert.equal(p.$('siriGo').hidden, false);
+        ok('Siri off only after confirmation');
+        const q = await page({ ...base, 'GET /api/setup/state': () => [200, state({ ...CAPS_TX, settings_pages: true }, { profiles: PF([PI(2, 'Washok', '29:000101')], 2) })] }, 'integr');
+        assert.equal(q.$('siriP').hidden, true); assert.ok(!q.calls.some(c => c.key.includes('/api/siri')));
+        ok('no Siri card, and no key request, on firmware without Siri');
+        p.$('back').click(); await flush(); p.$('back').click(); await flush(); assert.equal(p.location.hash, '#control');
+        assert.ok(!p.$('cSiri').disabled && !p.$('cSiri').classList.contains('off') && /stem/.test(p.$('siriSub').textContent));
+        p.$('cSiri').click(); await flush(); assert.equal(p.location.hash, '#integr');
+        ok('dashboard: the Siri card opens Systeem > Integraties');
     }
 
     // ---- read: pick remote, progress only from server state, wrong button, done ---------------------

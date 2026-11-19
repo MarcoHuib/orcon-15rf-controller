@@ -16,7 +16,8 @@ public:
     std::string host, body, type, out;
     int code = 0;
     void on(const char* uri, HTTPMethod m, std::function<void()> f) { routes[(m == HTTP_GET ? "GET " : "POST ") + std::string(uri)] = f; }
-    void collectHeaders(const char* h[], size_t n) { collected.assign(h, h + n); }
+    // Like the ESP32 WebServer (collectHeaders): "Authorization" is always collected, first.
+    void collectHeaders(const char* h[], size_t n) { collected.assign(h, h + n); collected.insert(collected.begin(), "Authorization"); }
     String header(const char* n) {
         for (auto& c : collected)
             if (!strcasecmp(c.c_str(), n)) { auto it = req.find(c); return it == req.end() ? String("") : String(it->second); }

@@ -289,6 +289,8 @@ static void handleDiag() {
     snprintf(b, sizeof(b), "\"rx\":{\"state\":%u,\"frames\":%lu,\"recoveries\":%u,\"lost\":%lu,\"uart_overflows\":%lu,\"queue_drops\":%lu},",
              r.rxState, (unsigned long)r.frames, r.rxRecoveries, (unsigned long)r.rxLost, (unsigned long)r.uartOverflows, (unsigned long)r.queueDrops);
     o += b;
+    net::wifiDiag(b, sizeof(b));
+    o += b;
     size_t addr = 0, size = 0;
     if (esp_core_dump_image_get(&addr, &size) == ESP_OK && size) {
         esp_core_dump_summary_t s;

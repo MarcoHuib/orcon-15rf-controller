@@ -14,6 +14,7 @@ void begin(WebServer& server);                                    // routes + pe
 void onFrame(const ramses::Frame& f, uint32_t seq, int16_t rssi);  // every decoded RX frame (main loop)
 void note(uint8_t kind, const char* msg);                        // console line from another module (rfcon kind)
 void tick(uint32_t now);                                           // timeouts (main loop, never in GET)
+bool busy();                                                       // read/pair session or RF transaction running (no restart now)
 // For routes registered elsewhere (net.cpp settings): host and, for a mutation, same origin and
 // JSON; then a logged-in session (with its CSRF token for a mutation). Sends the refusal itself.
 // Builds without the web login: always true (unchanged legacy behaviour).

@@ -33,6 +33,12 @@ bool passwordOk(const char* pw) {
     return true;
 }
 bool credValid(const Cred& c) { return c.version == CRED_VERSION && c.iterations >= 1000 && c.iterations <= 1000000; }
+bool siriKeyValid(const char* k) {
+    if (!k) return false;
+    size_t n = 0;
+    for (; k[n]; ++n) if (n == 32 || !((k[n] >= '0' && k[n] <= '9') || (k[n] >= 'a' && k[n] <= 'f'))) return false;
+    return n == 32;
+}
 
 bool makeCred(const char* pw, Kdf kdf, Rng rng, Cred& out) {
     if (!passwordOk(pw) || !kdf || !rng) return false;

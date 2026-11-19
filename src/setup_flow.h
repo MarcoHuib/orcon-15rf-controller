@@ -30,6 +30,10 @@ bool hostAllowed(const char* host, const char* deviceIp);
 // The request arrived on the setup access point: the socket's local address is the AP address and
 // the client is in the AP subnet (addresses as the platform's IPAddress converts them).
 bool apClient(uint32_t local, uint32_t remote, uint32_t apIp, uint32_t apMask);
+// Siri (docs/SIRI.md): the client is in the home network's own subnet (never a routed or forwarded
+// request); and the stand in its URL ("1","2","3","auto","afwezig"/"away") as a key, never the timer.
+bool lanClient(uint32_t local, uint32_t remote, uint32_t mask);
+uint8_t siriStand(const char* s);                  // K_NONE if unknown
 bool uniqueObjectKeys(const char* json, const char* const* keys, size_t nkeys);
 
 enum class St : uint8_t { Idle, Active, Done, Timeout, Cancelled };
