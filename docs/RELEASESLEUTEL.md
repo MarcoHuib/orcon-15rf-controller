@@ -9,7 +9,7 @@
 | | Releasesleutel | Eigenaarssleutel | Beheerderswachtwoord |
 |---|---|---|---|
 | Van wie | uitgever | eigenaar, per Heltec | eigenaar, per Heltec |
-| Privé-deel | versleutelde PKCS#8 op twee offline dragers | `orcon-recovery-key.pem` (versleuteld), bij de eigenaar | in het hoofd of de wachtwoordmanager van de eigenaar |
+| Privé-deel | versleutelde PKCS#8 op twee offline dragers (oorspronkelijk ontwerp, zie het besluit bovenaan) | `orcon-recovery-key.pem` (versleuteld), bij de eigenaar | in het hoofd of de wachtwoordmanager van de eigenaar |
 | Op het apparaat | alleen de publieke sleutel, in de firmware | alleen de publieke sleutel, in NVS | alleen een PBKDF2-hash, in NVS |
 | Bewijst | "deze firmware is officieel" | "ik ben de eigenaar van dit apparaat" | "ik mag bedienen en updates goedkeuren" |
 | Kan niet | toegang geven tot een apparaat, of zonder de sessie van de eigenaar installeren | firmware ondertekenen | firmware echt maken |
@@ -41,7 +41,7 @@
    - `orcon.py release --key <pad>` tekent met een expliciet opgegeven sleutel en weigert K_dev, een sleutel in een git-werkmap en bestanden die anderen kunnen lezen.
 
    Bewust nog niet gebouwd: zonder K_rel zou het dode code zijn. Het hoort in dezelfde commit als stap 3.
-2. **Sleutelceremonie** door de maintainer, op een offline machine:
+2. **Sleutelceremonie** door de maintainer, op een offline machine (oorspronkelijk ontwerp; wordt herzien volgens het besluit bovenaan):
    ```
    openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
      | openssl pkcs8 -topk8 -v2 aes-256-cbc -v2prf hmacWithSHA256 -iter 2000000 -out release-key.pem
@@ -52,7 +52,7 @@
 3. **Overgangsfirmware F_t**, getekend met K_dev en vertrouwend {K_dev, K_rel, K_rel_backup}.
    - Installeer via het bestaande pad (`orcon.py ota-install`, getekend met K_dev), in de bekende volgorde: eerst RX-only (app0), dan control (app1). Dan vertrouwt ook de rollback-sleuf K_rel.
    - Mislukt een proefstart, dan valt het board terug op een image dat K_dev vertrouwt. Je kunt het dus altijd opnieuw proberen.
-4. **Eerste publieke release R1**: een releasebuild die {K_rel, K_rel_backup} vertrouwt, getekend met `orcon.py release --key /Volumes/<drager>/release-key.pem`.
+4. **Eerste publieke release R1**: een releasebuild die {K_rel, K_rel_backup} vertrouwt, getekend met `orcon.py release --key /Volumes/<drager>/release-key.pem` (oorspronkelijk ontwerp: straks tekent de gecontroleerde releasejob).
    - Openssl vraagt de wachtwoordzin. Het bestand wordt nergens heen gekopieerd.
    - Je eigen board accepteert R1 ook.
 5. **K_dev uit publieke builds.** Vanaf R1 bevat geen publieke build K_dev. K_dev tekent alleen nog ontwikkelbuilds voor je eigen board.

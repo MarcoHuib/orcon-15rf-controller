@@ -28,7 +28,7 @@ _*.html
 .flashtools/
 
 # Raw hardware data, measurements, backups and credentials: keep local, never commit.
-# Test fixtures must be synthetic (tools/check_privacy.py enforces this in CI).
+# Test fixtures must be synthetic (tools/check_privacy.py enforces this; tools/test_local.ps1 runs it).
 *.log
 !test/fixtures/**/synthetic-*.log
 *.jsonl

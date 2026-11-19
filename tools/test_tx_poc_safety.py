@@ -296,22 +296,28 @@ else: raise AssertionError('hold guard accepted mutation unauthenticated-hold')
 # Workflows: none runs today (builds, tests and signing are local), but Actions are not banned for good. Every
 # workflow file is pinned by content, because text checks on YAML can be bypassed (blank lines, if: false,
 # continue-on-error, a second job, ...). The old RX-only workflow is pinned as an inert stub (manual start only,
-# no permissions, no action, stops at once), so it cannot become active by accident. A new workflow, such as a
+# no permissions, no action, stops at once), so changing it fails this test. This runs locally (before every push);
+# GitHub does not consult it, and a manual run on a ref from before the stub uses the old file. A new workflow, such as a
 # future release build, is added deliberately: first its own security checks here (least permissions; the OTA
 # signing key only in the release-signing job, from a protected GitHub Environment secret, never in the repository
 # or in push, PR or test workflows; nothing installed on a board without the owner's consent), then name and hash.
-WORKFLOWS={'heltec-v2-rx-only.yml':'df37f28e4bdf8fef7195bed632d60d5bf1feebd6d7240a49721860bae9aa8f72'}   # file -> sha256 of the reviewed content
-def workflows_reviewed(files):                  # files: name -> text of every .yml/.yaml in .github/workflows
+WORKFLOWS={'heltec-v2-rx-only.yml':'fbf3af64a87be3822246c0adc17ba3cb5ec42c1ddb725c455153f8fd4ea7a563'}   # file -> sha256 of the reviewed content
+def workflows_reviewed(files):   # files: name -> bytes (None: not a regular file) of every *.yml/*.yaml entry
     assert sorted(files)==sorted(WORKFLOWS),('workflow files differ from the reviewed list',sorted(files))
-    for n,text in files.items():
-        h=hashlib.sha256(text.replace('\r\n','\n').encode()).hexdigest()
+    for n,data in files.items():
+        assert isinstance(data,bytes),(n,'must be a regular file, not a symlink or a directory')
+        h=hashlib.sha256(data.replace(b'\r\n',b'\n')).hexdigest()
         assert h==WORKFLOWS[n],(n,'changed: review it (and its own security checks), then update its pinned hash',h)
 wf_dir=Path('.github/workflows')
-wf_files={x.name:x.read_text() for x in sorted(wf_dir.iterdir()) if x.is_file() and x.suffix.lower() in ('.yml','.yaml')} if wf_dir.is_dir() else {}
+wf_files={x.name:(x.read_bytes() if x.is_file() and not x.is_symlink() else None)
+          for x in sorted(wf_dir.iterdir()) if x.name.lower().endswith(('.yml','.yaml'))} if wf_dir.is_dir() else {}
 workflows_reviewed(wf_files)
-stub=wf_files['heltec-v2-rx-only.yml']; pushed=stub.replace('  workflow_dispatch:\n','  workflow_dispatch:\n  push:\n',1); assert pushed!=stub
-for name,files in [('stub-push-trigger',{'heltec-v2-rx-only.yml':pushed}),('unreviewed-workflow',{**wf_files,'release.yaml':'on: push\n'}),
-                   ('stub-removed',{})]:
+stub=wf_files['heltec-v2-rx-only.yml'].replace(b'\r\n',b'\n'); pushed=stub.replace(b'  workflow_dispatch:\n',b'  workflow_dispatch:\n  push:\n',1)
+assert pushed!=stub and 'unreviewed.yaml' not in WORKFLOWS
+for name,files in [('stub-push-trigger',{**wf_files,'heltec-v2-rx-only.yml':pushed}),
+                   ('unreviewed-workflow',{**wf_files,'unreviewed.yaml':b'on: push\n'}),
+                   ('stub-removed',{k:v for k,v in wf_files.items() if k!='heltec-v2-rx-only.yml'}),
+                   ('stub-symlink',{**wf_files,'heltec-v2-rx-only.yml':None})]:
     try: workflows_reviewed(files)
     except AssertionError: print('PASS workflow guard rejects',name)
     else: raise AssertionError('workflow guard accepted '+name)

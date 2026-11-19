@@ -6,7 +6,7 @@ Dit is een voorstel. Er is nog niets gepubliceerd. Publiceren gebeurt alleen na 
 
 - **Nu geen GitHub Actions.** Bouwen, testen en ondertekenen gebeurt lokaal. Dat sluit ook GitHub Pages met "deploy from a branch" uit, want dat draait intern de Actions-workflow `pages-build-deployment`.
 - **Besluit (2026-11-19, nog niet gebouwd).** Officiële releases komen straks uit GitHub Actions: een GitHub Release met versienummer, de firmware automatisch gebouwd en getest, ondertekend, en het ondertekende `.orconfw`-pakket gepubliceerd. De Heltec meldt dat er een update is en installeert pas na toestemming van de aangemelde eigenaar. De private OTA-signingsleutel staat nooit in de repository en is nooit beschikbaar voor gewone push-, PR- of testworkflows: alleen de gecontroleerde ondertekeningsjob van een officiële release leest hem, als secret van een beveiligde GitHub Environment. Tot dan geldt het lokale proces in dit document.
-- **Workflows nu.** De enige workflow (`.github/workflows/heltec-v2-rx-only.yml`) is uitgeschakeld: hij reageert alleen op `workflow_dispatch` en stopt dan meteen met een foutmelding, zonder iets te bouwen, te testen of te uploaden. Een push, tag of release start dus niets. `tools/test_tx_poc_safety.py` pint elk workflowbestand op inhoud (`WORKFLOWS`) en faalt bij een gewijzigde of nieuwe workflow. Een toekomstige release-workflow wordt bewust toegevoegd: eerst eigen beveiligingscontroles en een review, dan opname in die lijst; voor de sleutel geldt het besluit hierboven. Nu staat de sleutel alleen lokaal en heeft de repository geen secrets, variabelen of environments. Controleer dit opnieuw vóór elke publicatie.
+- **Workflows nu.** De enige workflow (`.github/workflows/heltec-v2-rx-only.yml`) is uitgeschakeld: hij reageert alleen op `workflow_dispatch` en stopt dan meteen met een foutmelding, zonder iets te bouwen, te testen of te uploaden. Een push, tag of release start dus niets. `tools/test_tx_poc_safety.py` pint elk workflowbestand op inhoud (`WORKFLOWS`) en faalt bij een gewijzigde of nieuwe workflow. Die controle draait lokaal, vóór elke push; GitHub raadpleegt hem niet. Een handmatige start gebruikt het workflowbestand van de gekozen branch of tag: vóór de merge van PR #15 heeft `main` nog de oude workflow, daarna geen enkele ref meer (stand 2026-11-19: alleen `main` en de PR-branch, geen tags). Een toekomstige release-workflow wordt bewust toegevoegd: eerst eigen beveiligingscontroles en een review, dan opname in die lijst; voor de sleutel geldt het besluit hierboven. Nu staat de sleutel alleen lokaal en heeft de repository geen secrets, variabelen of environments. Controleer dit opnieuw vóór elke publicatie.
 - **Reproduceerbaar.** De bouw is vastgepind: platform `espressif32@6.7.0` en de lib-versies in `platformio.ini`. Het lokale bewijspakket werkt zoals in [`LOCAL_USB_RELEASE.md`](LOCAL_USB_RELEASE.md).
 
 ## Wat een release bevat (per versie N)
@@ -36,7 +36,7 @@ Dit is een voorstel. Er is nog niets gepubliceerd. Publiceren gebeurt alleen na 
 - Geen eigen hosting nodig.
 
 **Later, optioneel.** Een eigen pagina met ESP Web Tools (één knop, met een manifest).
-- Die moet buiten GitHub Pages gehost worden: Pages draait Actions.
+- Zolang er geen Actions draaien, moet die buiten GitHub Pages gehost worden: Pages draait Actions. Met de release-workflow uit het besluit kan dat opnieuw worden afgewogen.
 - Een externe statische host is een nieuwe afhankelijkheid en vraagt een apart besluit.
 
 ## Updates

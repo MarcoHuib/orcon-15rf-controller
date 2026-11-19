@@ -69,7 +69,7 @@ De instelling gebruikt een apart lokaal endpoint; de RX-only-allowlist van
   stand (Auto: opnieuw 30 s; Off: 30 s peek; On: geen verandering) en een
   langere druk (één actie). Controleer dat reset + ingedrukt houden van PRG
   nog steeds de downloadmodus selecteert en flashen met `tools/heltec_v2.sh`
-  ongewijzigd werkt. Controleer het hoofdpagina-icoon (aan/uit/directe reactie)
+  ongewijzigd werkt. Controleer *Scherm nu aan of uit* onder Systeem → OLED-scherm (aan/uit/directe reactie)
   en na het uitschakelen dat `/api/state` bereikbaar blijft, uptime doorloopt,
   frames blijven binnenkomen en TX-tellers nul blijven. Controleer ook de
   SoftAP-modus.
@@ -105,5 +105,5 @@ niet gebruikt: de suites draaien lokaal, gewoon en met de sanitizer-vlaggen via
 `CXXFLAGS`. Faalt de sanitizer-runtime op de Mac zelf, dan is die run NOT TESTED.
 
 Voor de volgende hardwarestappen blijft afzonderlijk akkoord nodig: eerst een
-gecontroleerde flash en korte OLED-test, daarna de 24-uurs RX/WiFi-duurtest met
-MQTT uit. Die stappen zijn geen onderdeel van de lokale tests.
+gecontroleerde flash en korte OLED-test, daarna de 24-uurs RX/WiFi-duurtest.
+Die stappen zijn geen onderdeel van de lokale tests.

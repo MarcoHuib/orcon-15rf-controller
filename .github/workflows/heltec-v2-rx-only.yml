@@ -10,8 +10,10 @@ name: Heltec V2 RX-only firmware (disabled - checks run locally)
 #   - packaging for USB/OTA (markers, forbidden OTA strings, local evidence): tools/heltec_v2.sh package
 # It has no push, pull_request, tag or schedule trigger. A manual run stops at once with this notice and
 # builds, tests, signs, uploads and deploys nothing, so it can never pass for a real check.
-# tools/test_tx_poc_safety.py pins every workflow file by content (WORKFLOWS): this stub cannot change and no
-# workflow can be added without a deliberate, reviewed update there. A future release workflow is a separate
+# tools/test_tx_poc_safety.py pins every workflow file by content (WORKFLOWS): that local test fails when this
+# stub changes or a workflow is added without a reviewed update there (run it before every push; GitHub does
+# not consult it). A manual run uses the file of the branch or tag chosen: a ref from before this stub (main
+# before the merge of PR #15) still has the old workflow. A future release workflow is a separate
 # file with its own security checks: only its release-signing job may read the OTA signing key, as a secret of
 # a protected GitHub Environment. The key is never in the repository or available to push, PR or test workflows.
 on:

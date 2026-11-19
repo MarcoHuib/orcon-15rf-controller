@@ -26,7 +26,7 @@ compileert niet (`#error`).
 | Radio | SX1276-backend heeft geen TX-pad; `sendFrame()` weigert; `tools/test_tx_poc_safety.py` weigert `transmit`/`startTransmit`/`transmitDirect` in de backend |
 | Logica (`orcon.cpp`) | elke TX-, pairing-, keeper- en selftestfunctie weigert vóór enige toestandswijziging (`RX_ONLY_REFUSE`); `tx()` registreert alleen echt verzonden frames; `tick()` doet niets |
 | API | het RX-only-image registreert `/api/cmd` en `/api/ids` niet. Alleen de oude build zonder webaanmelding had `/api/cmd`: daar werd elke sleutel buiten `maskids`/`showfilter`/`roomidx` geweigerd (403 `{"err":"rx-only"}`), zonder gedeeltelijke toepassing of NVS-schrijfactie |
-| Netwerkupdate | ArduinoOTA en `/update` zijn weggecompileerd; `tools/test_local.ps1` en `tools/heltec_v2.sh` controleren dat het image die strings niet bevat |
+| Netwerkupdate | ArduinoOTA en `/update` zijn weggecompileerd (broncontrole in `tools/test_tx_poc_safety.py`); `tools/test_local.ps1` en `tools/heltec_v2.sh` controleren dat het image geen `ArduinoOTA`, `auth_upload`, `Updater.cpp` of `Firmware update (OTA)` bevat |
 | MQTT | verwijderd: geen broker, Home Assistant-discovery of Domoticz. `/api/state` meldt `mqtt_on:false` en `mqtt_connected:false` voor bestaande lezers (`tools/rxmon_soak.py`). De oude NVS-sleutels `mqtt` en `r0`–`r6` blijven ongemoeid, zodat een ouder image na een rollback ze nog vindt. |
 | Zichtbaarheid | state-JSON `rx_only:true`, `fw`, `tx_refused`, `cmd_rejected`; de webinterface toont *Verbonden · alleen ontvangen* en bij Firmware *RX-only: alleen ontvangen*; de seriële opstartuitvoer meldt `RX-ONLY TEST FIRMWARE` (ook de OTA-markering van dit image) |
 
