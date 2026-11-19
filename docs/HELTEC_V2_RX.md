@@ -56,8 +56,7 @@ Model (`test_rxpipe`), géén hardware: bij een DNS-storing van 5 s, trage HTTP 
 
 - **Unitstatus** komt alleen van de **expliciet gekozen** unit: `fan_id`, opgeslagen in NVS en in te stellen via `/api/ids`. In RX-only wordt nooit automatisch een unit gekozen; zonder gekozen unit is er geen unitstatus.
 - **Een 22F1 van een afstandsbediening aan die unit** wordt apart bewaard in `remote_cmd`/`remote_id`/`remote_age`. `remote_confirmed` wordt pas waar als de unit zelf binnen 10 s die stand meldt. `mode` en `mode_age` komen alleen van de unit.
-- **`/api/log` → `devices`** toont alle gehoorde afzenders met hun rol (op basis van berichten), aantal, leeftijd en RSSI. Dat is alleen discovery en kiest nooit iets.
-- **Logpagina:** de eigen unit kies je expliciet uit de lijst van gehoorde units, met één knop per unit. Die knop vult alleen het veld in; opslaan gebeurt pas met "Apply & save". "Use detected" vult nooit de unit in en is verborgen op RX-only.
+- **`/api/setup/state` → `remotes`** toont de recent gehoorde afstandsbedieningen (rol op basis van berichten). Dat is alleen discovery en kiest nooit iets; de oude `/log`-pagina en `/api/log` zijn verwijderd (de RF-console van de webinterface toont het RF-verkeer).
 
 ## Uitgangsmeting (firmware d82ffa3)
 

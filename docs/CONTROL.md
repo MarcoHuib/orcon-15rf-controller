@@ -69,7 +69,7 @@ Onderstaand pad met de OTA-sleutel werkt alleen nog op een gemigreerd apparaat (
 
 **Wat beschermd is**
 - **Achter de login:** bediening, profielen, uitlezen, koppelen, en WiFi, OLED, herstarten en "WiFi vergeten".
-- **Open, alleen lezen:** console (ID's gemaskeerd), capture, diag, OTA-status, `/api/state` en `/api/log`. Daardoor werkt `orcon.py logs` zonder wachtwoord.
+- **Open, alleen lezen:** console (ID's gemaskeerd), capture, diag, OTA-status en `/api/state`. Daardoor werkt `orcon.py logs` zonder wachtwoord.
 - **OTA:** ongewijzigd, beveiligd met een eigen handtekening.
 - **Logs:** nooit wachtwoorden of codes, ook niet in de console.
 

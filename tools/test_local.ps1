@@ -108,12 +108,12 @@ if ($Sanitizer -eq 'None') {
     $null = Invoke-Check 'rxmon-soak' $SerialPython @('-B','tools/test_rxmon_soak.py')
     $null = Invoke-Check 'privacy' 'python3' (@('-B','tools/check_privacy.py') + $files)
     $null = Invoke-Check 'node-version' 'node' @('--version')
-    foreach ($page in @('legacy','poc')) {
+    foreach ($page in @('poc')) {
         $binary = Join-Path $OutputDirectory ('dump-' + $page)
-        $source = if ($page -eq 'legacy') {'test/dump_pages.cpp'} else {'test/dump_tx_poc.cpp'}
+        $source = 'test/dump_tx_poc.cpp'
         $code = Invoke-Check ('compile-pages-' + $page) $Compiler @('-std=c++17','-DPROGMEM=','-I','src','-I','test/shim',$source,'-o',$binary)
         if ($code -ne 0) { continue }
-        $indices = if ($page -eq 'legacy') {0..1} else {0}
+        $indices = 0
         foreach ($i in $indices) {
             $name = 'page-' + $page + '-' + $i
             $code = Invoke-Check $name $binary @([string]$i)

@@ -140,7 +140,7 @@ Alleen lezen, dezelfde Host-controle als de console. Houdt de laatste 8 volledig
 `1FC9`- en `10E0`-frames vast (alle payloadbytes, volledige adressen, `len`, RSSI,
 volgnummer), in RAM en niet in flash. De console toont zes bytes en daarna `… (N B)`.
 Gevuld vanuit `onFrame` in de hoofdlus, na de RX-wachtrij, dus de ontvangst wacht er
-nooit op. De ID's zijn ongemaskeerd, net als in `/api/log`; sla een capture alleen lokaal
+nooit op. De ID's zijn ongemaskeerd; sla een capture alleen lokaal
 op in `captures/`, dat in `.gitignore` staat.
 
 ### Koppelen (alleen TX-builds)

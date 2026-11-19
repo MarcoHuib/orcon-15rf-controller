@@ -61,13 +61,8 @@ def listen_only_guards():
     for frag in ("ArduinoOTA.begin()", "ArduinoOTA.handle()", 'server.on("/update"'):
         i = net.index(frag)
         assert net.rfind("#if !RX_ONLY", 0, i) > net.rfind("#endif", 0, i), f"{frag} not gated by !RX_ONLY"
-    # unit selection: the log page never fills our unit from the single "seen fan" slot
-    web = Path("src/web_page.h").read_text()
-    log_page = web.split("static const char LOG_HTML[]", 1)[1].split(')LOG";', 1)[0]
-    assert "seen_fan" not in log_page and "seenF" not in log_page, "log page uses seen_fan for selection"
-    clone = log_page.split("$('#clone').onclick=", 1)[1].split("\n", 1)[0]
-    assert "#fan" not in clone, "Use-detected/clone button fills the unit"
-    print("PASS: RX-only command, OTA and update gates present; unit is selected explicitly")
+    # (the log page's unit-selection check went with the page: /log is gone, asserted below)
+    print("PASS: RX-only command, OTA and update gates present")
     # periodic TX: tick() is called for TX builds only (tools/check_tick.py, also used by
     # heltec_v2.sh verify), and tick() refuses itself on RX-only
     import subprocess
@@ -106,16 +101,16 @@ legacy=legacy.split('#endif // ORCON_TX_POC routes',1)[0]
 on=lambda block:set(re.findall(r'server\.on\(\s*"([^"]+)"',block))
 # Static route proof (runtime 403 needs hardware): exactly these PoC routes, every legacy one absent.
 assert on(routes)=={'/','/api/tx-poc/state','/api/tx-poc/mode','/api/oled'},on(routes)
-legacy_routes=on(legacy); assert {'/api/cmd','/api/ids','/api/wifi','/api/log','/update','/api/state'}<=legacy_routes
+legacy_routes=on(legacy); assert {'/api/cmd','/api/ids','/api/wifi','/update','/api/state'}<=legacy_routes
 assert not (legacy_routes-{'/','/api/oled'})&on(routes)
-# Phase-2 cleanup: the legacy dashboard pages and the house image are gone from every image.
-assert not {'/dashboard','/wifi','/widget','/widget.html','/flow','/house.jpg','/debug'}&on(net),on(net)
+# Phase-2 cleanup: the legacy dashboard pages, the house image and the old RF log are gone from every image.
+assert not {'/dashboard','/wifi','/widget','/widget.html','/flow','/house.jpg','/debug','/log','/api/log'}&on(net),on(net)
 assert 'server.onNotFound([](){ server.send(403,' in routes
 # Web control: read-only monitoring only; the control image adds its settings routes, each one
 # behind the web login (setupweb::authorize), nothing else.
 webctl_base,ctl_block=webctl.split('#if ORCON_TX_CONTROL\n',1)
 ctl_block,webctl_tail=ctl_block.split('#endif',1)
-assert on(webctl_base+webctl_tail)=={'/log','/api/log','/api/state'},on(webctl_base+webctl_tail)
+assert on(webctl_base+webctl_tail)=={'/api/state'},on(webctl_base+webctl_tail)
 assert on(ctl_block)=={'/api/netcfg','/api/scan','/api/wifi','/api/oled'},on(ctl_block)
 assert all('setupweb::authorize(' in l for l in ctl_block.splitlines() if 'server.on(' in l),ctl_block
 # RX-only with the web login (the rollback image): settings behind the login, no identity or command route.

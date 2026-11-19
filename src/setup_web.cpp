@@ -869,7 +869,7 @@ static void consoleTick(uint32_t now) {
 // ---- Pairing capture: complete 1FC9/10E0 frames ------------------------------------
 // The console shows six payload bytes; protocol work on the bind offer needs every byte.
 // Filled from onFrame (loop task, after the RX queue), so RX timing is never touched.
-// RAM only: nothing is written to flash; the IDs are unmasked like /api/log.
+// RAM only: nothing is written to flash; the IDs are unmasked.
 static const uint8_t CAP_N = 8;
 struct Captured { uint32_t ms = 0, seq = 0; int16_t rssi = 0; ramses::Frame f; };
 static Captured g_cap[CAP_N];

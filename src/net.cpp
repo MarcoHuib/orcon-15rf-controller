@@ -1,4 +1,4 @@
-// net.cpp — WiFi (STA + SoftAP), web UI + setup + RF log, MQTT, OLED.
+// net.cpp — WiFi (STA + SoftAP), web UI + setup, MQTT, OLED.
 // WiFi/MQTT settings AND device IDs persist in NVS (Preferences).
 #include "net.h"
 #include "config.h"
@@ -10,7 +10,6 @@
 #include "oled_power.h"
 #include "wifi_watch.h"
 #include <atomic>
-#include "web_page.h"
 #include "setup_web.h"
 #include "rf_console.h"
 #include <esp_system.h>
@@ -32,6 +31,7 @@
 #if !RX_ONLY
 #include <ArduinoOTA.h>
 #include <Update.h>
+#include "web_page.h"   // UPDATE_HTML
 #endif
 #include <WebServer.h>
 #include <WiFiClient.h>
@@ -256,7 +256,7 @@ static size_t buildStateJson(char* out, size_t cap) {
     d["autorestore"] = orcon::autoRestore();
     d["rx_n"]      = s.rxCount;
     d["tx_n"]      = s.txCount;
-    d["uptime_ms"] = millis();  // device monotonic time for RF-log age display
+    d["uptime_ms"] = millis();  // device monotonic time (uptime)
     d["rx_only"]   = (bool)RX_ONLY;   // receive-only firmware: commands are refused
     d["mqtt_on"]   = mqttOn();
     d["mqtt_connected"] = mqttOn() && mqtt.connected();
@@ -396,7 +396,6 @@ static const char* applyCommand(JsonDocument& d) {
 // ---------------------------------------------------------------------------
 // HTTP handlers
 // ---------------------------------------------------------------------------
-static void handleLogPg() { server.send_P(200, "text/html", LOG_HTML);  }
 #if !RX_ONLY
 static void handleUpdatePage() { server.send_P(200, "text/html", UPDATE_HTML); }
 static void handleUpdateUpload() {
@@ -441,23 +440,6 @@ static void handleCmd() {
         server.send(403, "application/json", b); return;
     }
     server.send(200, "application/json", "{\"ok\":1}");
-}
-
-// GET /api/log -> { log:[...], devices:[...], seen_remote, seen_fan }  (devices = discovery only)
-static void handleLog() {
-    static char buf[7168];
-    size_t n = snprintf(buf, sizeof(buf), "{\"log\":");
-    n += rlog::toJson(buf + n, sizeof(buf) - n - 1400);     // leave room for the device list
-    n += snprintf(buf + n, sizeof(buf) - n, ",\"devices\":");
-    n += rlog::devicesJson(buf + n, sizeof(buf) - n - 160);
-    const rlog::Seen& s = rlog::seen();
-    char rem[16] = "", fan[16] = "";
-    if (s.haveRemote) idStr(s.remote, rem, sizeof(rem));
-    if (s.haveFan)    idStr(s.fan,    fan, sizeof(fan));
-    snprintf(buf + n, sizeof(buf) - n,
-             ",\"seen_remote\":\"%s\",\"seen_fan\":\"%s\",\"uptime_ms\":%lu}",
-             rem, fan, (unsigned long)millis());
-    server.send(200, "application/json", buf);
 }
 
 // POST /api/ids {us_class,us_serial,fan_class,fan_serial}
@@ -1337,10 +1319,8 @@ void begin() {
     // No legacy command, ID, WiFi/config, log, setup or update routes in the PoC.
     server.onNotFound([](){ server.send(403,"application/json","{\"error\":\"route-disabled-in-poc\"}"); });
 #elif ORCON_WEB_CONTROL
-    // Wizard control + existing read-only RX monitoring. Legacy mutations stay absent.
+    // Wizard control + the read-only /api/state. Legacy mutations stay absent.
     setupweb::begin(server);
-    server.on("/log", HTTP_GET, handleLogPg);
-    server.on("/api/log", HTTP_GET, handleLog);
     server.on("/api/state", HTTP_GET, handleState);
 #if ORCON_TX_CONTROL
     // The setup page's WiFi and OLED settings: logged in only (WiFi also from the setup AP).
@@ -1352,13 +1332,11 @@ void begin() {
     server.onNotFound([](){ if (captiveRedirect()) return; server.send(403,"application/json","{\"error\":\"route-disabled-in-web-control\"}"); });
 #else
     setupweb::begin(server);            // "/" = setup wizard + /api/setup/*, /api/remote/*
-    server.on("/log",       handleLogPg);
 #if !RX_ONLY
     server.on("/update",    HTTP_GET,  handleUpdatePage);
     server.on("/update",    HTTP_POST, handleUpdateDone, handleUpdateUpload);
 #endif
     server.on("/api/state", handleState);
-    server.on("/api/log",   handleLog);
     server.onNotFound([](){ if (captiveRedirect()) return; server.send(404, "text/plain", "Not found"); });
 #if ORCON_WEB_AUTH
     // Heltec V2 RX-only (the rollback image): settings need the web login. Identity editing and
