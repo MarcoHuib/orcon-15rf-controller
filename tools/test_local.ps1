@@ -78,7 +78,6 @@ $suites = [ordered]@{
     orcon_rx=(@('-DRX_ONLY=1','test/test_orcon.cpp') + $orcon)
     orcon_v3=(@('-DRX_ONLY=0','test/test_orcon.cpp') + $orcon)
     rxpipe=@('-pthread','test/test_rxpipe.cpp','src/rx_stream.cpp','src/ramses_codec.cpp')
-    netcfg=@('test/test_netcfg.cpp')
     oled=@('test/test_oled_power.cpp')
     tx_poc=@('-pthread','-Wall','-Wextra','-Werror','test/test_tx_poc.cpp','src/tx_poc.cpp','src/ramses_codec.cpp','src/orcon_frames.cpp')
     rf_console=@('-Wall','-Wextra','-Werror','test/test_rf_console.cpp','src/rf_console.cpp','src/ramses_codec.cpp')
@@ -108,12 +107,12 @@ if ($Sanitizer -eq 'None') {
     $null = Invoke-Check 'rxmon-soak' $SerialPython @('-B','tools/test_rxmon_soak.py')
     $null = Invoke-Check 'privacy' 'python3' (@('-B','tools/check_privacy.py') + $files)
     $null = Invoke-Check 'node-version' 'node' @('--version')
-    foreach ($page in @('legacy','poc')) {
+    foreach ($page in @('poc')) {
         $binary = Join-Path $OutputDirectory ('dump-' + $page)
-        $source = if ($page -eq 'legacy') {'test/dump_pages.cpp'} else {'test/dump_tx_poc.cpp'}
+        $source = 'test/dump_tx_poc.cpp'
         $code = Invoke-Check ('compile-pages-' + $page) $Compiler @('-std=c++17','-DPROGMEM=','-I','src','-I','test/shim',$source,'-o',$binary)
         if ($code -ne 0) { continue }
-        $indices = if ($page -eq 'legacy') {0..6} else {0}
+        $indices = 0
         foreach ($i in $indices) {
             $name = 'page-' + $page + '-' + $i
             $code = Invoke-Check $name $binary @([string]$i)
@@ -124,8 +123,6 @@ if ($Sanitizer -eq 'None') {
             [IO.File]::WriteAllText($js,($scripts -join "`n;`n"))
             $null = Invoke-Check ('syntax-' + $name) 'node' @('--check',$js)
             if ($page -eq 'poc') { $null = Invoke-Check 'poc-web' 'node' @('test/test_tx_poc_web.js') 30 $html }
-            if ($page -eq 'legacy' -and $i -eq 0) { $null = Invoke-Check 'oled-main-web' 'node' @('test/test_oled_main.js') 30 $html }
-            if ($page -eq 'legacy' -and $i -eq 5) { $null = Invoke-Check 'oled-setup-web' 'node' @('test/test_oled_setup.js') 30 $html }
         }
     }
 }
@@ -160,7 +157,7 @@ if ($Firmware) {
         $firmwareText = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes((Join-Path $dest 'firmware.bin')))
         $imageOk = $firmwareText.Contains($commit)
         if ($isV2) {
-            foreach ($forbidden in @('ArduinoOTA','auth_upload','Updater.cpp')) { if ($firmwareText.Contains($forbidden)) { $imageOk = $false } }
+            foreach ($forbidden in @('Firmware update (OTA)','ArduinoOTA','auth_upload','Updater.cpp')) { if ($firmwareText.Contains($forbidden)) { $imageOk = $false } }
             if ($envName -eq 'heltec_v2_sx1276_rftest') {
                 # RF test image: the capped RF marker, never the RX-only/dry-run markers.
                 $imageOk = $imageOk -and ($firmwareText -match 'SX1276 direct RX \+ txpoc packet TX \(RF TEST: max \d+ packets per boot\)') -and
@@ -172,7 +169,7 @@ if ($Firmware) {
                     -not $firmwareText.Contains('tx-poc-dryrun')
             } else {
                 $imageOk = $imageOk -and $firmwareText.Contains('SX1276 direct RX (TX disabled)')
-                if ($envName -eq 'heltec_v2_sx1276') { $imageOk = $imageOk -and $firmwareText.Contains('RX-ONLY TEST FIRMWARE') -and -not $firmwareText.Contains('tx-poc-dryrun') }
+                if ($envName -eq 'heltec_v2_sx1276') { $imageOk = $imageOk -and $firmwareText.Contains('RX-ONLY TEST FIRMWARE') -and -not $firmwareText.Contains('tx-poc-dryrun') -and $firmwareText.Contains('/api/oled') -and $firmwareText.Contains('oled_mode') }
                 else { $imageOk = $imageOk -and $firmwareText.Contains('tx-poc-dryrun') }
             }
             $null = Invoke-Check ('partitions-' + $envName) 'python3' @('-B','tools/check_parts.py',(Join-Path $dest 'partitions.bin'))

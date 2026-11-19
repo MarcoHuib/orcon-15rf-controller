@@ -7,12 +7,12 @@ Branch `feature/heltec-v2-rx-only`.
 Deze repository is publiek.
 
 - **ID's:** de apparaat-ID's in dit document, de tests en de fixtures zijn **gepseudonimiseerd**: de eigen unit, de afstandsbediening en de buurunits hebben fictieve ID's van de vorm `NN:000NNN`. Echte ID's, MAC-adressen, LAN-adressen, seriële opnames en NVS-back-ups blijven lokaal.
-- **Afdwinging:** `.gitignore` sluit dit soort bestanden uit, en `tools/check_privacy.py` (in CI) weigert ze.
+- **Afdwinging:** `.gitignore` sluit dit soort bestanden uit, en `tools/check_privacy.py` (lokaal, ook in `tools/test_local.ps1`) weigert ze.
 
 De geschiedenis van deze branch is op 2026-11-07 herschreven om die gegevens te verwijderen.
 De koppeling tussen oude en nieuwe commit-ID's wordt uitsluitend lokaal, buiten Git bewaard.
 Oude CI-runs met aangetroffen hardwaregegevens en de bijbehorende artifacts zijn verwijderd;
-gebruik voor builds uitsluitend de schone CI-runs op deze branch. Oude commits die niet
+bouw lokaal (`tools/test_local.ps1 -Firmware`, `tools/heltec_v2.sh package`); GitHub Actions wordt niet gebruikt. Oude commits die niet
 meer via branches bereikbaar zijn, kunnen op GitHub mogelijk nog via hun SHA worden
 opgevraagd. Dat blijft voorlopig een privacyrisico.
 
@@ -23,19 +23,19 @@ compileert niet (`#error`).
 
 | Laag | Afdwinging |
 |---|---|
-| Radio | SX1276-backend heeft geen TX-pad; `sendFrame()` weigert; CI weigert `transmit`/`startTransmit`/`transmitDirect` in de backend |
+| Radio | SX1276-backend heeft geen TX-pad; `sendFrame()` weigert; `tools/test_tx_poc_safety.py` weigert `transmit`/`startTransmit`/`transmitDirect` in de backend |
 | Logica (`orcon.cpp`) | elke TX-, pairing-, keeper- en selftestfunctie weigert vóór enige toestandswijziging (`RX_ONLY_REFUSE`); `tx()` registreert alleen echt verzonden frames; `tick()` doet niets |
-| API / MQTT | `/api/cmd` en MQTT: elke sleutel buiten `maskids`/`showfilter`/`roomidx` → hele verzoek geweigerd (403 `{"err":"rx-only"}`), geen gedeeltelijke toepassing, geen NVS-schrijfactie |
-| Netwerkupdate | ArduinoOTA en `/update` zijn weggecompileerd; CI controleert dat het image die strings niet bevat |
-| MQTT | standaard **uit** op RX-only, tot op de setup-pagina "MQTT enabled" met een broker is ingesteld. NVS `mqtt`: afwezig = compile-default, `""` = uit, host = aan. Een lege host bij "aan" wordt geweigerd. Daarnaast: eigen namespace `orcon15rf_rx/…` en HA-node `orcon15rf_rx` (overschrijft nooit een productiebord), geen command-topic, geen HA-bedieningsentiteiten. `mqtt_on` en `mqtt_connected` staan in `/api/state`. |
-| Zichtbaarheid | state-JSON `rx_only:true`, `fw`, `tx_refused`, `cmd_rejected`; elke webpagina toont een RX-ONLY-banner met uitgeschakelde knoppen |
+| API | het RX-only-image registreert `/api/cmd` en `/api/ids` niet. Alleen de oude build zonder webaanmelding had `/api/cmd`: daar werd elke sleutel buiten `maskids`/`showfilter`/`roomidx` geweigerd (403 `{"err":"rx-only"}`), zonder gedeeltelijke toepassing of NVS-schrijfactie |
+| Netwerkupdate | ArduinoOTA en `/update` zijn weggecompileerd (broncontrole in `tools/test_tx_poc_safety.py`); `tools/test_local.ps1` en `tools/heltec_v2.sh` controleren dat het image geen `ArduinoOTA`, `auth_upload`, `Updater.cpp` of `Firmware update (OTA)` bevat |
+| MQTT | verwijderd: geen broker, Home Assistant-discovery of Domoticz. `/api/state` meldt `mqtt_on:false` en `mqtt_connected:false` voor bestaande lezers (`tools/rxmon_soak.py`). De oude NVS-sleutels `mqtt` en `r0`–`r6` blijven ongemoeid, zodat een ouder image na een rollback ze nog vindt. |
+| Zichtbaarheid | state-JSON `rx_only:true`, `fw`, `tx_refused`, `cmd_rejected`; de webinterface toont *Verbonden · alleen ontvangen* en bij Firmware *RX-only: alleen ontvangen*; de seriële opstartuitvoer meldt `RX-ONLY TEST FIRMWARE` (ook de OTA-markering van dit image) |
 
-Beperkingen: de webpagina's tonen nog de (uitgeschakelde) bedieningsknoppen. Er is geen authenticatie op de web-API. Een LAN-gebruiker kan UI-instellingen en `/api/ids`/`/api/wifi` wijzigen, maar kan niet zenden en geen firmware uploaden. USB-flashen blijft altijd mogelijk.
+Instellingen (`/api/wifi`, `/api/oled`, `/api/netcfg`, `/api/scan`) vragen de webaanmelding; `/api/state` en de RF-console zijn openbaar en alleen-lezen. Firmware komt er alleen via ondertekende OTA op (aanmelden vereist) of via USB-flashen.
 
 ## Ontvangst onder netwerkbelasting
 
 - Na `begin()` bezit één FreeRTOS-taak (`ramses_rx`) de SX1276. Die taak heeft prioriteit 3 en draait op de core van de loop, met een periode van 5 ms en task-watchdog. Alleen deze taak raakt SPI en de RX-UART aan.
-- De loop (web, MQTT, WiFi) haalt alleen gedecodeerde frames uit `FrameQueue<32>`. Die queue is lock-free met één producent en één consument. Is hij vol, dan valt het **nieuwste** frame weg en wordt het geteld (`rf_queue_drops`). Gedeelde toestand (`orcon`, `rlog`) wordt alleen in de loop gewijzigd.
+- De loop (web, WiFi) haalt alleen gedecodeerde frames uit `FrameQueue<32>`. Die queue is lock-free met één producent en één consument. Is hij vol, dan valt het **nieuwste** frame weg en wordt het geteld (`rf_queue_drops`). Gedeelde toestand (`orcon`, `rlog`) wordt alleen in de loop gewijzigd.
 - De taak controleert RegOpMode elke seconde. Staat de radio niet in RX, of mislukt de init, dan volgt een begrensde herstart: maximaal 10 per boot, met backoff 1, 2, 4, 8, 16 en 30 s. Daarna blijft `rf_state` op `failed` staan.
 
 Nieuwe meetwaarden (`[rxstat]` en `/api/state`):
@@ -54,10 +54,9 @@ Model (`test_rxpipe`), géén hardware: bij een DNS-storing van 5 s, trage HTTP 
 
 ## Unitselectie
 
-- **Unitstatus** komt alleen van de **expliciet gekozen** unit: `fan_id`, opgeslagen in NVS en in te stellen via `/api/ids`. In RX-only wordt nooit automatisch een unit gekozen; zonder gekozen unit is er geen unitstatus.
+- **Unitstatus** komt alleen van de **expliciet gekozen** unit: `fan_id`, opgeslagen in NVS (gezet bij het koppelen in het control-image; het RX-only-image wijzigt hem niet). In RX-only wordt nooit automatisch een unit gekozen; zonder gekozen unit is er geen unitstatus.
 - **Een 22F1 van een afstandsbediening aan die unit** wordt apart bewaard in `remote_cmd`/`remote_id`/`remote_age`. `remote_confirmed` wordt pas waar als de unit zelf binnen 10 s die stand meldt. `mode` en `mode_age` komen alleen van de unit.
-- **`/api/log` → `devices`** toont alle gehoorde afzenders met hun rol (op basis van berichten), aantal, leeftijd en RSSI. Dat is alleen discovery en kiest nooit iets.
-- **Logpagina:** de eigen unit kies je expliciet uit de lijst van gehoorde units, met één knop per unit. Die knop vult alleen het veld in; opslaan gebeurt pas met "Apply & save". "Use detected" vult nooit de unit in en is verborgen op RX-only.
+- **`/api/setup/state` → `remotes`** toont de recent gehoorde afstandsbedieningen (rol op basis van berichten). Dat is alleen discovery en kiest nooit iets; de oude `/log`-pagina en `/api/log` zijn verwijderd (de RF-console van de webinterface toont het RF-verkeer).
 
 ## Uitgangsmeting (firmware d82ffa3)
 
@@ -142,7 +141,7 @@ Voorwaarde: geen ander programma (Opera/esptool-js, serial monitor) houdt
    - Gedetecteerde drukken (22F1 van 29:000101) ≥ 19/20, met daarnaast de 31D9 van 29:000202.
    - `sync5/sync4` ≈ 0,2–0,3 → H1 gevalideerd (de oude decoder zou alleen `sync5` hebben gehaald).
    - `frames/sync4` ≥ 0,9 → bitfouten zijn geen probleem. Lager → RF-kwaliteit (stap 6).
-   - `ovf` = 0. Is `ovf` > 0, dan is de loop te traag (WiFi/MQTT): dat is een softwarefix, geen RF.
+   - `ovf` = 0. Is `ovf` > 0, dan is de loop te traag (WiFi/web): dat is een softwarefix, geen RF.
 6. **Volgende iteratie, alleen als stap 5 tekortschiet. Eén parameter per build:**
    - a. `RF_RXBW_KHZ` 250 → 125 (SSB). Herhaal stap 3–5 en vergelijk `frames/sync4`, de RSSI van verminkte syncs en het aantal drukken.
    - b. Alleen bij sterke signalen met fouten (`rssi` > −50 dBm): LNA/AGC-experiment.

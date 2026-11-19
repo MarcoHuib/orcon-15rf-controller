@@ -36,7 +36,7 @@ ROLLBACK_COMMIT="d5c39e1b4d1f0ed37defe69b51e3562c36058208"  # immutable local tr
 # offset:image:slot size. NVS (0x9000-0xDFFF) is never written; the merged image is never used.
 FLASH_MAP="0x1000:bootloader.bin:0x7000 0x8000:partitions.bin:0xc00 0xe000:boot_app0.bin:0x2000 0x10000:firmware.bin:0x330000"
 FLASH_HDR="0230"   # image header bytes 2-3: DIO, 8 MB / 40 MHz (as the CI d5c39e1 image on the board)
-LOCAL_REQUIRED="codec frames rx log orcon_rx orcon_v3 rxpipe netcfg oled tx_poc safety-and-negative-compiles privacy poc-web ubsan-host app1 elf-selftest rxmon rxmon-soak flash-tooling flash-local source-stability firmware-heltec_v2_sx1276 firmware-heltec_v2_sx1276_tx_poc_dryrun"
+LOCAL_REQUIRED="codec frames rx log orcon_rx orcon_v3 rxpipe oled tx_poc safety-and-negative-compiles privacy poc-web ubsan-host app1 elf-selftest rxmon rxmon-soak flash-tooling flash-local source-stability firmware-heltec_v2_sx1276 firmware-heltec_v2_sx1276_tx_poc_dryrun"
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 keep() {   # keep <dir> <label>: readbacks of a FAILED verification stay local (.flashtools/ is git-ignored)

@@ -95,30 +95,6 @@
 #define WIFI_PASSWORD    ""
 #define WIFI_AP_NAME     "Orcon15RF-Setup"
 
-#if ORCON_TX_POC
-#define MQTT_ENABLED     0          // no broker, discovery or command route in phase 1
-#else
-#define MQTT_ENABLED     1
-#endif
-#if RX_ONLY
-#define MQTT_HOST        ""             // RX-only: off until a broker is set explicitly
-#else
-#define MQTT_HOST        "192.168.1.10" // TX builds: unchanged default (existing setups)
-#endif
-#define MQTT_PORT        1883
-#define MQTT_USER        ""
-#define MQTT_PASS        ""
-#if RX_ONLY
-// Own namespace so an RX-only test board never overwrites a production board's
-// retained state / Home Assistant entities on the same broker.
-#define MQTT_BASE_TOPIC  "orcon15rf_rx"
-#define MQTT_NODE_ID     "orcon15rf_rx"
-#define MQTT_UID_PREFIX  "orcon_rx_"
-#else
-#define MQTT_BASE_TOPIC  "orcon15rf"   // orcon15rf/state, orcon15rf/cmd, ...
-#define MQTT_NODE_ID     "orcon15rf"
-#define MQTT_UID_PREFIX  "orcon_"      // keep: existing Home Assistant entity IDs
-#endif
 
 // ---------------------------------------------------------------------------
 // Debug

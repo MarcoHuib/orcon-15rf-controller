@@ -1,4 +1,4 @@
-// net.h — WiFi + web UI + MQTT + OLED glue.
+// net.h — WiFi + web UI + OLED glue.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -6,8 +6,8 @@
 namespace net {
 void begin();
 void loop();
-void publishState();          // force an MQTT state publish + OLED refresh
-void notifyStateChanged();     // mark state dirty (publish on next loop)
+void publishState();          // refresh the OLED now (also every 5 s and after a state change)
+void notifyStateChanged();     // mark state dirty (OLED refresh on the next loop)
 
 // accessors for the on-screen System page
 const char* ipAddr();
@@ -15,8 +15,6 @@ const char* ssidName();
 bool        apMode();
 bool        wifiConnected();  // station mode and associated with the configured network
 void        wifiDiag(char* out, size_t n);   // /api/diag: "wifi":{signal, address, outages, last reason},
-const char* mqttHost();
-bool        mqttConnected();
 bool        maskIds();        // privacy setting: mask device IDs in the UI
 void        restartSoon();    // reboot after the HTTP reply has gone out
 void        forgetWifi();     // drop the stored network; the next boot starts the setup AP

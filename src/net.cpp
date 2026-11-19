@@ -1,22 +1,19 @@
-// net.cpp — WiFi (STA + SoftAP), web UI + setup + RF log, MQTT, OLED.
-// WiFi/MQTT settings AND device IDs persist in NVS (Preferences).
+// net.cpp — WiFi (STA + SoftAP), web UI + setup, OLED.
+// WiFi settings AND device IDs persist in NVS (Preferences).
 #include "net.h"
 #include "config.h"
 #include "orcon.h"
 #include "orcon_log.h"
 #include "ramses_radio.h"
 #include "rx_only.h"
-#include "net_cfg.h"
 #include "oled_power.h"
 #include "wifi_watch.h"
 #include <atomic>
-#include "web_page.h"
 #include "setup_web.h"
 #include "rf_console.h"
 #include <esp_system.h>
 #include "ota_signed.h"
 #include "remote_profiles.h"
-#include "house_img.h"
 #if ORCON_OWNER_MODEL
 #include "owner_store.h"
 #include "reset_gesture.h"
@@ -33,10 +30,10 @@
 #if !RX_ONLY
 #include <ArduinoOTA.h>
 #include <Update.h>
+#include "web_page.h"   // UPDATE_HTML
 #endif
 #include <WebServer.h>
 #include <WiFiClient.h>
-#include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <U8g2lib.h>
 #include <Wire.h>
@@ -50,8 +47,6 @@
 namespace net {
 
 static WebServer    server(80);
-static WiFiClient   wifiClient;
-static PubSubClient mqtt(wifiClient);
 static Preferences  prefs;
 #if ORCON_TX_POC && !ORCON_WEB_CONTROL
 static txpoc::Security g_pocSecurity;
@@ -84,7 +79,6 @@ static void restartIn(uint32_t ms);
 #endif
 static bool     g_dirty     = true;
 static uint32_t g_lastPub   = 0;
-static uint32_t g_lastMqtt  = 0;
 static uint32_t g_rebootAt  = 0;
 static char     g_ip[24]    = "0.0.0.0";   // the current address: the OLED and the Host check (DNS rebinding) use it
 static wifiwatch::Watch g_watch;          // the home network in normal operation (wifi_watch.h)
@@ -97,24 +91,15 @@ static bool     g_linkUp = false;         // the station has an address (set by 
 // Tell "offline" from "online at another address" afterwards (an old address then fails ARP by design):
 static uint32_t g_ipChanges = 0, g_lastOutageS = 0;
 
-static String   g_ssid, g_pass, g_mqttHost;
-// MQTT runs only with a broker configured: NVS "mqtt" = "" means off (net_cfg.h).
-static bool mqttOn() { return MQTT_ENABLED && g_mqttHost.length() > 0; }
+static String   g_ssid, g_pass;
 static bool     g_maskIds   = true;   // mask device IDs in the UI (privacy, default on)
 static bool     g_showFilter = true;  // show the filter row (some units never report it)
 
-// Room temperatures for the airflow house: one Domoticz IDX per room, filled
-// live from the broker's "domoticz/out" feed. Order matches the widget's pins.
-static const char* const ROOM_KEYS[7] = {"attic","bed1","bath","bed2","kitchen","living","office"};
-static uint32_t g_roomIdx[7]  = {0,0,0,0,0,0,0};   // 0 = unmapped
-static float    g_roomTemp[7] = {0,0,0,0,0,0,0};
-static uint32_t g_roomTs[7]   = {0,0,0,0,0,0,0};   // 0 = never received
-static uint32_t g_domRx = 0;       // diag: number of domoticz/out messages seen
-static uint32_t g_domLastIdx = 0;  // diag: last IDX seen on domoticz/out
-static uint32_t g_cmdRejected = 0; // RX-only: refused /api/cmd + MQTT requests
+static uint32_t g_cmdRejected = 0; // RX-only: refused /api/cmd requests
 
 // ---------------------------------------------------------------------------
-// Persistent config (NVS): WiFi, MQTT host, device IDs
+// Persistent config (NVS): WiFi, device IDs. Keys of removed features (MQTT "mqtt", Domoticz "r0".."r6")
+// stay in NVS untouched, so an older image (A/B rollback) still finds them.
 // ---------------------------------------------------------------------------
 static void saveIds(uint8_t uc, uint32_t us, uint8_t fc, uint32_t fs);  // fwd
 
@@ -122,7 +107,6 @@ static void loadConfig() {
     prefs.begin("orcon", true);
     g_ssid     = prefs.getString("ssid", WIFI_SSID);
     g_pass     = prefs.getString("pass", WIFI_PASSWORD);
-    g_mqttHost = prefs.getString("mqtt", MQTT_HOST);
     uint32_t uc = prefs.getUInt("uc", DEV_US_CLASS);
     uint32_t us = prefs.getUInt("us", 0);        // 0 => never stored -> generate a unique one
     uint32_t fc = prefs.getUInt("fc", DEV_FAN_CLASS);
@@ -137,7 +121,6 @@ static void loadConfig() {
 #if defined(BOARD_HELTEC_V2)
     g_oledPower.setMode(oledpower::storedMode(prefs.getString("oled_mode", "auto").c_str()), millis());
 #endif
-    for (int i = 0; i < 7; i++) { char rk[4]; snprintf(rk, sizeof(rk), "r%d", i); g_roomIdx[i] = prefs.getUInt(rk, 0); }
     prefs.end();
 #if ORCON_TX_POC && !ORCON_WEB_CONTROL
     // Only existing, fully valid NVS identities are authorized; never generate/write IDs.
@@ -177,13 +160,11 @@ static void saveKeeper() {
     prefs.putBool("ar", orcon::autoRestore());
     prefs.end();
 }
-static void saveWifi(const char* ssid, const char* pass, const char* mqtt) {
-    // Only overwrite a field that was actually provided — otherwise a blank
-    // (e.g. saving just the MQTT host) would wipe the stored WiFi credentials.
+static void saveWifi(const char* ssid, const char* pass) {
+    // Only overwrite a field that was actually provided: an empty password keeps the stored one.
     prefs.begin("orcon", false);
     if (ssid && strlen(ssid)) prefs.putString("ssid", ssid);
     if (pass && strlen(pass)) prefs.putString("pass", pass);
-    if (mqtt && strlen(mqtt)) prefs.putString("mqtt", mqtt);
     prefs.end();
 }
 static void saveIds(uint8_t uc, uint32_t us, uint8_t fc, uint32_t fs) {
@@ -257,10 +238,10 @@ static size_t buildStateJson(char* out, size_t cap) {
     d["autorestore"] = orcon::autoRestore();
     d["rx_n"]      = s.rxCount;
     d["tx_n"]      = s.txCount;
-    d["uptime_ms"] = millis();  // device monotonic time for RF-log age display
+    d["uptime_ms"] = millis();  // device monotonic time (uptime)
     d["rx_only"]   = (bool)RX_ONLY;   // receive-only firmware: commands are refused
-    d["mqtt_on"]   = mqttOn();
-    d["mqtt_connected"] = mqttOn() && mqtt.connected();
+    d["mqtt_on"]   = false;   // no MQTT in this firmware; kept for /api/state readers (tools/rxmon_soak.py)
+    d["mqtt_connected"] = false;
     d["fw"]        = FW_VERSION;
     d["tx_refused"] = s.txRefused;
     d["cmd_rejected"] = g_cmdRejected;
@@ -299,21 +280,13 @@ static size_t buildStateJson(char* out, size_t cap) {
     JsonArray sv = d["saved"].to<JsonArray>();
     for (int i = 0; i < 7; i++) sv.add(orcon::fanSaved(i));
     d["byp_saved"] = orcon::bypassSaved();
-    JsonObject rooms = d["rooms"].to<JsonObject>();        // live room temps (Domoticz IDX)
-    for (int i = 0; i < 7; i++)
-        if (g_roomIdx[i] && g_roomTs[i] && (millis() - g_roomTs[i]) < 3600000UL)
-            rooms[ROOM_KEYS[i]] = g_roomTemp[i];
-    JsonArray ridx = d["room_idx"].to<JsonArray>();         // configured IDX (for the settings form)
-    for (int i = 0; i < 7; i++) ridx.add(g_roomIdx[i]);
-    d["dom_rx"]   = g_domRx;                                 // diag: domoticz/out message count
-    d["dom_last"] = g_domLastIdx;
     size_t need = measureJson(d);
     if (need >= cap) { Serial.printf("[net] state JSON %u B > %u B buffer: skipped\n", (unsigned)need, (unsigned)cap); return 0; }
     return serializeJson(d, out, cap);
 }
 
 // ---------------------------------------------------------------------------
-// Command handling (web POST + MQTT)
+// Command handling (legacy /api/cmd)
 // ---------------------------------------------------------------------------
 // Returns the refused key (RX-only) or nullptr. A refused request is not applied
 // at all: no partial settings, no NVS writes, no TX attempt.
@@ -340,15 +313,6 @@ static const char* applyCommand(JsonDocument& d) {
     if (!d["showfilter"].isNull()) {                        // show/hide the filter row
         g_showFilter = (int)(d["showfilter"] | 0) != 0;
         prefs.begin("orcon", false); prefs.putBool("fltr", g_showFilter); prefs.end();
-    }
-    if (!d["roomidx"].isNull()) {                          // Domoticz IDX per airflow room
-        JsonArray a = d["roomidx"].as<JsonArray>();
-        prefs.begin("orcon", false);
-        for (int i = 0; i < 7; i++) {
-            if (i < (int)a.size()) g_roomIdx[i] = (uint32_t)(a[i] | 0);
-            char rk[4]; snprintf(rk, sizeof(rk), "r%d", i); prefs.putUInt(rk, g_roomIdx[i]);
-        }
-        prefs.end();
     }
     if (!d["selftest"].isNull()) orcon::setSelftest((int)(d["selftest"] | 0) != 0);
     if (!d["connect"].isNull())  orcon::sendConnect();
@@ -397,16 +361,6 @@ static const char* applyCommand(JsonDocument& d) {
 // ---------------------------------------------------------------------------
 // HTTP handlers
 // ---------------------------------------------------------------------------
-static void handleRoot()  { server.send_P(200, "text/html", INDEX_HTML); }
-static void handleWifi()  { server.send_P(200, "text/html", SETUP_HTML); }
-static void handleLogPg() { server.send_P(200, "text/html", LOG_HTML);  }
-static void handleWidget() { server.send_P(200, "text/html", WIDGET_HTML); }
-static void handleFlow()   { server.send_P(200, "text/html", FLOW_HTML);   }
-static void handleHouseImg() {
-    server.sendHeader("Cache-Control", "max-age=86400");
-    server.send_P(200, "image/webp", (PGM_P)HOUSE_JPG, HOUSE_JPG_LEN);
-}
-static void handleDebug()  { server.send_P(200, "text/html", DEBUG_HTML);  }
 #if !RX_ONLY
 static void handleUpdatePage() { server.send_P(200, "text/html", UPDATE_HTML); }
 static void handleUpdateUpload() {
@@ -427,16 +381,14 @@ static void handleUpdateDone() {
 }
 #endif
 
-static char g_stateBuf[3072];                  // loop task only (HTTP + MQTT publish)
+static char g_stateBuf[3072];                  // loop task only (HTTP)
 static void handleState() {
     if (!buildStateJson(g_stateBuf, sizeof(g_stateBuf))) { server.send(500, "application/json", "{\"err\":\"state too large\"}"); return; }
     server.send(200, "application/json", g_stateBuf);
 }
-static void handleNetCfg() {   // current WiFi SSID + MQTT host, to prefill the setup page
+static void handleNetCfg() {   // current WiFi SSID, to prefill the setup page
     JsonDocument d;
     d["ssid"] = g_ssid;
-    d["mqtt"] = g_mqttHost;
-    d["mqtt_on"] = mqttOn();
     char buf[192]; serializeJson(d, buf, sizeof(buf));
     server.send(200, "application/json", buf);
 }
@@ -451,23 +403,6 @@ static void handleCmd() {
         server.send(403, "application/json", b); return;
     }
     server.send(200, "application/json", "{\"ok\":1}");
-}
-
-// GET /api/log -> { log:[...], devices:[...], seen_remote, seen_fan }  (devices = discovery only)
-static void handleLog() {
-    static char buf[7168];
-    size_t n = snprintf(buf, sizeof(buf), "{\"log\":");
-    n += rlog::toJson(buf + n, sizeof(buf) - n - 1400);     // leave room for the device list
-    n += snprintf(buf + n, sizeof(buf) - n, ",\"devices\":");
-    n += rlog::devicesJson(buf + n, sizeof(buf) - n - 160);
-    const rlog::Seen& s = rlog::seen();
-    char rem[16] = "", fan[16] = "";
-    if (s.haveRemote) idStr(s.remote, rem, sizeof(rem));
-    if (s.haveFan)    idStr(s.fan,    fan, sizeof(fan));
-    snprintf(buf + n, sizeof(buf) - n,
-             ",\"seen_remote\":\"%s\",\"seen_fan\":\"%s\",\"uptime_ms\":%lu}",
-             rem, fan, (unsigned long)millis());
-    server.send(200, "application/json", buf);
 }
 
 // POST /api/ids {us_class,us_serial,fan_class,fan_serial}
@@ -507,7 +442,7 @@ static void handleScan() {
     WiFi.scanDelete();
 }
 
-// POST /api/wifi {ssid,pass,mqtt} -> save + reboot
+// POST /api/wifi {ssid,pass} -> save + reboot
 static void handleWifiSave() {
     JsonDocument d;
     if (deserializeJson(d, server.arg("plain"))) {
@@ -515,157 +450,12 @@ static void handleWifiSave() {
     }
     String ssid = d["ssid"] | "";
     String pass = d["pass"] | "";
-    String mqtt = d["mqtt"] | "";
-    mqtt.trim();
-    const MqttSave act = mqttSaveAction(!d["mqtt_on"].isNull(), d["mqtt_on"].as<bool>(), mqtt.c_str());
-    if (act == MqttSave::Invalid) {
-        server.send(400, "application/json", "{\"err\":\"MQTT on needs a broker host or IPv4 (no scheme/port)\"}"); return;
-    }
-    if (ssid.length() == 0 && pass.length() == 0 && act == MqttSave::Keep) {
+    if (ssid.length() == 0 && pass.length() == 0) {
         server.send(400, "application/json", "{\"err\":\"nothing to save\"}"); return;
     }
-    saveWifi(ssid.c_str(), pass.c_str(), "");     // Wi-Fi only; MQTT below
-    if (act != MqttSave::Keep) {
-        prefs.begin("orcon", false);
-        prefs.putString("mqtt", act == MqttSave::Off ? "" : mqtt.c_str());   // "" = explicitly off
-        prefs.end();
-    }
+    saveWifi(ssid.c_str(), pass.c_str());
     server.send(200, "application/json", "{\"ok\":1}");
     g_rebootAt = millis() + 1200;
-}
-
-// ---------------------------------------------------------------------------
-// MQTT
-// ---------------------------------------------------------------------------
-// Cheap IDX scan so the high-volume domoticz/out feed doesn't get a full JSON
-// parse per message (that starves the timing-sensitive RAMSES RX).
-static uint32_t quickIdx(const byte* p, unsigned int len) {
-    for (unsigned int i = 0; i + 4 < len; i++) {
-        if (p[i]=='i' && p[i+1]=='d' && p[i+2]=='x') {
-            unsigned int j = i + 3;
-            while (j < len && (p[j]==' '||p[j]=='"'||p[j]==':')) j++;
-            uint32_t v = 0; bool any = false;
-            while (j < len && p[j]>='0' && p[j]<='9') { v = v*10 + (p[j]-'0'); j++; any = true; }
-            if (any) return v;
-        }
-    }
-    return 0;
-}
-static void mqttCallback(char* topic, byte* payload, unsigned int len) {
-    if (topic && !strcmp(topic, "domoticz/out")) {         // high-volume feed: filter cheaply first
-        g_domRx++;
-        uint32_t idx = quickIdx(payload, len);
-        if (!idx) return;
-        g_domLastIdx = idx;
-        int slot = -1;
-        for (int i = 0; i < 7; i++) if (g_roomIdx[i] == idx) { slot = i; break; }
-        if (slot < 0) return;                              // not one of our rooms -> skip the parse
-        JsonDocument d;
-        if (deserializeJson(d, payload, len)) return;
-        // temp is in "Temp" (weather stations) or "svalue1" (plain Temp / Temp+Hum); "svalue" last
-        float t;
-        if      (!d["Temp"].isNull())    t = d["Temp"].as<float>();
-        else if (!d["svalue1"].isNull()) t = (float)atof(d["svalue1"] | "0");
-        else                             t = (float)atof(d["svalue"]  | "0");
-        g_roomTemp[slot] = t; g_roomTs[slot] = millis();
-        return;
-    }
-    JsonDocument d;                                        // command topic (small, low volume)
-    if (deserializeJson(d, payload, len)) return;
-    applyCommand(d);
-}
-#if MQTT_ENABLED
-// ---- Home Assistant MQTT auto-discovery (Domoticz reads the same format) ----
-static void addDev(JsonDocument& d) {
-    JsonObject dev = d["dev"].to<JsonObject>();
-    dev["ids"].to<JsonArray>().add(MQTT_NODE_ID);
-    dev["name"] = RX_ONLY ? "Orcon RX-only monitor" : "Orcon 15RF";
-    dev["mf"]   = "Orcon (DIY)";
-    dev["mdl"]  = RX_ONLY ? "Heltec V2 SX1276 RX-only" : "HRC400 15RF";
-}
-static void pubCfg(const char* comp, const char* oid, JsonDocument& d) {
-    char buf[640]; size_t n = serializeJson(d, buf, sizeof(buf));
-    char topic[100];
-    snprintf(topic, sizeof(topic), "homeassistant/%s/" MQTT_NODE_ID "/%s/config", comp, oid);
-    mqtt.publish(topic, (const uint8_t*)buf, n, true);
-}
-static void pubSensor(const char* oid, const char* name, const char* key,
-                      const char* unit, const char* dcla) {
-    JsonDocument d;
-    d["name"]    = name;
-    d["uniq_id"] = String(MQTT_UID_PREFIX) + oid;
-    d["stat_t"]  = MQTT_BASE_TOPIC "/state";
-    d["val_tpl"] = String("{{ value_json.") + key + " }}";
-    if (unit && *unit) d["unit_of_meas"] = unit;
-    if (dcla && *dcla) d["dev_cla"]      = dcla;
-    addDev(d);
-    pubCfg("sensor", oid, d);
-}
-static void pubBinary(const char* oid, const char* name, const char* tpl, const char* dcla) {
-    JsonDocument d;
-    d["name"]    = name;
-    d["uniq_id"] = String(MQTT_UID_PREFIX) + oid;
-    d["stat_t"]  = MQTT_BASE_TOPIC "/state";
-    d["val_tpl"] = tpl;
-    d["pl_on"]   = "ON";
-    d["pl_off"]  = "OFF";
-    if (dcla && *dcla) d["dev_cla"] = dcla;
-    addDev(d);
-    pubCfg("binary_sensor", oid, d);
-}
-static void pubSelect(const char* oid, const char* name, const char* valTpl,
-                      const char* cmdTpl, const char** opts, int nopts) {
-    JsonDocument d;
-    d["name"]    = name;
-    d["uniq_id"] = String(MQTT_UID_PREFIX) + oid;
-    d["stat_t"]  = MQTT_BASE_TOPIC "/state";
-    d["val_tpl"] = valTpl;
-    d["cmd_t"]   = MQTT_BASE_TOPIC "/cmd";
-    d["cmd_tpl"] = cmdTpl;
-    JsonArray o = d["options"].to<JsonArray>();
-    for (int i = 0; i < nopts; i++) o.add(opts[i]);
-    addDev(d);
-    pubCfg("select", oid, d);
-}
-static void publishDiscovery() {
-    pubSensor("t_indoor",  "Indoor temperature",  "t_indoor",  "\xC2\xB0""C", "temperature");
-    pubSensor("t_outdoor", "Outdoor temperature", "t_outdoor", "\xC2\xB0""C", "temperature");
-    pubSensor("t_supply",  "Supply temperature",  "t_supply",  "\xC2\xB0""C", "temperature");
-    pubSensor("t_exhaust", "Exhaust temperature", "t_exhaust", "\xC2\xB0""C", "temperature");
-    pubSensor("humidity",  "Humidity",            "humidity",  "%",   "humidity");
-    pubSensor("co2",       "CO2",                 "co2",       "ppm", "carbon_dioxide");
-    pubSensor("supply",    "Supply fan",          "supply",    "%",   "");
-    pubSensor("exhaust",   "Exhaust fan",         "exhaust",   "%",   "");
-    pubSensor("filter",    "Filter remaining",    "filter",    "%",   "");
-    pubSensor("rssi",      "RF signal",           "rssi",      "dBm", "signal_strength");
-    pubBinary("bypass", "Bypass open", "{{ 'ON' if value_json.bypass else 'OFF' }}", "opening");
-    pubBinary("fault",  "Fault",       "{{ 'ON' if value_json.fault  else 'OFF' }}", "problem");
-#if !RX_ONLY                       // no command entities on a receive-only board
-    static const char* MODES[] = {"away","auto","low","medium","high","boost"};
-    pubSelect("mode", "Mode", "{{ value_json.mode }}", "{\"mode\":\"{{ value }}\"}", MODES, 6);
-    static const char* BYP[] = {"open","auto","close"};
-    pubSelect("bypass_set", "Bypass control",
-              "{{ 'open' if value_json.bypass else 'close' }}",
-              "{\"bypass\":\"{{ value }}\"}", BYP, 3);
-#endif
-}
-#endif
-
-static void mqttReconnect() {
-#if MQTT_ENABLED
-    if (!mqttOn() || mqtt.connected() || g_apMode) return;
-    // Back off when the broker is unreachable so a blocking connect() doesn't
-    // repeatedly stall the loop and starve the radio RX. Grows 5s -> 5min.
-    static uint32_t backoff = 5000;
-    if (millis() - g_lastMqtt < backoff) return;
-    g_lastMqtt = millis();
-    String cid = "orcon15rf-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-    bool ok = strlen(MQTT_USER)
-        ? mqtt.connect(cid.c_str(), MQTT_USER, MQTT_PASS)
-        : mqtt.connect(cid.c_str());
-    if (ok) { if (!RX_ONLY) mqtt.subscribe(MQTT_BASE_TOPIC "/cmd"); mqtt.subscribe("domoticz/out"); publishDiscovery(); g_dirty = true; backoff = 5000; }
-    else    { backoff = backoff < 300000 ? backoff * 2 : 300000; }
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -898,7 +688,7 @@ static void handleOledSave() {
 // WiFi
 // ---------------------------------------------------------------------------
 // Setup-AP password: random per device (stored once), shown on the OLED while the setup AP runs
-// and nowhere else (no serial, HTTP or MQTT).
+// and nowhere else (no serial or HTTP).
 static char g_apPass[13] = "";             // 12 of 31 symbols: ~59 bits against an offline WPA2 attack
 static const char* apPassword() {
     if (g_apPass[0]) return g_apPass;
@@ -1002,7 +792,7 @@ static void wifiNote(uint8_t kind, const char* m) {
 }
 // What holds back the watch's last-resort restart right now (nullptr: nothing). It never cuts into: an
 // unconfirmed update (OWNER-10), the PRG menu, an RF transaction, a read/pair session (web), or a legacy
-// pairing (/api/cmd, MQTT). A learned identity is saved earlier in loop() than staWatch(). An OTA upload runs
+// pairing (/api/cmd). A learned identity is saved earlier in loop() than staWatch(). An OTA upload runs
 // inside server.handleClient(), in this same loop task, so the watch never runs during one; a retry only
 // happens without a connection and only touches WiFi. No timeout overrides these: /api/diag shows the reason
 // (Codex WIFI-10), and a flag that never clears leaves the device retrying, never restarting.
@@ -1080,7 +870,7 @@ static void wifiTestTick(uint32_t now) {
     if (g_wt != WTest::Testing) return;
     if (WiFi.status() == WL_CONNECTED) {
         snprintf(g_wtIp, sizeof(g_wtIp), "%s", WiFi.localIP().toString().c_str());
-        saveWifi(g_wtSsid.c_str(), g_wtPass.c_str(), nullptr);
+        saveWifi(g_wtSsid.c_str(), g_wtPass.c_str());
         g_ssid = g_wtSsid; g_pass = g_wtPass;
         setupweb::note(rfcon::INFO, "WiFi-test geslaagd: netwerk opgeslagen");
         wifiTestEnd(WTest::Connected);
@@ -1347,10 +1137,8 @@ void begin() {
     // No legacy command, ID, WiFi/config, log, setup or update routes in the PoC.
     server.onNotFound([](){ server.send(403,"application/json","{\"error\":\"route-disabled-in-poc\"}"); });
 #elif ORCON_WEB_CONTROL
-    // Wizard control + existing read-only RX monitoring. Legacy mutations stay absent.
+    // Wizard control + the read-only /api/state. Legacy mutations stay absent.
     setupweb::begin(server);
-    server.on("/log", HTTP_GET, handleLogPg);
-    server.on("/api/log", HTTP_GET, handleLog);
     server.on("/api/state", HTTP_GET, handleState);
 #if ORCON_TX_CONTROL
     // The setup page's WiFi and OLED settings: logged in only (WiFi also from the setup AP).
@@ -1362,20 +1150,11 @@ void begin() {
     server.onNotFound([](){ if (captiveRedirect()) return; server.send(403,"application/json","{\"error\":\"route-disabled-in-web-control\"}"); });
 #else
     setupweb::begin(server);            // "/" = setup wizard + /api/setup/*, /api/remote/*
-    server.on("/dashboard", handleRoot);
-    server.on("/wifi",      handleWifi);
-    server.on("/log",       handleLogPg);
-    server.on("/widget",    handleWidget);
-    server.on("/widget.html", handleFlow);
-    server.on("/flow",      handleFlow);
-    server.on("/house.jpg", handleHouseImg);
-    server.on("/debug",     handleDebug);
 #if !RX_ONLY
     server.on("/update",    HTTP_GET,  handleUpdatePage);
     server.on("/update",    HTTP_POST, handleUpdateDone, handleUpdateUpload);
 #endif
     server.on("/api/state", handleState);
-    server.on("/api/log",   handleLog);
     server.onNotFound([](){ if (captiveRedirect()) return; server.send(404, "text/plain", "Not found"); });
 #if ORCON_WEB_AUTH
     // Heltec V2 RX-only (the rollback image): settings need the web login. Identity editing and
@@ -1400,12 +1179,6 @@ void begin() {
 #endif
     server.begin();
 
-#if MQTT_ENABLED
-    if (mqttOn()) mqtt.setServer(g_mqttHost.c_str(), MQTT_PORT);
-    mqtt.setCallback(mqttCallback);
-    mqtt.setBufferSize(3328);  // state JSON (<= 3072) + topic/header; also domoticz/out in
-    mqtt.setSocketTimeout(2);     // cap a blocking connect() at 2s (don't starve RX)
-#endif
     oledDraw();
 }
 
@@ -1428,7 +1201,7 @@ void wifiDiag(char* out, size_t n) {
 }
 bool        maskIds()      { return g_maskIds; }
 void        restartSoon()  { g_rebootAt = millis() + 1200; }
-// Only SSID + password: profiles, MQTT, OLED and IDs stay. An empty SSID makes wifiConnect() start the setup AP.
+// Only SSID + password: profiles, OLED and IDs stay. An empty SSID makes wifiConnect() start the setup AP.
 void        forgetWifi()   {
 #if ORCON_OWNER_MODEL
     eraseWifi();                                 // ours and the WiFi driver's copy
@@ -1437,20 +1210,8 @@ void        forgetWifi()   {
 #endif
     restartSoon();
 }
-const char* mqttHost()     { return g_mqttHost.c_str(); }
-bool        mqttConnected() {
-#if MQTT_ENABLED
-    return mqttOn() && mqtt.connected();
-#else
-    return false;
-#endif
-}
 
 void publishState() {
-    size_t n = buildStateJson(g_stateBuf, sizeof(g_stateBuf));
-#if MQTT_ENABLED
-    if (n && mqttOn() && mqtt.connected()) mqtt.publish(MQTT_BASE_TOPIC "/state", g_stateBuf, true);
-#endif
     oledDraw();
     g_dirty = false;
     g_lastPub = millis();
@@ -1500,9 +1261,6 @@ void loop() {
     if (!g_apMode) ArduinoOTA.handle();
 #endif
     server.handleClient();
-#if MQTT_ENABLED
-    if (mqttOn()) { mqttReconnect(); mqtt.loop(); }
-#endif
     oledTick();
     if (g_dirty || millis() - g_lastPub > 5000) publishState();
 }

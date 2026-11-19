@@ -69,7 +69,7 @@ Onderstaand pad met de OTA-sleutel werkt alleen nog op een gemigreerd apparaat (
 
 **Wat beschermd is**
 - **Achter de login:** bediening, profielen, uitlezen, koppelen, en WiFi, OLED, herstarten en "WiFi vergeten".
-- **Open, alleen lezen:** console (ID's gemaskeerd), capture, diag, OTA-status, `/api/state` en `/api/log`. Daardoor werkt `orcon.py logs` zonder wachtwoord.
+- **Open, alleen lezen:** console (ID's gemaskeerd), capture, diag, OTA-status en `/api/state`. Daardoor werkt `orcon.py logs` zonder wachtwoord.
 - **OTA:** ongewijzigd, beveiligd met een eigen handtekening.
 - **Logs:** nooit wachtwoorden of codes, ook niet in de console.
 
@@ -100,7 +100,7 @@ Onderstaand pad met de OTA-sleutel werkt alleen nog op een gemigreerd apparaat (
 - Ook met aanmelden: hetzelfde wachtwoord, uit dezelfde NVS.
 - `/api/ids` (identiteit wijzigen) en `/api/cmd` zijn verwijderd.
 - `/api/wifi`, `/api/oled`, `/api/netcfg` en `/api/scan` werken alleen na aanmelden.
-- Het klassieke dashboard blijft leesbaar, maar kan niets meer wijzigen.
+- Het klassieke dashboard en de andere oude pagina's (`/dashboard`, `/wifi`, `/widget`, `/flow`, `/debug`) zijn verwijderd; de webinterface op `/` blijft.
 
 ## Installeren (alleen na expliciete toestemming per OTA)
 

@@ -333,7 +333,7 @@ static void handleState() {
     o.add("{\"fw\":\"%s\",\"rx_only\":%s,\"caps\":{\"rx_supported\":%s,\"tx_supported\":%s,"
           "\"read_supported\":%s,\"pair_supported\":%s,\"control_supported\":%s,\"simulated\":%s,"
           "\"timer_supported\":%s,\"profile_control_supported\":%s,\"settings_pages\":%s,\"tx_max_per_boot\":%d,"
-          "\"tx_per_minute\":%d,\"tx_per_hour\":%d,\"dashboard\":%s,\"mqtt_supported\":%s,\"siri_supported\":%s},"
+          "\"tx_per_minute\":%d,\"tx_per_hour\":%d,\"siri_supported\":%s},"
           "\"rf\":\"%s\",\"token\":\"%s\",\"mask_ids\":%s,\"active\":\"%s\","
           "\"auth\":{\"enabled\":%s,\"logged_in\":true}",
           FW_VERSION, RX_ONLY ? "true" : "false", CAN_RX ? "true" : "false", CAN_TX ? "true" : "false",
@@ -342,7 +342,6 @@ static void handleState() {
           !ORCON_TX_POC || ORCON_TX_CONTROL ? "true" : "false",    // WiFi/Systeem/OLED routes exist (net.cpp)
           ORCON_TX_MAX_PER_BOOT,
           ORCON_TX_RF_ENABLE ? int(TXB_PER_MINUTE) : 0, ORCON_TX_RF_ENABLE ? int(TXB_PER_HOUR) : 0,
-          ORCON_TX_POC ? "false" : "true", MQTT_ENABLED ? "true" : "false",   // /dashboard; MQTT settings
           ORCON_SIRI ? "true" : "false",
           rfState(), token, net::maskIds() ? "true" : "false",
           g_read.st == St::Active ? "read" : pairActive() ? "pair" : "none", ORCON_WEB_AUTH ? "true" : "false");
@@ -869,7 +868,7 @@ static void consoleTick(uint32_t now) {
 // ---- Pairing capture: complete 1FC9/10E0 frames ------------------------------------
 // The console shows six payload bytes; protocol work on the bind offer needs every byte.
 // Filled from onFrame (loop task, after the RX queue), so RX timing is never touched.
-// RAM only: nothing is written to flash; the IDs are unmasked like /api/log.
+// RAM only: nothing is written to flash; the IDs are unmasked.
 static const uint8_t CAP_N = 8;
 struct Captured { uint32_t ms = 0, seq = 0; int16_t rssi = 0; ramses::Frame f; };
 static Captured g_cap[CAP_N];

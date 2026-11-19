@@ -207,9 +207,10 @@ there is no upload target or hardware tooling.
 directories, full commit stamps, image checks and SHA-256 manifests. No merged
 flash image is produced. Keep results local; paths/tool logs are not public
 hardware evidence. Logs in ignored `build/` survive a normal local review, but are
-not a backup. Existing Actions are still enabled in repository configuration;
-the existing RX-branch push trigger and workflow files were not changed. No push
-is allowed until the owner separately guarantees that it cannot start Actions.
+not a backup. Actions are still enabled in the repository settings. On this branch,
+and on `main` once PR #15 is merged, the only workflow is an inert stub (manual start
+only; it stops at once), pinned by `tools/test_tx_poc_safety.py`: run that before every
+push. Until that merge, `main` still has the old workflow (see `docs/RELEASES.md`).
 
 ## Local USB flashing (no Actions)
 

@@ -2,7 +2,7 @@
 
 **Altijd**
 - Geen flash, OTA, reset, RF-zending of nieuwe koppeling zonder expliciet akkoord per stap.
-- Geen GitHub Actions.
+- Geen GitHub Actions voor deze validatie.
 - Bewijs komt lokaal in `build/` en `captures/` (git-ignored).
 - Wat niet getest is, heet **NOT TESTED**.
 

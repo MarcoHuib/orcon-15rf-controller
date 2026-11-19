@@ -33,7 +33,6 @@ Orcon/Itho HVAC dialect. Huge thanks to everyone below.
 - **[Arduino_GFX](https://github.com/moononournation/Arduino_GFX)** — ST7701 RGB
   panel driver for the Guition 4848S040 build.
 - **[U8g2](https://github.com/olikraus/u8g2)** — SSD1306 OLED (Heltec builds).
-- **[PubSubClient](https://github.com/knolleary/pubsubclient)** — MQTT.
 - **[ArduinoJson](https://github.com/bblanchon/ArduinoJson)** — JSON.
 - **Adafruit GFX fonts** — anti-aliased FreeSans headers (font data only).
 

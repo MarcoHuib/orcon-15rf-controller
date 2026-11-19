@@ -18,6 +18,15 @@ def flagged(path):
 def openssl(*args, **kw):
     return subprocess.run(['openssl', *args], capture_output=True, text=True, check=True, **kw).stdout
 
+# Moved from the workflow's privacy step: real-looking IDs/MAC/LAN IP and a personal home path are refused.
+# Assembled at run time, so this file itself contains no such values.
+with tempfile.TemporaryDirectory() as d:
+    for name, text in (('real-data.txt', 'id 29:%s\nmac 3c:%s\nip 192.168.%s\n' % ('123456', 'aa:bb:cc:dd:ee', '50.7')),
+                       ('home-path.txt', 'cd /Users/%s/project\n' % 'someone')):
+        p = Path(d) / name; p.write_text(text)
+        r = subprocess.run([sys.executable, str(ROOT / 'tools/check_privacy.py'), str(p)], capture_output=True, text=True)
+        check(r.returncode != 0, f'{name}: refused')
+
 if subprocess.run(['openssl', 'version'], capture_output=True).returncode:
     print('check privacy: NOT TESTED (no openssl)'); sys.exit(0)
 
