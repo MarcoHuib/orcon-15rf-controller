@@ -53,6 +53,10 @@ static const char* g_err = "none";
 // checks and writes below, and the manual routes refuse with update-busy. Set and cleared via claimDownload()
 // and endDownload() only; the loop task sets it before the worker exists, so the two never race.
 static volatile bool g_dl = false;
+// An image was written, verified and selected for the next boot: until the restart, nothing may open the writer again.
+// esp_ota_get_next_update_partition() would return that very slot, and a second write would erase the selected image
+// (Codex review round 1). Cleared only by the restart.
+static volatile bool g_selected = false;
 
 // Survives soft resets, panics and watchdogs (not power loss): previous uptime and boots.
 struct Crumb { uint32_t magic, boots, lastUptimeS; };
@@ -171,6 +175,7 @@ static bool ownerConsent() {
 }
 static void handleNonce() {
     if (!ownerConsent()) return;
+    if (g_selected) { fail(409, "restart-pending"); return; }
     if (g_st == St::Writing || g_dl) { fail(409, "update-busy"); return; }
     if (g_pending) { fail(409, "confirm-running-image-first"); return; }
     uint8_t r[16]; esp_fill_random(r, sizeof(r));
@@ -218,6 +223,7 @@ static const char* acceptManifest(const char* text, const char* sig, const char*
 // ---- POST /api/ota/begin {"manifest":"<json text>","sig":"<DER hex>"} --------------------
 static void handleBegin() {
     if (!ownerConsent()) return;
+    if (g_selected) { fail(409, "restart-pending"); return; }
     if (g_st == St::Writing || g_dl) { fail(409, "update-busy"); return; }
     if (g_pending) { fail(409, "confirm-running-image-first"); return; }
     const String body = g_s->arg("plain");
@@ -249,6 +255,7 @@ static void abortWrite(const char* e) {
     g_st = St::Failed; g_err = e;
 }
 static const char* startWrite() {   // Ready -> Writing
+    if (g_selected) { g_st = St::Failed; return g_err = "restart-pending"; }
     if (g_st != St::Ready) return "not-ready";
     if (esp_ota_begin(g_part, OTA_WITH_SEQUENTIAL_WRITES, &g_h) != ESP_OK) { g_st = St::Failed; return g_err = "ota-begin-failed"; }
     mbedtls_sha256_init(&g_sha); mbedtls_sha256_starts_ret(&g_sha, 0);
@@ -274,6 +281,7 @@ static const char* endWrite() {
     // ESP-IDF validates the image (header, segments, appended SHA-256) before it can boot.
     if (esp_ota_end(g_h) != ESP_OK) { g_st = St::Failed; return g_err = "image-invalid"; }
     if (esp_ota_set_boot_partition(g_part) != ESP_OK) { g_st = St::Failed; return g_err = "set-boot-failed"; }
+    g_selected = true;
     g_st = St::Done;
     return nullptr;
 }
@@ -319,6 +327,7 @@ static void handleUploadDone() {
 bool pendingVerify() { return g_pending; }
 uint32_t updateSlotSize() { const esp_partition_t* p = esp_ota_get_next_update_partition(nullptr); return p ? p->size : 0; }
 const char* claimDownload() {   // loop task, before the worker task exists
+    if (g_selected) return "restart-pending";
     if (g_dl || g_st == St::Writing) return "update-busy";
     if (g_pending) return "confirm-running-image-first";
     g_nonce[0] = 0; g_st = St::Idle; g_err = "none";   // a manual begin that was never uploaded is dropped

@@ -139,6 +139,7 @@ static void worker(void* arg) {
 
 // Starts a job, or says why not. Loop task only (routes and tick).
 static const char* startJob(Job j, bool automatic) {
+    if (g_restart) return "restart-pending";
     if (g_running) return "update-busy";
     if (ota::pendingVerify()) return "confirm-running-image-first";
     if (!net::wifiConnected()) return "no-network";
@@ -174,7 +175,7 @@ static void reply(int code, const String& body) {
 }
 static void fail(int code, const char* e) { char b[96]; snprintf(b, sizeof(b), "{\"error\":\"%s\"}", e); reply(code, b); }
 static int codeOf(const char* e) {
-    return !strcmp(e, "no-network") || !strcmp(e, "low-memory") ? 503 : 409;
+    return !strcmp(e, "no-network") || !strcmp(e, "low-memory") ? 503 : 409;   // restart-pending, update-busy, ...: 409
 }
 static void quoted(String& o, const char* s) {   // notes are validated text (no control characters); escape JSON
     o += '"';

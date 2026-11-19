@@ -290,6 +290,20 @@ def hold_safe(ota):
     reg=ota.split('s.on("/api/ota/hold"',1)[0].rsplit('\n',2)[-2]
     assert reg.strip()=='#if !ORCON_TX_POC || ORCON_WEB_CONTROL',('hold registration guard',reg)
 ota_src=Path('src/ota_signed.cpp').read_text(); hold_safe(ota_src)
+# After an image is written and selected for the next boot, nothing reopens the writer before the restart (Codex r1):
+# every way in (nonce, begin, the writer itself, the one-click download) refuses with restart-pending.
+def selected_safe(ota):
+    assert 'g_selected = true;\n    g_st = St::Done;' in ota,'the writer marks a selected image'
+    for h in ('static void handleNonce() {','static void handleBegin() {','static const char* startWrite() {','const char* claimDownload() {'):
+        assert 'if (g_selected)' in '\n'.join(fn(ota,h).split('\n')[:3]),(h,'must refuse while a selected image waits for the restart')
+selected_safe(ota_src)
+for name,old,new in (('begin-after-select','    if (g_selected) { fail(409, "restart-pending"); return; }\n    if (g_st == St::Writing || g_dl) { fail(409, "update-busy"); return; }\n    if (g_pending)','    if (g_st == St::Writing || g_dl) { fail(409, "update-busy"); return; }\n    if (g_pending)'),
+                     ('writer-after-select','    if (g_selected) { g_st = St::Failed; return g_err = "restart-pending"; }\n',''),
+                     ('download-after-select','    if (g_selected) return "restart-pending";\n','')):
+    m=ota_src.replace(old,new,1); assert m!=ota_src,name
+    try: selected_safe(m)
+    except AssertionError: print('PASS selected-image guard rejects mutation',name)
+    else: raise AssertionError('selected-image guard accepted mutation '+name)
 try: hold_safe(ota_src.replace('if (!setupweb::authorize(true)) return;','',1))
 except AssertionError: print('PASS hold guard rejects mutation unauthenticated-hold')
 else: raise AssertionError('hold guard accepted mutation unauthenticated-hold')
