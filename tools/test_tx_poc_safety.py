@@ -296,8 +296,9 @@ else: raise AssertionError('hold guard accepted mutation unauthenticated-hold')
 # Workflows: none runs today (builds, tests and signing are local), but Actions are not banned for good. Every
 # workflow file is pinned by content, because text checks on YAML can be bypassed (blank lines, if: false,
 # continue-on-error, a second job, ...). The old RX-only workflow is pinned as an inert stub (manual start only,
-# no permissions, no action, stops at once), so changing it fails this test. This runs locally (before every push);
-# GitHub does not consult it, and a manual run on a ref from before the stub uses the old file. A new workflow, such as a
+# no permissions, no action, stops at once), so changing it fails this test. This runs locally (before every push)
+# on the working copy and on HEAD's committed tree; GitHub does not consult it, and a manual run on a ref from before
+# the stub uses the old file. A new workflow, such as a
 # future release build, is added deliberately: first its own security checks here (least permissions; the OTA
 # signing key only in the release-signing job, from a protected GitHub Environment secret, never in the repository
 # or in push, PR or test workflows; nothing installed on a board without the owner's consent), then name and hash.
@@ -310,8 +311,21 @@ def workflows_reviewed(files):   # files: name -> bytes (None: not a regular fil
         assert h==WORKFLOWS[n],(n,'changed: review it (and its own security checks), then update its pinned hash',h)
 wf_dir=Path('.github/workflows')
 wf_files={x.name:(x.read_bytes() if x.is_file() and not x.is_symlink() else None)
-          for x in sorted(wf_dir.iterdir()) if x.name.lower().endswith(('.yml','.yaml'))} if wf_dir.is_dir() else {}
+          for x in sorted(wf_dir.iterdir()) if x.name.lower().endswith(('.yml','.yaml'))} if wf_dir.is_dir() and not wf_dir.is_symlink() else {}
 workflows_reviewed(wf_files)
+# GitHub runs what is committed: the same check on HEAD's tree (a committed change hidden by the working copy, or a
+# symlinked .github/workflows, is refused too). Only top-level entries count, as for GitHub.
+head=subprocess.run(['git','ls-tree','-z','HEAD','--','.github/workflows/'],capture_output=True)
+if head.returncode: print('NOT TESTED: the committed workflow tree (no git checkout with a HEAD)')
+else:
+    tree={}
+    for entry in filter(None,head.stdout.split(b'\0')):
+        meta,path=entry.split(b'\t',1); mode,kind,obj=meta.split()
+        name=path.decode().rsplit('/',1)[-1]
+        if name.lower().endswith(('.yml','.yaml')):
+            tree[name]=(subprocess.run(['git','cat-file','blob',obj.decode()],capture_output=True,check=True).stdout
+                        if kind==b'blob' and mode in (b'100644',b'100755') else None)
+    workflows_reviewed(tree)
 stub=wf_files['heltec-v2-rx-only.yml'].replace(b'\r\n',b'\n'); pushed=stub.replace(b'  workflow_dispatch:\n',b'  workflow_dispatch:\n  push:\n',1)
 assert pushed!=stub and 'unreviewed.yaml' not in WORKFLOWS
 for name,files in [('stub-push-trigger',{**wf_files,'heltec-v2-rx-only.yml':pushed}),
