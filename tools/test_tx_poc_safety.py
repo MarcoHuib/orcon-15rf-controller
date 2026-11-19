@@ -1,6 +1,6 @@
 """Local-only phase 1 source guards and negative capability compiles. No hardware/network."""
 from pathlib import Path
-import argparse, configparser, re, subprocess
+import argparse, configparser, hashlib, re, subprocess
 
 p=argparse.ArgumentParser()
 p.add_argument('--compiler',default='g++')
@@ -22,8 +22,8 @@ for inserted in ('g_radio.transmit(', 'startTransmit(', 'transmitDirect(', 'getR
     try: sx_safe(mutated)
     except AssertionError: pass
     else: raise AssertionError('guard accepted mutation '+inserted)
-# The listen-only guards of the (no longer run) workflow step "Verify listen-only safety guards", moved here
-# verbatim so they run locally without reading .github/workflows (which stays unchanged for now).
+# The listen-only guards of the former workflow step "Verify listen-only safety guards", moved here verbatim
+# (the workflow is disabled and pinned below).
 def listen_only_guards():
     from pathlib import Path
 
@@ -293,4 +293,27 @@ ota_src=Path('src/ota_signed.cpp').read_text(); hold_safe(ota_src)
 try: hold_safe(ota_src.replace('if (!setupweb::authorize(true)) return;','',1))
 except AssertionError: print('PASS hold guard rejects mutation unauthenticated-hold')
 else: raise AssertionError('hold guard accepted mutation unauthenticated-hold')
+# Workflows: none runs today (builds, tests and signing are local), but Actions are not banned for good. Every
+# workflow file is pinned by content, because text checks on YAML can be bypassed (blank lines, if: false,
+# continue-on-error, a second job, ...). The old RX-only workflow is pinned as an inert stub (manual start only,
+# no permissions, no action, stops at once), so it cannot become active by accident. A new workflow, such as a
+# future release build, is added deliberately: first its own security checks here (least permissions; the OTA
+# signing key only in the release-signing job, from a protected GitHub Environment secret, never in the repository
+# or in push, PR or test workflows; nothing installed on a board without the owner's consent), then name and hash.
+WORKFLOWS={'heltec-v2-rx-only.yml':'df37f28e4bdf8fef7195bed632d60d5bf1feebd6d7240a49721860bae9aa8f72'}   # file -> sha256 of the reviewed content
+def workflows_reviewed(files):                  # files: name -> text of every .yml/.yaml in .github/workflows
+    assert sorted(files)==sorted(WORKFLOWS),('workflow files differ from the reviewed list',sorted(files))
+    for n,text in files.items():
+        h=hashlib.sha256(text.replace('\r\n','\n').encode()).hexdigest()
+        assert h==WORKFLOWS[n],(n,'changed: review it (and its own security checks), then update its pinned hash',h)
+wf_dir=Path('.github/workflows')
+wf_files={x.name:x.read_text() for x in sorted(wf_dir.iterdir()) if x.is_file() and x.suffix.lower() in ('.yml','.yaml')} if wf_dir.is_dir() else {}
+workflows_reviewed(wf_files)
+stub=wf_files['heltec-v2-rx-only.yml']; pushed=stub.replace('  workflow_dispatch:\n','  workflow_dispatch:\n  push:\n',1); assert pushed!=stub
+for name,files in [('stub-push-trigger',{'heltec-v2-rx-only.yml':pushed}),('unreviewed-workflow',{**wf_files,'release.yaml':'on: push\n'}),
+                   ('stub-removed',{})]:
+    try: workflows_reviewed(files)
+    except AssertionError: print('PASS workflow guard rejects',name)
+    else: raise AssertionError('workflow guard accepted '+name)
+print('PASS workflows match the reviewed, pinned list (the old RX-only workflow stays an inert stub)')
 print('PASS local source safety, guard mutations and capability compiles')

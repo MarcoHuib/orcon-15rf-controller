@@ -4,8 +4,9 @@ Dit is een voorstel. Er is nog niets gepubliceerd. Publiceren gebeurt alleen na 
 
 ## Randvoorwaarden
 
-- **Geen GitHub Actions.** Bouwen, testen en ondertekenen gebeurt lokaal. Dat sluit ook GitHub Pages met "deploy from a branch" uit, want dat draait intern de Actions-workflow `pages-build-deployment`.
-- **Workflows nu.** De enige workflow (`.github/workflows/heltec-v2-rx-only.yml`) reageert alleen op pushes naar `feature/heltec-v2-rx-only` en op `workflow_dispatch`. Een tag of release start dus niets. Controleer dit opnieuw vóór elke publicatie.
+- **Nu geen GitHub Actions.** Bouwen, testen en ondertekenen gebeurt lokaal. Dat sluit ook GitHub Pages met "deploy from a branch" uit, want dat draait intern de Actions-workflow `pages-build-deployment`.
+- **Besluit (2026-11-19, nog niet gebouwd).** Officiële releases komen straks uit GitHub Actions: een GitHub Release met versienummer, de firmware automatisch gebouwd en getest, ondertekend, en het ondertekende `.orconfw`-pakket gepubliceerd. De Heltec meldt dat er een update is en installeert pas na toestemming van de aangemelde eigenaar. De private OTA-signingsleutel staat nooit in de repository en is nooit beschikbaar voor gewone push-, PR- of testworkflows: alleen de gecontroleerde ondertekeningsjob van een officiële release leest hem, als secret van een beveiligde GitHub Environment. Tot dan geldt het lokale proces in dit document.
+- **Workflows nu.** De enige workflow (`.github/workflows/heltec-v2-rx-only.yml`) is uitgeschakeld: hij reageert alleen op `workflow_dispatch` en stopt dan meteen met een foutmelding, zonder iets te bouwen, te testen of te uploaden. Een push, tag of release start dus niets. `tools/test_tx_poc_safety.py` pint elk workflowbestand op inhoud (`WORKFLOWS`) en faalt bij een gewijzigde of nieuwe workflow. Een toekomstige release-workflow wordt bewust toegevoegd: eerst eigen beveiligingscontroles en een review, dan opname in die lijst; voor de sleutel geldt het besluit hierboven. Nu staat de sleutel alleen lokaal en heeft de repository geen secrets, variabelen of environments. Controleer dit opnieuw vóór elke publicatie.
 - **Reproduceerbaar.** De bouw is vastgepind: platform `espressif32@6.7.0` en de lib-versies in `platformio.ini`. Het lokale bewijspakket werkt zoals in [`LOCAL_USB_RELEASE.md`](LOCAL_USB_RELEASE.md).
 
 ## Wat een release bevat (per versie N)
@@ -51,11 +52,11 @@ Dit is een voorstel. Er is nog niets gepubliceerd. Publiceren gebeurt alleen na 
 1. **HTTPS op het LAN.** Een wachtwoord via HTTP is niet voldoende. Ontwerp: [`HTTPS_ONTWERP.md`](HTTPS_ONTWERP.md).
 2. **Hardwarevalidatie**: [`HW_VALIDATIE_PROVISIONING.md`](HW_VALIDATIE_PROVISIONING.md).
 3. **Een groene laatste onafhankelijke securityreview**: [`CODEX_OWNER_SECURITY_REVIEW.md`](CODEX_OWNER_SECURITY_REVIEW.md).
-4. **Een eigen offline releasesleutel**, ingevoerd met de migratie in [`RELEASESLEUTEL.md`](RELEASESLEUTEL.md). Alleen met apart akkoord.
+4. **Een eigen releasesleutel**, gescheiden van de ontwikkelsleutel, ingevoerd met de migratie in [`RELEASESLEUTEL.md`](RELEASESLEUTEL.md); het privé-deel straks alleen als secret van een beveiligde GitHub Environment (besluit hierboven). Alleen met apart akkoord.
 
-## Releasesleutel: besloten (aparte offline sleutel), migratie ontworpen
+## Releasesleutel: aparte sleutel besloten, migratie ontworpen
 
-Het ontwerp staat in [`RELEASESLEUTEL.md`](RELEASESLEUTEL.md). De tekst hieronder is de oorspronkelijke analyse.
+Het ontwerp staat in [`RELEASESLEUTEL.md`](RELEASESLEUTEL.md). De tekst hieronder is de oorspronkelijke analyse. Sinds het besluit van 2026-11-19 tekent straks een gecontroleerde GitHub-releasejob met de sleutel uit een beveiligde Environment; de offline-ceremonie in dat ontwerp wordt in de releasefase daarop aangepast.
 
 **Huidige situatie**
 - De publieke sleutel in `src/ota_pubkey.h` hoort bij `~/.orcon/ota-signing-key.pem` op de ontwikkel-Mac.
@@ -69,7 +70,7 @@ Het ontwerp staat in [`RELEASESLEUTEL.md`](RELEASESLEUTEL.md). De tekst hieronde
 
 **Gevolg voor ontwikkeling.** Ontwikkel-OTA's naar je eigen board moeten dan met de releasesleutel worden ondertekend, of met een ontwikkelbuild waarin de ontwikkelsleutel zit. Dat besluit ligt bij de maintainer.
 
-## Publiceren (alleen na toestemming)
+## Publiceren zolang er geen release-workflow is (alleen na toestemming)
 
 1. Bouw en verifieer lokaal: host-tests, alle omgevingen, het bewijspakket en `heltec_v2.sh verify`.
 2. Maak de bundels en `SHA256SUMS`. Controleer de hashes.

@@ -63,7 +63,7 @@ De instelling gebruikt een apart lokaal endpoint; de RX-only-allowlist van
   wake/sleep-acties per stand).
 - Webtest: `node test/test_setup_page.js` (Systeem → OLED-scherm: standen en
   *Scherm nu aan of uit* via `/api/oled`).
-- Compileer alle vier firmwarebuilds zoals in de bestaande CI-workflow.
+- Bouw de firmware en controleer de images met `pwsh tools/test_local.ps1 -Firmware`.
 - Na afzonderlijk akkoord voor flashen: controleer Auto na opstarten en na Apply,
   On/Off en opslag over een herstart. Controleer een korte PRG-druk in elke
   stand (Auto: opnieuw 30 s; Off: 30 s peek; On: geen verandering) en een
@@ -100,10 +100,10 @@ Met LLVM 22.1.3 en de expliciete macOS SDK voltooien het minimale
 reproductieprogramma en alle negen hostsuites zowel met ASan+UBSan als met TSan.
 
 De runner stopt elke testbinary na 60 seconden (instelbaar via
-`HOST_TEST_TIMEOUT_SECONDS`) en meldt een timeout als fout. CI blijft alle suites
-gewoon, met ASan+UBSan en met TSan uitvoeren op Ubuntu; er worden geen
-sanitizer-tests overgeslagen.
+`HOST_TEST_TIMEOUT_SECONDS`) en meldt een timeout als fout. GitHub Actions wordt
+niet gebruikt: de suites draaien lokaal, gewoon en met de sanitizer-vlaggen via
+`CXXFLAGS`. Faalt de sanitizer-runtime op de Mac zelf, dan is die run NOT TESTED.
 
 Voor de volgende hardwarestappen blijft afzonderlijk akkoord nodig: eerst een
 gecontroleerde flash en korte OLED-test, daarna de 24-uurs RX/WiFi-duurtest met
-MQTT uit. Die stappen zijn niet onderdeel van de automatische CI.
+MQTT uit. Die stappen zijn geen onderdeel van de lokale tests.

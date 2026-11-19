@@ -1,6 +1,8 @@
 # Releasesleutel: scheiding en migratie (ontwerp, nog niet uitgevoerd)
 
 > Status: ontwerp. De sleutel wordt niet gewisseld zonder een apart akkoord van de maintainer. Alleen de beveiliging tegen het per ongeluk publiceren van een privésleutel is al actief (`tools/check_privacy.py`).
+>
+> Besluit 2026-11-19 (nog niet gebouwd): officiële releases worden straks ondertekend door een gecontroleerde GitHub-releasejob, met de releasesleutel als secret van een beveiligde GitHub Environment (zie [`RELEASES.md`](RELEASES.md)). De offline sleutelceremonie en het lokaal tekenen hieronder worden in de releasefase daarop aangepast.
 
 ## Drie geheimen, elk met één taak
 
@@ -13,7 +15,7 @@
 | Kan niet | toegang geven tot een apparaat, of zonder de sessie van de eigenaar installeren | firmware ondertekenen | firmware echt maken |
 
 **Waar het privé-deel van de releasesleutel nooit mag staan**
-- In GitHub: repo, issues, releases.
+- In GitHub: repo, issues, releases, artifacts of workflowlogs, of als secret dat gewone push-, PR- of testworkflows kunnen lezen. Wel toegestaan (besluit 2026-11-19): als secret van een beveiligde GitHub Environment, alleen leesbaar voor de gecontroleerde ondertekeningsjob van een officiële release.
 - In een firmware-image.
 - In logs: serial, console, CLI-uitvoer.
 - In testfixtures. Tests maken tijdens het draaien wegwerpsleutels (`tools/test_orcon_cli.py`).

@@ -255,4 +255,4 @@ De synthetische tests dekken onder meer:
 - **Rapportage**: tooling met lokale wijzigingen, ontbrekende seriële data, NOT_TESTED-regels en het PASS-label.
 - **Rechten en privacy**: bestandsrechten (ook bij `soak note` met umask 022) en de lijninstelling van de poort zonder reset.
 
-CI voert beide Python-suites en de privacycontrole uit. Hardwareproeven blijven beperkt tot korte passieve opnames.
+`tools/test_local.ps1` voert beide Python-suites en de privacycontrole uit. Hardwareproeven blijven beperkt tot korte passieve opnames.
