@@ -140,6 +140,14 @@
 #else
 #define ORCON_SIRI 0
 #endif
+// Update check against this repository's official GitHub Releases, with the one-click install (fw_update.h,
+// docs/UPDATECONTROLE.md): the control image only, the only variant that is published. It reuses the signed-OTA
+// writer and the owner's web login; the RX-only rollback image keeps the manual .orconfw upload only.
+#if ORCON_TX_CONTROL && ORCON_SIGNED_OTA && ORCON_OWNER_MODEL
+#define ORCON_UPDATE_CHECK 1
+#else
+#define ORCON_UPDATE_CHECK 0
+#endif
 // Published releases set this (platformio build flag, docs/RELEASES.md); a release manifest (v2)
 // is never installed when older than the running release. 0 = a development build.
 #ifndef ORCON_RELEASE_VERSION

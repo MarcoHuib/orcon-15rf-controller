@@ -13,6 +13,7 @@
 #include "rf_console.h"
 #include <esp_system.h>
 #include "ota_signed.h"
+#include "fw_update_esp.h"
 #include "remote_profiles.h"
 #if ORCON_OWNER_MODEL
 #include "owner_store.h"
@@ -1176,6 +1177,9 @@ void begin() {
 #endif // ORCON_TX_POC routes
 #if ORCON_SIGNED_OTA
     ota::begin(server);                 // signed OTA + /api/diag (every Heltec V2 SX1276 build)
+#endif
+#if ORCON_UPDATE_CHECK
+    updsvc::begin(server);              // official-release update check + one-click install (control image)
 #endif
     server.begin();
 

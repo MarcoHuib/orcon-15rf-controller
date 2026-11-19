@@ -117,6 +117,7 @@ static bool g_registerFails = false;
 static bool g_markFails = false;     // markSetup refuses: a write error, or a pending factory reset (Codex OWNER-13)
 static bool g_viaAp = false, g_staUp = false, g_apOnly = false, g_physical = false, g_cryptoOk = true;
 static bool g_homeNet = true;        // the client is in the station's own subnet (Siri)
+[[maybe_unused]] static bool g_updBusy = false;   // fw_update_esp.cpp: a firmware download or its restart is running
 static uint8_t g_ownPub[65]; static bool g_ownPubSet = false;
 static std::string g_wtState = "idle", g_wtSsid, g_wtPass;
 static int g_wtStarts = 0, g_identityMade = 0;
@@ -153,6 +154,9 @@ bool generate(uint8_t d[32], uint8_t q[65]) { frnd(d, 32); d[0] |= 1; return fpu
 bool physicalActive() { return g_physical; }
 uint32_t physicalLeftMs() { return g_physical ? 600000 : 0; }
 }
+#endif
+#if ORCON_UPDATE_CHECK
+namespace updsvc { bool busy() { return g_updBusy; } }
 #endif
 namespace net { bool apMode() { return g_apModeFake; } bool maskIds() { return true; } const char* ipAddr() { return "192.0.2.5"; }
                 bool wifiConnected() { return g_wifiFake && !g_apModeFake; } const char* ssidName() { return "Thuis \"5G\"\x01"; }
@@ -1019,6 +1023,25 @@ int main() {
               "five-button dry-run completes without claiming RF confirmation");
       }
     }
+#if ORCON_UPDATE_CHECK
+    // ---- a firmware update downloads or restarts (fw_update_esp.cpp): no RF command, no session, no restart ----------
+    {
+        call("GET", "/api/setup/state");
+        CHECK(J["caps"]["update_check"] == true, "update check: announced on the control image");
+        g_ms += txpoc::RATE_CTL_MS; rx(fr(MsgType::I, UNIT32, UNIT32, 0x31D9, {0x00, 0x00, 0x01}));
+        g_updBusy = true;
+        const auto sent = txpoc::s_rf.sent[0]; const int r0 = g_restarts;
+        CHECK(call("POST", "/api/remote/send", "{\"key\":\"3\"}") == 409 && err("update-busy") && txpoc::s_rf.sent[0] == sent,
+              "update running: no RF command (nothing queued)");
+        CHECK(call("POST", "/api/setup/pair/start", "{}") == 409 && err("update-busy"), "update running: no pairing");
+        CHECK(call("POST", "/api/setup/read/start", "{\"remote\":\"29:000101\"}") == 409 && err("update-busy"), "update running: no read session");
+        CHECK(call("POST", "/api/setup/restart") == 409 && g_restarts == r0, "update running: no restart from the page");
+        CHECK(setupweb::busy(), "update running: busy for the WiFi watch (no watchdog restart)");
+        g_updBusy = false;
+        CHECK(call("POST", "/api/remote/send", "{\"key\":\"3\"}") == 202, "after the update: RF commands work again");
+        loopTick();
+    }
+#endif
 #if ORCON_SIRI
     // ---- Siri (docs/SIRI.md): a key that only switches the five modes, from the home network ----------
     {
@@ -1058,6 +1081,12 @@ int main() {
         CHECK(siriRaw("/api/siri?stand=2&k=" + key, "") == 401, "Siri: a key in the URL is ignored, never accepted");
         std::string bad = key; bad[5] = bad[5] == 'a' ? 'b' : 'a';
         CHECK(siri("2", bad) == 401, "Siri: wrong key refused");
+#if ORCON_UPDATE_CHECK
+        { const auto sent = txpoc::s_rf.sent[0]; g_updBusy = true;
+          CHECK(siri("2", key) == 409 && srv.out.find("update") != std::string::npos && txpoc::s_rf.sent[0] == sent,
+                "Siri during a firmware update: refused with a sentence, nothing sent");
+          g_updBusy = false; }
+#endif
         CHECK(siri("2", "") == 401 && siriRaw("/api/siri?stand=2", "Bearer ") == 401, "Siri: missing or empty key refused");
         CHECK(siriRaw("/api/siri?stand=2", key) == 401 && siriRaw("/api/siri?stand=2", "Basic " + key) == 401,
               "Siri: only the Bearer scheme");

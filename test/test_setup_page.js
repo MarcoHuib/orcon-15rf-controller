@@ -156,6 +156,7 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
             'POST /api/oled': c => { oledPosts.push(c.body); if (c.body.mode) x = { ...x, oled_mode: c.body.mode }; return [200, { ok: 1 }]; },
             'POST /api/setup/restart': () => [200, { ok: true, restarting: true }],
             'POST /api/setup/wifi/forget': () => [200, { ok: true, restarting: true }],
+            'GET /api/ota': () => [200, { fw: '0123456789abcdef0123456789abcdef01234567', running: 'app1', running_state: 'valid', next: 'app0', next_state: 'valid', release: 0, release_name: 'dev' }],
         }, 'control');
         const open = async k => { p.dom.all.find(e => e.dataset.open === k).click(); await flush(); };
         const back = async () => { p.$('back').click(); await flush(); };
@@ -189,9 +190,12 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         dlg.confirm = false; p.$('sRestart').click(); await flush(); assert.ok(!p.posts().some(c => c.key.endsWith('/restart')));
         dlg.confirm = true; p.$('sRestart').click(); await flush(); assert.ok(p.posts().some(c => c.key === 'POST /api/setup/restart')); assert.match(p.$('setM').textContent, /herstart/);
         ok('restart only after confirmation');
-        await open('firmware'); assert.match(p.$('fwKv').innerHTML, /0123456789abcdef0123456789abcdef01234567/); assert.match(p.$('fwKv').innerHTML, /Niet vast te stellen/);
+        await open('firmware'); const fk = p.$('fwKv').innerHTML; assert.match(fk, /0123456789abcdef0123456789abcdef01234567/);
+        assert.ok(/Ontwikkelversie \(0123456\)/.test(fk) && /app1 · bevestigd/.test(fk) && /app0 · bevestigd/.test(fk));
+        assert.equal(p.$('upP').hidden, true); assert.match(p.$('fwNote').textContent, /geen automatische updatecontrole in deze firmware/);
+        assert.ok(!p.calls.some(c => c.key.startsWith('GET /api/update')));
         assert.ok(!/beschikbaar: v/.test(html)); assert.equal(p.$('fwUp').hidden, true); await back(); assert.equal(p.location.hash, '#system');
-        ok('firmware: real version, no invented update; no install button without the ownership model (signed releases); back -> Systeem');
+        ok('firmware: real version and both OTA slots; no update check on firmware without it; no install button without the ownership model; back -> Systeem');
         await open('info'); const ik = p.$('infoKv').innerHTML;
         assert.ok(/1 d 1 u 1 min/.test(ik) && /167 KB/.test(ik) && /<dd>42<\/dd>/.test(ik) && /Thuis &#60;5G&#62;/.test(ik)); await back();
         ok('device info from the existing state API, escaped');
@@ -202,6 +206,109 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.ok(!/mqtt|MQTT|Domoticz|Home Assistant/.test(html)); assert.equal(wifiPosts.length, 1);
         ok('no MQTT, Home Assistant or Domoticz settings left in the page (integration removed)');
         await back(); assert.equal(p.location.hash, '#control');
+    }
+    {   // Systeem > Firmware on the control image: check, one-click install, progress, trial boot, confirmation (never earlier)
+        const OLD = '1111111111111111111111111111111111111111', NEW = '2222222222222222222222222222222222222222';
+        let ota = { fw: OLD, running: 'app1', running_state: 'valid', next: 'app0', next_state: 'valid', release: 1002003, release_name: '1.2.3' }, otaDown = false;
+        const cur = { release: 1002003, name: '1.2.3', fw: OLD, variant: 'control' };
+        let up = { supported: true, current: cur, phase: 'idle', job: 'check', error: '', checked: false, checked_age_s: -1, found: 'none', latest: null, progress: { done: 0, total: 0 } };
+        const latest = { release: 1003000, name: '1.3.0', commit: NEW, size: 1000, notes: 'Betere <WiFi>-herverbinding.' };
+        const posts = [];
+        const p = await page({
+            'GET /api/setup/state': () => [200, state({ ...CAPS_TX, settings_pages: true, update_check: true }, { fw: OLD, setup: { state: 'done', key: true }, profiles: PF([PI(2, 'Washok', '29:000101')], 2) })],
+            'GET /api/state': () => [200, { uptime_ms: 1000, heap_min: 100000 }],
+            'GET /api/ota': () => { if (otaDown) throw new Error('offline'); return [200, ota]; },
+            'GET /api/update': () => [200, up],
+            'POST /api/update/check': c => { posts.push(c); up = { ...up, phase: 'idle', checked: true, checked_age_s: 0, found: 'newer', latest }; return [202, up]; },
+            'POST /api/update/install': c => { posts.push(c); up = { ...up, phase: 'downloading', job: 'install', progress: { done: 0, total: 1000 } }; return [202, up]; },
+        }, 'firmware');
+        const fk = p.$('fwKv').innerHTML;
+        assert.ok(/v1\.2\.3 \(1111111\)/.test(fk) && /app1 · bevestigd/.test(fk) && /Ander geheugenslot/.test(fk));
+        assert.equal(p.$('upP').hidden, false); assert.match(p.$('upKv').innerHTML, /Nog niet/); assert.equal(p.$('upInst').hidden, true);
+        assert.match(p.$('fwNote').textContent, /nooit iets geïnstalleerd zonder dat jij op Update installeren klikt/); assert.equal(p.$('fwUpH').textContent, 'Handmatig installeren');
+        ok('firmware (control): release version, commit, active and other slot; update panel; manual upload stays as fallback');
+        p.$('upChk').click(); await flush();
+        const chk = posts.find(c => c.key === 'POST /api/update/check'); assert.ok(chk && chk.headers['X-Orcon-Token'] === 'tok123' && chk.headers['Content-Type'] === 'application/json');
+        assert.match(p.$('upKv').innerHTML, /v1\.3\.0 \(nieuw\)/); assert.match(p.$('upKv').innerHTML, /Zojuist/);
+        assert.equal(p.$('upNotes').textContent, 'Betere <WiFi>-herverbinding.'); assert.ok(!/<WiFi>/.test(p.$('upKv').innerHTML));
+        assert.equal(p.$('upInst').hidden, false); assert.match(p.$('upM').textContent, /nieuwere officiële versie/);
+        ok('check: guarded POST, newer release with its notes (as text, never HTML), install button appears');
+        dlg.confirm = false; dlg.asked = []; p.$('upInst').click(); await flush();
+        assert.ok(!posts.some(c => c.key === 'POST /api/update/install') && /v1\.3\.0 \(2222222\).*automatisch terug/s.test(dlg.asked[0]));
+        ok('install: nothing happens without the owner\'s explicit confirmation');
+        dlg.confirm = true; p.$('upInst').click(); await flush();
+        const ins = posts.find(c => c.key === 'POST /api/update/install');
+        assert.deepEqual(ins.body, { version: 1003000 }); assert.equal(ins.headers['X-Orcon-Token'], 'tok123');
+        assert.equal(p.$('upTrack').hidden, false); assert.match(p.$('upM').textContent, /Downloaden en controleren… 0%/); assert.equal(p.$('upInst').hidden, true);
+        assert.equal(p.$('upChk').disabled, true); assert.equal(p.$('fwGo').disabled, true);
+        ok('install: only the version that was shown is requested (no URL, no file), with the session token; buttons locked');
+        up = { ...up, progress: { done: 450, total: 1000 } }; await p.refresh(); assert.match(p.$('upM').textContent, /45%/); assert.equal(p.$('upTrack').attrs['aria-valuenow'], '45');
+        up = { ...up, phase: 'written', progress: { done: 1000, total: 1000 } }; await p.refresh();
+        assert.match(p.$('upM').textContent, /herstart nu in een proefstart/); assert.ok(!/geslaagd/i.test(p.$('upM').textContent));
+        otaDown = true; await p.refresh(); assert.match(p.$('upM').textContent, /herstart…/);
+        otaDown = false; ota = { ...ota, fw: NEW, running: 'app0', running_state: 'pending-verify', next: 'app1', next_state: 'valid' }; await p.refresh();
+        assert.match(p.$('upM').textContent, /Proefstart/); assert.ok(!/geslaagd/i.test(p.$('upM').textContent));
+        ok('progress, then restart and trial boot: never called successful before the controller confirms the image');
+        ota = { ...ota, running_state: 'valid' }; await p.refresh();
+        assert.match(p.$('upM').textContent, /Update geslaagd: v1\.3\.0 is bevestigd en actief \(app0\).*terugvaloptie in app1/);
+        assert.match(p.$('fwKv').innerHTML, /2222222/);
+        ok('confirmed: success only once the new image reports valid; the previous version stays the fallback slot');
+    }
+    {   // the new image is not confirmed: the controller rolls back by itself, and the page says so
+        const OLD = '1111111111111111111111111111111111111111', NEW = '2222222222222222222222222222222222222222';
+        let ota = { fw: OLD, running: 'app1', running_state: 'valid', next: 'app0', next_state: 'valid', release: 1002003, release_name: '1.2.3' }, down = false;
+        const latest = { release: 1003000, name: '1.3.0', commit: NEW, size: 1000, notes: '' };
+        let up = { supported: true, phase: 'idle', job: 'check', error: '', checked: true, checked_age_s: 7200, found: 'newer', latest, progress: { done: 0, total: 0 } };
+        const p = await page({
+            'GET /api/setup/state': () => [200, state({ ...CAPS_TX, settings_pages: true, update_check: true }, { fw: OLD, setup: { state: 'done', key: true }, profiles: PF([PI(2, 'Washok', '29:000101')], 2) })],
+            'GET /api/state': () => [200, {}], 'GET /api/ota': () => { if (down) throw new Error('x'); return [200, ota]; }, 'GET /api/update': () => [200, up],
+            'POST /api/update/install': () => { up = { ...up, phase: 'written', job: 'install', progress: { done: 1000, total: 1000 } }; return [202, up]; },
+        }, 'firmware');
+        assert.match(p.$('upKv').innerHTML, /2 uur geleden/); assert.equal(p.$('upNotes').hidden, true);
+        dlg.confirm = true; p.$('upInst').click(); await flush(); await p.refresh();
+        ota = { ...ota, fw: NEW, running: 'app0', running_state: 'pending-verify' }; await p.refresh(); assert.match(p.$('upM').textContent, /Proefstart/);
+        down = true; await p.refresh();
+        down = false; ota = { ...ota, fw: OLD, running: 'app1', running_state: 'valid', next: 'app0', next_state: 'aborted' }; await p.refresh();
+        assert.match(p.$('upM').textContent, /niet bevestigd: de controller is automatisch teruggekeerd naar de vorige versie \(1111111\)/);
+        assert.match(p.$('err').textContent, /teruggekeerd/); assert.ok(!/geslaagd/i.test(p.$('upM').textContent));
+        assert.match(p.$('fwKv').innerHTML, /app0 · afgebroken/);
+        ok('rollback: reported as such (never as success), the other slot shows the abandoned image');
+    }
+    {   // failures in plain Dutch; nothing is reported as installed; up to date; too soon
+        let up = { supported: true, phase: 'idle', job: 'check', error: '', checked: true, checked_age_s: 30, found: 'up-to-date',
+                   latest: { release: 1002003, name: '1.2.3', commit: '1'.repeat(40), size: 1, notes: '' }, progress: { done: 0, total: 0 } };
+        let checkReply = [429, { error: 'too-soon', retry_s: 40 }];
+        const p = await page({
+            'GET /api/setup/state': () => [200, state({ ...CAPS_TX, settings_pages: true, update_check: true }, { fw: '1'.repeat(40), setup: { state: 'done', key: true }, profiles: PF([PI(2, 'Washok', '29:000101')], 2) })],
+            'GET /api/state': () => [200, {}], 'GET /api/ota': () => [200, { fw: '1'.repeat(40), running: 'app0', running_state: 'valid', next: 'app1', next_state: 'undefined', release: 1002003, release_name: '1.2.3' }],
+            'GET /api/update': () => [200, up], 'POST /api/update/check': () => checkReply,
+        }, 'firmware');
+        assert.match(p.$('upM').textContent, /nieuwste officiële versie/); assert.equal(p.$('upInst').hidden, true); assert.match(p.$('upKv').innerHTML, /v1\.2\.3 \(geïnstalleerd\)/);
+        assert.match(p.$('fwKv').innerHTML, /app1 · leeg of onbekend/);
+        ok('up to date: no install button; an empty other slot is shown as such');
+        p.$('upChk').click(); await flush(); assert.match(p.$('err').textContent, /over een minuut/);
+        up = { ...up, phase: 'failed', error: 'tls-failed', found: 'none', latest: null }; await p.refresh(); assert.match(p.$('upM').textContent, /certificaat kon niet worden gecontroleerd/);
+        up = { ...up, error: 'rate-limited' }; await p.refresh(); assert.match(p.$('upM').textContent, /te veel verzoeken/);
+        up = { ...up, error: 'no-release' }; await p.refresh(); assert.match(p.$('upM').textContent, /nog geen officiële release/);
+        up = { ...up, error: 'wrong-variant' }; await p.refresh(); assert.match(p.$('upM').textContent, /geen control-firmware/);
+        up = { ...up, error: 'dns-failed' }; await p.refresh(); assert.match(p.$('upM').textContent, /DNS/);
+        assert.equal(p.$('upInst').hidden, true);
+        ok('check failures (TLS, rate limit, no release, wrong variant, DNS) in Dutch; no install offered');
+    }
+    {   // a failed download: the error, no follow-up, nothing claimed
+        const latest = { release: 1003000, name: '1.3.0', commit: '2'.repeat(40), size: 1000, notes: '' };
+        let up = { supported: true, phase: 'idle', job: 'check', error: '', checked: true, checked_age_s: 5, found: 'newer', latest, progress: { done: 0, total: 0 } };
+        const p = await page({
+            'GET /api/setup/state': () => [200, state({ ...CAPS_TX, settings_pages: true, update_check: true }, { fw: '1'.repeat(40), setup: { state: 'done', key: true }, profiles: PF([PI(2, 'Washok', '29:000101')], 2) })],
+            'GET /api/state': () => [200, {}], 'GET /api/ota': () => [200, { fw: '1'.repeat(40), running: 'app0', running_state: 'valid', next: 'app1', next_state: 'valid', release: 1002003, release_name: '1.2.3' }],
+            'GET /api/update': () => [200, up],
+            'POST /api/update/install': () => { up = { ...up, phase: 'downloading', job: 'install', progress: { done: 10, total: 1000 } }; return [202, up]; },
+        }, 'firmware');
+        dlg.confirm = true; p.$('upInst').click(); await flush();
+        up = { ...up, phase: 'failed', error: 'connection-lost' }; await p.refresh();
+        assert.match(p.$('err').textContent, /verbinding met GitHub werd onderbroken. Er is niets geïnstalleerd/); assert.ok(!/geslaagd|herstart/i.test(p.$('upM').textContent));
+        assert.equal(p.$('upTrack').hidden, true); assert.equal(p.$('upChk').disabled, false);
+        ok('interrupted download: plain error, no restart or success message, buttons free again');
     }
     {   // Siri under Systeem > Integraties: off -> key -> five copyable addresses; new key and off only after confirmation
         const KEY = '0123456789abcdef0123456789abcdef', KEY2 = 'fedcba9876543210fedcba9876543210';

@@ -12,6 +12,7 @@
 #if ORCON_SIGNED_OTA
 #include "ota_signed.h"
 #include "ota_policy.h"
+#include "fw_update.h"
 #include "ota_pubkey.h"
 #include "net.h"
 #include "ramses_radio.h"
@@ -48,6 +49,10 @@ static esp_ota_handle_t g_h = 0;
 static uint32_t g_rx = 0;
 static mbedtls_sha256_context g_sha;
 static const char* g_err = "none";
+// The one-click update (fw_update_esp.cpp) owns the writer while this is set: its worker task runs the same
+// checks and writes below, and the manual routes refuse with update-busy. Set and cleared via claimDownload()
+// and endDownload() only; the loop task sets it before the worker exists, so the two never race.
+static volatile bool g_dl = false;
 
 // Survives soft resets, panics and watchdogs (not power loss): previous uptime and boots.
 struct Crumb { uint32_t magic, boots, lastUptimeS; };
@@ -123,16 +128,17 @@ static void handleInfo() {
     const esp_partition_t* run = esp_ota_get_running_partition();
     const esp_partition_t* boot = esp_ota_get_boot_partition();
     const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
-    char b[600];
+    char b[640], rel[16];
+    fwup::semverText(ORCON_RELEASE_VERSION, rel);
     snprintf(b, sizeof(b),
              "{\"signed_ota\":\"%s\",\"fw\":\"%s\",\"variant\":\"%s\",\"running\":\"%s\",\"running_state\":\"%s\","
              "\"boot\":\"%s\",\"next\":\"%s\",\"next_state\":\"%s\",\"slot_size\":%lu,\"session\":\"%s\",\"last_error\":\"%s\","
-             "\"nonce_active\":%s,\"hold\":%s,\"owner_model\":\"%s\",\"release\":%lu,\"release_stamp\":\"%s\"}",
+             "\"nonce_active\":%s,\"hold\":%s,\"owner_model\":\"%s\",\"release\":%lu,\"release_stamp\":\"%s\",\"release_name\":\"%s\"}",
              otap::SIGNED_OTA_MARKER, FW_VERSION, variantOfThisBuild(), run ? run->label : "?", stateName(run),
              boot ? boot->label : "?", next ? next->label : "?", stateName(next), (unsigned long)(next ? next->size : 0),
-             g_st == St::Idle ? "idle" : g_st == St::Ready ? "ready" : g_st == St::Writing ? "writing" : g_st == St::Done ? "done" : "failed",
+             g_dl ? "download" : g_st == St::Idle ? "idle" : g_st == St::Ready ? "ready" : g_st == St::Writing ? "writing" : g_st == St::Done ? "done" : "failed",
              g_err, g_nonce[0] && millis() - g_nonceMs < NONCE_TTL_MS ? "true" : "false", g_hold ? "true" : "false",
-             otap::OWNER_MODEL_MARKER, (unsigned long)ORCON_RELEASE_VERSION, RELEASE_STAMP);
+             otap::OWNER_MODEL_MARKER, (unsigned long)ORCON_RELEASE_VERSION, RELEASE_STAMP, rel);
     reply(200, b);
 }
 
@@ -165,7 +171,7 @@ static bool ownerConsent() {
 }
 static void handleNonce() {
     if (!ownerConsent()) return;
-    if (g_st == St::Writing) { fail(409, "update-busy"); return; }
+    if (g_st == St::Writing || g_dl) { fail(409, "update-busy"); return; }
     if (g_pending) { fail(409, "confirm-running-image-first"); return; }
     uint8_t r[16]; esp_fill_random(r, sizeof(r));
     for (int i = 0; i < 16; ++i) snprintf(g_nonce + 2 * i, 3, "%02x", r[i]);
@@ -192,10 +198,27 @@ bool verifySignature(const char* text, size_t n, const char* sigHex) {
     return ok;
 }
 
+// The signed manifest against this device: the release key, the manifest rules and the inactive slot. Shared by
+// POST /api/ota/begin (v1 targeted or v2 release) and the one-click update (v2 release only). On success the
+// writer is Ready for exactly this image.
+static const char* acceptManifest(const char* text, const char* sig, const char* nonce, bool releaseOnly) {
+    g_st = St::Idle;
+    if (!verifySignature(text, strlen(text), sig)) return "bad-signature";
+    otap::Manifest m;
+    const char* e = otap::parseManifest(text, m);
+    if (!e && releaseOnly && m.v != 2) e = "manifest-version";
+    char mac[18]; ownMac(mac);
+    g_part = esp_ota_get_next_update_partition(nullptr);
+    if (!e) e = otap::checkManifest(m, mac, nonce, g_part ? g_part->size : 0, ORCON_RELEASE_VERSION);
+    if (e) return e;
+    g_m = m; g_scan = otap::Scanner(m.commit); g_st = St::Ready; g_err = "none";
+    return nullptr;
+}
+
 // ---- POST /api/ota/begin {"manifest":"<json text>","sig":"<DER hex>"} --------------------
 static void handleBegin() {
     if (!ownerConsent()) return;
-    if (g_st == St::Writing) { fail(409, "update-busy"); return; }
+    if (g_st == St::Writing || g_dl) { fail(409, "update-busy"); return; }
     if (g_pending) { fail(409, "confirm-running-image-first"); return; }
     const String body = g_s->arg("plain");
     if (body.length() > 1024) { fail(413, "body-too-large"); return; }
@@ -207,59 +230,77 @@ static void handleBegin() {
     char nonce[33]; strcpy(nonce, g_nonce);
     const bool fresh = nonce[0] && millis() - g_nonceMs < NONCE_TTL_MS;
     g_nonce[0] = 0;                                   // one attempt per nonce, valid or not
-    g_st = St::Idle;
-    if (!verifySignature(text, strlen(text), sig)) { g_err = "bad-signature"; note(rfcon::WARN, "OTA geweigerd: ongeldige handtekening"); fail(403, g_err); return; }
-    otap::Manifest m;
-    const char* e = otap::parseManifest(text, m);
-    char mac[18]; ownMac(mac);
-    g_part = esp_ota_get_next_update_partition(nullptr);
-    if (!e) e = otap::checkManifest(m, mac, fresh ? nonce : "", g_part ? g_part->size : 0, ORCON_RELEASE_VERSION);
-    if (e) { g_err = e; note(rfcon::WARN, "OTA geweigerd: %s", e); fail(409, e); return; }
-    g_m = m; g_scan = otap::Scanner(m.commit); g_st = St::Ready; g_err = "none";
-    note(rfcon::INFO, "OTA klaar voor upload: %s %.7s (%lu B) naar %s", otap::variantName(m.variant), m.commit,
-         (unsigned long)m.size, g_part->label);
+    if (const char* e = acceptManifest(text, sig, fresh ? nonce : "", false)) {
+        g_err = e;
+        if (!strcmp(e, "bad-signature")) { note(rfcon::WARN, "OTA geweigerd: ongeldige handtekening"); fail(403, e); }
+        else { note(rfcon::WARN, "OTA geweigerd: %s", e); fail(409, e); }
+        return;
+    }
+    note(rfcon::INFO, "OTA klaar voor upload: %s %.7s (%lu B) naar %s", otap::variantName(g_m.variant), g_m.commit,
+         (unsigned long)g_m.size, g_part->label);
     char b[160]; snprintf(b, sizeof(b), "{\"ok\":true,\"partition\":\"%s\",\"size\":%lu,\"variant\":\"%s\"}",
-                          g_part->label, (unsigned long)m.size, otap::variantName(m.variant));
+                          g_part->label, (unsigned long)g_m.size, otap::variantName(g_m.variant));
     reply(200, b);
 }
 
-// ---- POST /api/ota/upload (multipart, one file) -----------------------------------------
+// ---- the image writer: the inactive slot, hashed and scanned on the way (upload and one-click update) -----------
 static void abortWrite(const char* e) {
-    if (g_st == St::Writing) esp_ota_abort(g_h);
+    if (g_st == St::Writing) { esp_ota_abort(g_h); mbedtls_sha256_free(&g_sha); }
     g_st = St::Failed; g_err = e;
 }
+static const char* startWrite() {   // Ready -> Writing
+    if (g_st != St::Ready) return "not-ready";
+    if (esp_ota_begin(g_part, OTA_WITH_SEQUENTIAL_WRITES, &g_h) != ESP_OK) { g_st = St::Failed; return g_err = "ota-begin-failed"; }
+    mbedtls_sha256_init(&g_sha); mbedtls_sha256_starts_ret(&g_sha, 0);
+    g_rx = 0; g_st = St::Writing;
+    return nullptr;
+}
+static const char* writeChunk(const uint8_t* d, size_t n) {
+    if (g_st != St::Writing) return g_err;
+    if (g_rx + n > g_m.size) { abortWrite("image-too-large"); return g_err; }
+    if (esp_ota_write(g_h, d, n) != ESP_OK) { abortWrite("flash-write-failed"); return g_err; }
+    mbedtls_sha256_update_ret(&g_sha, d, n);
+    g_scan.feed(d, n);
+    g_rx += n;
+    return nullptr;
+}
+// Size, SHA-256 and image markers (ota_policy), the ESP-IDF image check, then the boot slot. Only now does
+// anything change what boots next: as a PENDING_VERIFY trial with bootloader rollback.
+static const char* endWrite() {
+    if (g_st != St::Writing) return g_err;
+    uint8_t hash[32]; mbedtls_sha256_finish_ret(&g_sha, hash); mbedtls_sha256_free(&g_sha);
+    const char* e = otap::checkImage(g_m, g_scan, g_rx, hash);
+    if (e) { esp_ota_abort(g_h); g_st = St::Failed; return g_err = e; }
+    // ESP-IDF validates the image (header, segments, appended SHA-256) before it can boot.
+    if (esp_ota_end(g_h) != ESP_OK) { g_st = St::Failed; return g_err = "image-invalid"; }
+    if (esp_ota_set_boot_partition(g_part) != ESP_OK) { g_st = St::Failed; return g_err = "set-boot-failed"; }
+    g_st = St::Done;
+    return nullptr;
+}
+
+// ---- POST /api/ota/upload (multipart, one file) -----------------------------------------
 static void handleUploadData() {
     HTTPUpload& up = g_s->upload();
     if (up.status == UPLOAD_FILE_START) {
+        if (g_dl) return;                              // the download owns the writer: leave its state alone
         if (g_st != St::Ready || !hostOk()) { g_st = St::Failed; g_err = "not-ready"; return; }
 #if ORCON_OWNER_MODEL
         if (!setupweb::uploadAuthorized()) { g_st = St::Failed; g_err = "login-required"; return; }
 #endif
-        if (esp_ota_begin(g_part, OTA_WITH_SEQUENTIAL_WRITES, &g_h) != ESP_OK) { g_st = St::Failed; g_err = "ota-begin-failed"; return; }
-        mbedtls_sha256_init(&g_sha); mbedtls_sha256_starts_ret(&g_sha, 0);
-        g_rx = 0; g_st = St::Writing;
+        if (startWrite()) return;
         note(rfcon::INFO, "OTA schrijft %s (RF-ontvangst kan tijdens het schrijven haperen)", g_part->label);
+    } else if (g_dl) {
+        return;
     } else if (up.status == UPLOAD_FILE_WRITE) {
-        if (g_st != St::Writing) return;
-        if (g_rx + up.currentSize > g_m.size) { abortWrite("image-too-large"); return; }
-        if (esp_ota_write(g_h, up.buf, up.currentSize) != ESP_OK) { abortWrite("flash-write-failed"); return; }
-        mbedtls_sha256_update_ret(&g_sha, up.buf, up.currentSize);
-        g_scan.feed(up.buf, up.currentSize);
-        g_rx += up.currentSize;
+        writeChunk(up.buf, up.currentSize);
     } else if (up.status == UPLOAD_FILE_END) {
-        if (g_st != St::Writing) return;
-        uint8_t hash[32]; mbedtls_sha256_finish_ret(&g_sha, hash); mbedtls_sha256_free(&g_sha);
-        const char* e = otap::checkImage(g_m, g_scan, g_rx, hash);
-        if (e) { abortWrite(e); return; }
-        // ESP-IDF validates the image (header, segments, appended SHA-256) before it can boot.
-        if (esp_ota_end(g_h) != ESP_OK) { g_st = St::Failed; g_err = "image-invalid"; return; }
-        if (esp_ota_set_boot_partition(g_part) != ESP_OK) { g_st = St::Failed; g_err = "set-boot-failed"; return; }
-        g_st = St::Done;
+        endWrite();
     } else if (up.status == UPLOAD_FILE_ABORTED) {
         abortWrite("upload-aborted");
     }
 }
 static void handleUploadDone() {
+    if (g_dl) { fail(409, "update-busy"); return; }
     if (g_st == St::Writing) abortWrite("upload-incomplete");
     if (g_st != St::Done) {
         note(rfcon::WARN, "OTA mislukt: %s (opstartpartitie ongewijzigd)", g_err);
@@ -273,6 +314,35 @@ static void handleUploadDone() {
     g_st = St::Idle;
     net::restartSoon();
 }
+
+// ---- the one-click update (fw_update_esp.cpp): the same checks and writer as begin + upload, v2 releases only ----
+bool pendingVerify() { return g_pending; }
+uint32_t updateSlotSize() { const esp_partition_t* p = esp_ota_get_next_update_partition(nullptr); return p ? p->size : 0; }
+const char* claimDownload() {   // loop task, before the worker task exists
+    if (g_dl || g_st == St::Writing) return "update-busy";
+    if (g_pending) return "confirm-running-image-first";
+    g_nonce[0] = 0; g_st = St::Idle; g_err = "none";   // a manual begin that was never uploaded is dropped
+    g_dl = true;
+    return nullptr;
+}
+void endDownload() {            // the worker, last: the writer is free again (a written image stays the boot slot)
+    if (g_st == St::Writing) abortWrite("download-ended");
+    g_st = St::Idle;
+    g_dl = false;
+}
+namespace {
+struct ReleaseSink : fwup::Sink {
+    const char* begin(const char* manifest, const char* sig) override {
+        if (!g_dl) return "not-ready";
+        if (const char* e = acceptManifest(manifest, sig, "", true)) { g_err = e; return e; }
+        return startWrite();
+    }
+    const char* write(const uint8_t* d, size_t n) override { return writeChunk(d, n); }
+    const char* finish() override { return endWrite(); }
+    void abort(const char* why) override { if (g_st == St::Writing) abortWrite(why); }
+};
+}  // namespace
+fwup::Sink& releaseSink() { static ReleaseSink s; return s; }
 
 // ---- GET /api/diag: why the last boot happened, crash summary, update state --------------
 static void handleDiag() {

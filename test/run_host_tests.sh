@@ -45,6 +45,7 @@ run rf_console -Wall -Wextra -Werror -I src test/test_rf_console.cpp src/rf_cons
 # web-control (txpoc layer). Needs the pinned ArduinoJson that `pio run -e heltec_v2_sx1276` fetches.
 AJ=.pio/libdeps/heltec_v2_sx1276/ArduinoJson/src
 run ota_policy -Wall -Wextra -Werror -I src -I $AJ test/test_ota_policy.cpp src/ota_policy.cpp
+run fw_update -Wall -Wextra -Werror -I src -I $AJ test/test_fw_update.cpp src/fw_update.cpp src/ota_policy.cpp
 run web_auth -Wall -Wextra -Werror -I src -I $AJ test/test_web_auth.cpp src/web_auth.cpp
 run provision -Wall -Wextra -Werror -I src test/test_provision.cpp src/provision.cpp
 run reset_gesture -Wall -Wextra -Werror -I src test/test_reset_gesture.cpp
