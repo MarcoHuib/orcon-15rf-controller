@@ -28,9 +28,9 @@ const caps = {
   tx_per_minute: 10, tx_per_hour: 60, dashboard: false, mqtt_supported: false,
 };
 const profileItems = [
-  { id: 1, name: 'Woonkamer', remote: '29:010101', unit: '29:020202', control_mapping: true, paired: false },
-  { id: 2, name: 'Zolder', remote: '29:010303', unit: '29:020202', control_mapping: true, paired: false },
-  { id: 3, name: 'Washok', remote: '29:010505', unit: '29:020202', control_mapping: true, paired: false },
+  { id: 1, name: 'Woonkamer', remote: '29:000101', unit: '29:000202', control_mapping: true, paired: false },
+  { id: 2, name: 'Zolder', remote: '29:000303', unit: '29:000202', control_mapping: true, paired: false },
+  { id: 3, name: 'Washok', remote: '29:000505', unit: '29:000202', control_mapping: true, paired: false },
 ];
 const profiles = () => ({ storage_ok: true, active: scenario === 'wizard' ? 0 : 1, limit: 4, items: scenario === 'wizard' ? [] : profileItems });
 const readSteps = n => ['away', 'auto', 'timer', '1', '2', '3'].map((key, i) => i < n
@@ -86,10 +86,10 @@ function state(req) {
   return {
     fw: FW, rx_only: false, caps, rf: 'receiving', token: csrf, mask_ids: true, active: 'none',
     auth: { enabled: true, logged_in: true },
-    unit: { known: true, id: '29:020202', mode: scenario === 'dashboard' ? 'medium' : 'auto', age_s: 4 },
+    unit: { known: true, id: '29:000202', mode: scenario === 'dashboard' ? 'medium' : 'auto', age_s: 4 },
     remotes: [
-      { id: '29:010101', age_s: 3, rssi: -58, cmd: '22F1', n: 4 },
-      { id: '29:010303', age_s: 8, rssi: -71, cmd: '22F1', n: 2 },
+      { id: '29:000101', age_s: 3, rssi: -58, cmd: '22F1', n: 4 },
+      { id: '29:000303', age_s: 8, rssi: -71, cmd: '22F1', n: 2 },
     ],
     wifi: setup.via_ap
       ? { connected: false, ap: true, ap_name: 'Orcon15RF-Setup', ip: '192.168.4.1', ssid: '' }
@@ -150,7 +150,7 @@ const server = http.createServer(async (req, res) => {
       ? { supported: true, id: 1, key: '2', minutes: 0, accepted: true, sent: true, confirm: 'confirmed', age_s: 1, phase: 'unit-reported-mode', unit_mode: 'medium', unit_age_s: 0, next_request: 2, budget: { minute: 1, minute_max: 10, hour: 1, hour_max: 60, air_ms_hour: 11, retry_s: 0 } }
       : { supported: true, id: 0, key: '', minutes: 0, accepted: false, sent: false, confirm: 'none', age_s: 0, phase: 'idle', next_request: 1, budget: { minute: 0, minute_max: 10, hour: 0, hour_max: 60, air_ms_hour: 0, retry_s: 0 } });
     if (req.method === 'GET' && url.pathname === '/api/setup/read/state') {
-      return json(res, 200, read.sid ? read : { ...read, remote: '29:010101', left_s: 0, ev: 0, rf: 'receiving', others: 0, why: '', why_ev: 0, why_cmd: '0000', why_mode: -1, steps: readSteps(0) });
+      return json(res, 200, read.sid ? read : { ...read, remote: '29:000101', left_s: 0, ev: 0, rf: 'receiving', others: 0, why: '', why_ev: 0, why_cmd: '0000', why_mode: -1, steps: readSteps(0) });
     }
     if (req.method === 'GET' && url.pathname === '/api/setup/pair/state') return json(res, 200, pair);
     if (req.method === 'GET' && url.pathname === '/api/setup/console') return json(res, 200, { now: 50000, next: 1, oldest: 1, lost: 0, more: false, ev: [] });
@@ -335,7 +335,7 @@ async function main() {
     await page.evaluate(() => { location.hash = 'read'; });
     await page.locator('#readP').waitFor({ state: 'visible' });
     await snap(page, 'remote-read-select-desktop');
-    await page.locator('[data-id="29:010101"]').click();
+    await page.locator('[data-id="29:000101"]').click();
     await page.locator('#run').waitFor({ state: 'visible' });
     await snap(page, 'remote-read-progress-desktop');
     await pageRequest('installed', { read: 'done' });
