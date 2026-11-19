@@ -21,12 +21,8 @@ test/test_log
 # Local secrets / overrides (keep real Wi-Fi/MQTT creds out of the repo)
 src/secrets.h
 
-# Scratch previews + large source art (the small embedded webp + header ship)
+# Scratch previews
 _*.html
-docs/img/house-cutaway.png
-docs/img/house_cutaway_base*.png
-docs/img/_try_*
-docs/img/_q_*
 
 # Flash tooling cache (tools/heltec_v2.sh)
 .flashtools/

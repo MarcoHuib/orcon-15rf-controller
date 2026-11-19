@@ -28,9 +28,9 @@ compileert niet (`#error`).
 | API / MQTT | `/api/cmd` en MQTT: elke sleutel buiten `maskids`/`showfilter`/`roomidx` → hele verzoek geweigerd (403 `{"err":"rx-only"}`), geen gedeeltelijke toepassing, geen NVS-schrijfactie |
 | Netwerkupdate | ArduinoOTA en `/update` zijn weggecompileerd; CI controleert dat het image die strings niet bevat |
 | MQTT | standaard **uit** op RX-only, tot op de setup-pagina "MQTT enabled" met een broker is ingesteld. NVS `mqtt`: afwezig = compile-default, `""` = uit, host = aan. Een lege host bij "aan" wordt geweigerd. Daarnaast: eigen namespace `orcon15rf_rx/…` en HA-node `orcon15rf_rx` (overschrijft nooit een productiebord), geen command-topic, geen HA-bedieningsentiteiten. `mqtt_on` en `mqtt_connected` staan in `/api/state`. |
-| Zichtbaarheid | state-JSON `rx_only:true`, `fw`, `tx_refused`, `cmd_rejected`; elke webpagina toont een RX-ONLY-banner met uitgeschakelde knoppen |
+| Zichtbaarheid | state-JSON `rx_only:true`, `fw`, `tx_refused`, `cmd_rejected`; de webinterface toont *Verbonden · alleen ontvangen* en bij Firmware *RX-only: alleen ontvangen*; de seriële opstartuitvoer meldt `RX-ONLY TEST FIRMWARE` (ook de OTA-markering van dit image) |
 
-Beperkingen: de webpagina's tonen nog de (uitgeschakelde) bedieningsknoppen. Er is geen authenticatie op de web-API. Een LAN-gebruiker kan UI-instellingen en `/api/ids`/`/api/wifi` wijzigen, maar kan niet zenden en geen firmware uploaden. USB-flashen blijft altijd mogelijk.
+Beperkingen: er is geen authenticatie op de web-API. Een LAN-gebruiker kan UI-instellingen en `/api/ids`/`/api/wifi` wijzigen, maar kan niet zenden en geen firmware uploaden. USB-flashen blijft altijd mogelijk.
 
 ## Ontvangst onder netwerkbelasting
 

@@ -108,6 +108,8 @@ on=lambda block:set(re.findall(r'server\.on\(\s*"([^"]+)"',block))
 assert on(routes)=={'/','/api/tx-poc/state','/api/tx-poc/mode','/api/oled'},on(routes)
 legacy_routes=on(legacy); assert {'/api/cmd','/api/ids','/api/wifi','/api/log','/update','/api/state'}<=legacy_routes
 assert not (legacy_routes-{'/','/api/oled'})&on(routes)
+# Phase-2 cleanup: the legacy dashboard pages and the house image are gone from every image.
+assert not {'/dashboard','/wifi','/widget','/widget.html','/flow','/house.jpg','/debug'}&on(net),on(net)
 assert 'server.onNotFound([](){ server.send(403,' in routes
 # Web control: read-only monitoring only; the control image adds its settings routes, each one
 # behind the web login (setupweb::authorize), nothing else.

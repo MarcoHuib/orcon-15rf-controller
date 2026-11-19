@@ -2,8 +2,8 @@
 
 `/` is de dagelijkse interface: dashboard met virtuele afstandsbediening en vier kaarten
 (actief profiel, WiFi, Siri, Systeem), profielbeheer en de installatiewizard (koppelen =
-uitlezen, simulatie = de bestaande koppelprocedure). De klassieke pagina staat op `/dashboard`. Alle andere pagina's en API's
-zijn ongewijzigd; hun "terug"-links wijzen nu naar `/dashboard`.
+uitlezen, simulatie = de bestaande koppelprocedure). De klassieke dashboardpagina's (`/dashboard`, `/wifi`, `/widget`,
+`/flow`, `/debug`) zijn verwijderd.
 
 | Bestand | Rol |
 |---|---|
@@ -70,7 +70,7 @@ Zonder `gzip` in `Accept-Encoding` volgt `406`: de pagina staat alleen gecomprim
  "profiles":{"storage_ok":true,"active":2,"limit":4,"items":[…]}}
 ```
 `caps.settings_pages` geeft aan of de klassieke instellings-API's (`/api/state`, `/api/netcfg`,
-`/api/scan`, `/api/wifi`, `/api/oled`) en `/dashboard` in deze build bestaan (niet in
+`/api/scan`, `/api/wifi`, `/api/oled`) in deze build bestaan (niet in
 TX-PoC/web-control-builds); de WiFi- en Systeemkaart zijn anders uitgeschakeld.
 
 ### `POST /api/setup/restart` en `POST /api/setup/wifi/forget`
@@ -222,7 +222,7 @@ Een verzonden aanbod kan niet worden ingetrokken. Na `cancel` loopt het venster 
 | `#done` | *Koppeling voltooid* + profielnaam + *Actief*, knop *Naar bediening* | – |
 | `#wifi` | actief netwerk + status + IP-adres; *Nieuw WiFi-netwerk instellen*; *WiFi-verbinding verwijderen* (met bevestiging) | dashboard |
 | `#wifinew` | scannen, lijst, SSID (ook verborgen), wachtwoord (leeg = huidig behouden, tonen/verbergen); opslaan herstart | WiFi |
-| `#system` | Firmware, Herstarten (met bevestiging), Apparaatinformatie, OLED-scherm, Integraties, Legacy dashboard (`/dashboard`) | dashboard |
+| `#system` | Firmware, Herstarten (met bevestiging), Apparaatinformatie, OLED-scherm, Integraties | dashboard |
 | `#firmware` | geïnstalleerde commit; geen updatecontrole en geen installatieknop (updates via de USB-procedure) | Systeem |
 | `#info` | netwerk, IP, uptime, laagste vrije heap, RF-ontvanger, frames, OLED, MQTT (uit `/api/state`) | Systeem |
 | `#oled` | stand Altijd aan / Automatisch (30 s) / Uit en *Scherm nu aan of uit* via `/api/oled`; PRG-knop toelichting | Systeem |

@@ -1,18 +1,16 @@
 # Heltec V2 — OLED-energiebesparing
 
-De instelling staat in het webportaal op **WiFi, MQTT & display setup** (`/wifi`),
-met een schermicoon direct op de **hoofdpagina** en de fysieke **PRG-knop** op
-het bord als snelle bediening. Met **Apply display setting** wordt de keuze
-direct toegepast en in NVS opgeslagen, zonder herstart. De WiFi/MQTT-knop
-**Save & reboot** is hiervoor niet nodig.
+De instelling staat in de webinterface onder **Systeem → OLED-scherm**, met de knop
+**Scherm nu aan of uit** en de fysieke **PRG-knop** op het bord als snelle bediening.
+Een gekozen stand wordt direct toegepast en in NVS opgeslagen, zonder herstart.
 
 | Stand | Gedrag |
 |---|---|
-| Auto (standaard) | Scherm aan bij opstarten; uit na 30 seconden. PRG-knop of het webicoon toont het scherm opnieuw 30 seconden. |
-| On | Scherm blijft aan. PRG-knop verandert niets; het webicoon zet het scherm tijdelijk uit tot de volgende actie of herstart. |
-| Off | Scherm direct uit, ook na opnieuw opstarten. PRG-knop of het webicoon geeft 30 seconden scherm ("peek"), daarna weer uit. |
+| Auto (standaard) | Scherm aan bij opstarten; uit na 30 seconden. PRG-knop of *Scherm nu aan of uit* toont het scherm opnieuw 30 seconden. |
+| On | Scherm blijft aan. PRG-knop verandert niets; *Scherm nu aan of uit* zet het scherm tijdelijk uit tot de volgende actie of herstart. |
+| Off | Scherm direct uit, ook na opnieuw opstarten. PRG-knop of *Scherm nu aan of uit* geeft 30 seconden scherm ("peek"), daarna weer uit. |
 
-Handmatige acties (PRG-knop, webicoon) veranderen nooit de opgeslagen stand en
+Handmatige acties (PRG-knop, *Scherm nu aan of uit*) veranderen nooit de opgeslagen stand en
 overleven geen herstart. Een ontbrekende of ongeldige opgeslagen keuze gebruikt
 Auto. Ontvangen berichten, OLED-refreshes en webverzoeken herstarten de timer
 niet. De timer blijft correct bij het overlopen van `millis()`; een verlopen
@@ -28,12 +26,11 @@ boot normaal, en reset + ingedrukt houden van PRG selecteert nog steeds de
 ROM-downloadmodus voor flashen. Er zit 30 ms ontrimpeling (debounce) op de
 detektie; een lange druk telt één keer. Andere builds gebruiken de pin niet.
 
-## Hoofdpagina-icoon
+## Webinterface
 
-Op de hoofdpagina (`/`) staat rechtsboven in de kop een schermicoon, alleen
-zichtbaar op de V2-build (`oled_available`). Tikken stuurt `{"toggle":1}` naar
+Onder **Systeem → OLED-scherm** stuurt *Scherm nu aan of uit* `{"toggle":1}` naar
 `/api/oled`: het scherm gaat direct uit als het aan staat, en anders direct
-aan (zelfde gedrag als de PRG-knop). Het icoon volgt `oled_on` uit
+aan (zelfde gedrag als de PRG-knop). De pagina volgt `oled_on` uit
 `/api/state` en is op RX-only-borden gewoon bruikbaar — het is een lokale
 scherminstelling, geen commando.
 
@@ -64,9 +61,8 @@ De instelling gebruikt een apart lokaal endpoint; de RX-only-allowlist van
 - Hosttests: `test/run_host_tests.sh` (inclusief grenswaarden, moduswissels,
   opgeslagen keuzes, herhaald toepassen, timer-overloop en handmatige
   wake/sleep-acties per stand).
-- Webtests: compileer `test/dump_pages.cpp` zoals in CI en voer
-  `dump-pages 5 | node test/test_oled_setup.js` en
-  `dump-pages 0 | node test/test_oled_main.js` uit.
+- Webtest: `node test/test_setup_page.js` (Systeem → OLED-scherm: standen en
+  *Scherm nu aan of uit* via `/api/oled`).
 - Compileer alle vier firmwarebuilds zoals in de bestaande CI-workflow.
 - Na afzonderlijk akkoord voor flashen: controleer Auto na opstarten en na Apply,
   On/Off en opslag over een herstart. Controleer een korte PRG-druk in elke

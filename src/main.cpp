@@ -28,6 +28,11 @@ void setup() {
     Serial.begin(DEBUG_SERIAL_BAUD);
     delay(200);
     Serial.printf("\nOrcon 15RF emulator starting... fw=%s\n", FW_VERSION);
+#if RX_ONLY && !ORCON_TX_POC
+    // OTA contract: the signed-OTA policy (ota_policy.cpp, also on boards in use) installs an rx-only image only
+    // when it contains this text. It used to come from the legacy web pages; keep it in the RX-only image.
+    Serial.println("RX-ONLY TEST FIRMWARE: receive only, no 868 MHz transmission");
+#endif
 
 #if ORCON_TX_POC
     txpoc::budgetBegin();      // the RF budget history kept in RTC memory, before any TX path runs

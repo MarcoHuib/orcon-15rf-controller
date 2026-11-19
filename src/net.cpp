@@ -16,7 +16,6 @@
 #include <esp_system.h>
 #include "ota_signed.h"
 #include "remote_profiles.h"
-#include "house_img.h"
 #if ORCON_OWNER_MODEL
 #include "owner_store.h"
 #include "reset_gesture.h"
@@ -397,16 +396,7 @@ static const char* applyCommand(JsonDocument& d) {
 // ---------------------------------------------------------------------------
 // HTTP handlers
 // ---------------------------------------------------------------------------
-static void handleRoot()  { server.send_P(200, "text/html", INDEX_HTML); }
-static void handleWifi()  { server.send_P(200, "text/html", SETUP_HTML); }
 static void handleLogPg() { server.send_P(200, "text/html", LOG_HTML);  }
-static void handleWidget() { server.send_P(200, "text/html", WIDGET_HTML); }
-static void handleFlow()   { server.send_P(200, "text/html", FLOW_HTML);   }
-static void handleHouseImg() {
-    server.sendHeader("Cache-Control", "max-age=86400");
-    server.send_P(200, "image/webp", (PGM_P)HOUSE_JPG, HOUSE_JPG_LEN);
-}
-static void handleDebug()  { server.send_P(200, "text/html", DEBUG_HTML);  }
 #if !RX_ONLY
 static void handleUpdatePage() { server.send_P(200, "text/html", UPDATE_HTML); }
 static void handleUpdateUpload() {
@@ -1362,14 +1352,7 @@ void begin() {
     server.onNotFound([](){ if (captiveRedirect()) return; server.send(403,"application/json","{\"error\":\"route-disabled-in-web-control\"}"); });
 #else
     setupweb::begin(server);            // "/" = setup wizard + /api/setup/*, /api/remote/*
-    server.on("/dashboard", handleRoot);
-    server.on("/wifi",      handleWifi);
     server.on("/log",       handleLogPg);
-    server.on("/widget",    handleWidget);
-    server.on("/widget.html", handleFlow);
-    server.on("/flow",      handleFlow);
-    server.on("/house.jpg", handleHouseImg);
-    server.on("/debug",     handleDebug);
 #if !RX_ONLY
     server.on("/update",    HTTP_GET,  handleUpdatePage);
     server.on("/update",    HTTP_POST, handleUpdateDone, handleUpdateUpload);

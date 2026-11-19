@@ -25,7 +25,7 @@ const caps = {
   rx_supported: true, tx_supported: true, read_supported: true, pair_supported: true,
   control_supported: true, simulated: false, timer_supported: false,
   profile_control_supported: true, settings_pages: true, tx_max_per_boot: 0,
-  tx_per_minute: 10, tx_per_hour: 60, dashboard: false, mqtt_supported: false,
+  tx_per_minute: 10, tx_per_hour: 60, mqtt_supported: false,
 };
 const profileItems = [
   { id: 1, name: 'Woonkamer', remote: '29:000101', unit: '29:000202', control_mapping: true, paired: false },

@@ -113,7 +113,7 @@ if ($Sanitizer -eq 'None') {
         $source = if ($page -eq 'legacy') {'test/dump_pages.cpp'} else {'test/dump_tx_poc.cpp'}
         $code = Invoke-Check ('compile-pages-' + $page) $Compiler @('-std=c++17','-DPROGMEM=','-I','src','-I','test/shim',$source,'-o',$binary)
         if ($code -ne 0) { continue }
-        $indices = if ($page -eq 'legacy') {0..6} else {0}
+        $indices = if ($page -eq 'legacy') {0..1} else {0}
         foreach ($i in $indices) {
             $name = 'page-' + $page + '-' + $i
             $code = Invoke-Check $name $binary @([string]$i)
@@ -124,8 +124,6 @@ if ($Sanitizer -eq 'None') {
             [IO.File]::WriteAllText($js,($scripts -join "`n;`n"))
             $null = Invoke-Check ('syntax-' + $name) 'node' @('--check',$js)
             if ($page -eq 'poc') { $null = Invoke-Check 'poc-web' 'node' @('test/test_tx_poc_web.js') 30 $html }
-            if ($page -eq 'legacy' -and $i -eq 0) { $null = Invoke-Check 'oled-main-web' 'node' @('test/test_oled_main.js') 30 $html }
-            if ($page -eq 'legacy' -and $i -eq 5) { $null = Invoke-Check 'oled-setup-web' 'node' @('test/test_oled_setup.js') 30 $html }
         }
     }
 }

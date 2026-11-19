@@ -184,8 +184,8 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         await back(); await open('system');
         assert.equal(p.location.hash, '#system'); assert.equal(p.$('title').textContent, 'Systeem'); assert.equal(p.$('fwSub').textContent, 'Versie 0123456');
         assert.equal(p.$('oledSub').textContent, 'Automatisch: uit na 30 seconden'); assert.equal(p.$('intSub').textContent, 'MQTT uit');
-        assert.ok(p.dom.all.some(e => e.attrs.href === '/dashboard' && /card/.test(e.attrs.class || '')));
-        ok('Systeem: firmware, restart, device info, OLED, integrations and the legacy dashboard');
+        assert.ok(!/href="\/dashboard"/.test(html) && !p.dom.all.some(e => e.attrs.href === '/dashboard'));
+        ok('Systeem: firmware, restart, device info, OLED and integrations; no legacy dashboard link (removed)');
         dlg.confirm = false; p.$('sRestart').click(); await flush(); assert.ok(!p.posts().some(c => c.key.endsWith('/restart')));
         dlg.confirm = true; p.$('sRestart').click(); await flush(); assert.ok(p.posts().some(c => c.key === 'POST /api/setup/restart')); assert.match(p.$('setM').textContent, /herstart/);
         ok('restart only after confirmation');
@@ -630,7 +630,7 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
     // ---- web login: no default password, recovery code, login, logout, account, RF budget messages -------
     {
         const st = { fw: 'test', auth: { enabled: true, logged_in: false, password_set: false, login_wait_s: 0 }, wifi: { ap: false } };
-        const full = state({ ...CAPS_TX, profile_control_supported: true, settings_pages: true, tx_per_minute: 10, tx_per_hour: 60, dashboard: false, mqtt_supported: false },
+        const full = state({ ...CAPS_TX, profile_control_supported: true, settings_pages: true, tx_per_minute: 10, tx_per_hour: 60, mqtt_supported: false },
                            { profiles: PF([PI(2, 'Thuis', '29:000101')], 2), auth: { enabled: true, logged_in: true }, token: 'csrf1' });
         let logged = false, rs = { id: 0, phase: 'idle', confirm: 'none', budget: { minute: 3, minute_max: 10, hour: 9, hour_max: 60, air_ms_hour: 120, retry_s: 0 } };
         const routes = {
@@ -665,8 +665,8 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.deepEqual(setCall.body, { code: 'ABCD-EFGH', password: 'nieuw-wachtwoord' });
         assert.equal(p.location.hash, '#control'); assert.equal(p.$('authP').hidden, true); assert.equal(p.$('logout').hidden, false);
         ok('code + password: logged in, on to the dashboard; "Afmelden" in the header');
-        assert.equal(p.$('dashL').hidden, true); assert.equal(p.$('cInt').hidden, true); assert.equal(p.$('cAcct').hidden, false);
-        ok('control image: no classic-dashboard link, no MQTT card, an Account card');
+        assert.equal(p.$('cInt').hidden, true); assert.equal(p.$('cAcct').hidden, false);
+        ok('control image: no MQTT card, an Account card');
         assert.match(p.$('ctlM').textContent, /Zendbudget: nog 7 van 10 deze minuut, 51 van 60 dit uur/);
         ok('control screen shows the remaining RF budget');
         p.keys[4].click(); await flush();

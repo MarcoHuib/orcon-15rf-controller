@@ -100,7 +100,7 @@ Onderstaand pad met de OTA-sleutel werkt alleen nog op een gemigreerd apparaat (
 - Ook met aanmelden: hetzelfde wachtwoord, uit dezelfde NVS.
 - `/api/ids` (identiteit wijzigen) en `/api/cmd` zijn verwijderd.
 - `/api/wifi`, `/api/oled`, `/api/netcfg` en `/api/scan` werken alleen na aanmelden.
-- Het klassieke dashboard blijft leesbaar, maar kan niets meer wijzigen.
+- Het klassieke dashboard en de andere oude pagina's (`/dashboard`, `/wifi`, `/widget`, `/flow`, `/debug`) zijn verwijderd; de webinterface op `/` blijft.
 
 ## Installeren (alleen na expliciete toestemming per OTA)
 
