@@ -58,6 +58,9 @@ Bron: `tools/test_ab_transition.py`. Die test schrijft echte otadata-bytes volge
 - Het opstartslot verandert pas als het volledige image alle controles heeft doorstaan. Tot dan blijft b75fad3 het opstartimage.
 - Tijdens een proefstart wordt geen nieuwe update gestart, zowel in `ota_signed.cpp` als in `fw_update_esp.cpp`.
 - Een afgewezen image wordt onbootbaar gemaakt (eerste sector gewist). Een proefstart die zich niet kan bevestigen, valt na 300 s terug (Codex r3).
+- Een vastgelopen hoofdlus leidt binnen 20 s (proefstart of geselecteerd image) of 120 s tot een herstart (lus-watchdog, Codex r5). In een proefstart is dat een rollback.
+- Er wordt niet geschreven naar een slot dat de bootloader nog als opstartkeuze heeft (`boot-slot-mismatch`, Codex r4).
+- Een onbevestigde update die de eigendomsopslag niet kan lezen, keert na 300 s alleen terug naar een **geverifieerd** image van het eigenaarsmodel (Codex r4/r5). Anders volgt OWNER-10: RST.
 
 **Wat je verliest, en dat is bewust (opdracht fase 2):** zodra de eerste control-release begint te schrijven, is het RX-only-image in app0 weg, **ook als de update daarna mislukt**. b75fad3 control blijft altijd de werkende terugval.
 

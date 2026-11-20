@@ -297,6 +297,28 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.match(p.$('upM').textContent, /Downloaden en controleren… 60%/); assert.ok(!/teruggekeerd|niets geïnstalleerd/.test(p.$('upM').textContent + p.$('err').textContent));
         ok('a missed status poll during the download is not reported as a rollback; the download is followed again; control build labelled as such');
     }
+    {   // r5: both status calls miss once on a retry over a stale aborted slot: no rollback claim; a lost install reply is followed
+        const OLD = '1'.repeat(40), NEW = '2'.repeat(40);
+        let down = false, updDown = false, rebooted = false, up;
+        const latest = { release: 1003000, name: '1.3.0', commit: NEW, size: 1000, notes: '' };
+        up = { supported: true, phase: 'idle', job: 'check', error: '', checked: true, checked_age_s: 5, found: 'newer', latest, progress: { done: 0, total: 0 } };
+        const p = await page({
+            'GET /api/setup/state': () => [200, state({ ...CAPS_TX, settings_pages: true, update_check: true }, { fw: OLD, setup: { state: 'done', key: true }, profiles: PF([PI(2, 'Washok', '29:000101')], 2) })],
+            'GET /api/state': () => [200, {}],
+            'GET /api/ota': () => { if (down) throw new Error('x'); return [200, rebooted ? { fw: NEW, running: 'app0', running_state: 'valid', next: 'app1', next_state: 'valid', release: 1003000 }
+                                                                                : { fw: OLD, running: 'app1', running_state: 'valid', next: 'app0', next_state: 'aborted', release: 1002003, release_name: '1.2.3' }]; },
+            'GET /api/update': () => { if (updDown) throw new Error('x'); return rebooted ? [401, { error: 'login-required' }] : [200, up]; },
+            'POST /api/update/install': () => { up = { ...up, phase: 'downloading', job: 'install', progress: { done: 300, total: 1000 } }; throw new Error('reply lost'); },
+        }, 'firmware');
+        dlg.confirm = true; p.$('upInst').click(); await flush();
+        assert.ok(!/niet gestart/.test(p.$('err').textContent)); assert.match(p.$('upM').textContent, /nagaan|Downloaden/);
+        down = true; updDown = true; await p.refresh(); down = false; updDown = false; await p.refresh(); await p.refresh();
+        assert.ok(!/teruggekeerd|niet actief/.test(p.$('upM').textContent + p.$('err').textContent)); assert.match(p.$('upM').textContent, /Downloaden en controleren… 30%/);
+        ok('stale aborted slot plus missed status calls: no rollback claim; a lost install reply keeps following the download (Codex r5)');
+        rebooted = true; await p.refresh(); await p.refresh();
+        assert.match(p.$('upM').textContent, /Update geslaagd: v1\.3\.0/);
+        ok('...and the confirmation is still shown after the restart');
+    }
     {   // a paused tab misses "written" and the restart (Codex r2): the page still follows by /api/ota, never jumps to the login
         const OLD = '1'.repeat(40), NEW = '2'.repeat(40);
         let rebooted = false, valid = false;

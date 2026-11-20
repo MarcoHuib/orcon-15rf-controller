@@ -164,6 +164,7 @@ const char* httpGet(Transport& t, const char* url, Clock now, uint32_t deadline,
     for (int hop = 0;; ++hop) {
         if (expired(now, deadline)) return "timeout";
         if (!t.connect(u.host, budget(now, deadline, lim.connectMs))) { const char* e = t.connectError(); return expired(now, deadline) ? "timeout" : e ? e : "connect-failed"; }
+        if (expired(now, deadline)) { t.stop(); return "timeout"; }   // connected late: no request (Codex r5)
         if (!(send(t, "GET ") && send(t, u.path) && send(t, " HTTP/1.1\r\nHost: ") && send(t, u.host) &&
               send(t, "\r\nUser-Agent: orcon-heltec-v2\r\nAccept: application/octet-stream\r\nAccept-Encoding: identity\r\n"
                       "Connection: close\r\n\r\n"))) { t.stop(); return "connection-lost"; }

@@ -18,5 +18,6 @@ const char* claimDownload();     // loop task: nullptr = the download owns the w
 void endDownload();              // the worker, when done: the writer is free again
 void rollbackNow();              // mark the running (trial) image invalid and restart into the previous one
 bool previousIsOwnerModel();     // the other slot holds a confirmed image of the ownership model
+void heartbeat();                // the main loop is alive (ota::tick, upload chunks); see the loop watchdog
 fwup::Sink& releaseSink();       // signature + manifest + slot checks, then hash/scan/write; finish selects the slot
 }

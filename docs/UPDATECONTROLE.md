@@ -44,6 +44,15 @@ Er wordt niet geschreven naar het slot dat de bootloader nog als opstartkeuze he
 
 Een onbevestigde update die de eigendomsopslag niet kan lezen, keert na 300 s alleen terug als het andere slot een bevestigd image van het eigenaarsmodel is. Anders geldt OWNER-10: RST.
 
+**Lus-watchdog (Codex r5).** De webserver van Arduino 2.0.16 kan op een misvormd multipart-verzoek eindeloos blijven lussen, nog vóór enige routecode draait. Een taak op core 0 herstart daarom het bord als de hoofdlus niet meer tikt:
+- na 20 s bij een proefstart, een geselecteerd image of een geplande herstart (een herstart in een proefstart betekent rollback);
+- na 120 s in alle andere gevallen.
+
+Verder:
+- Het PRG-menu en WiFi-opslaan wachten op een installatie, op alle builds.
+- "Teruggedraaid" meldt de pagina alleen na een geziene proefstart.
+- Een verloren antwoord op het installatie- of uploadverzoek wordt via `/api/ota` toch gevolgd.
+
 Herstartplanning is wrap-veilig. De status toont de fout van de schrijver nooit terwijl de download die bezit. Gelukt betekent: commit, releasenummer, het andere slot én *valid*.
 
 ## Hoe het werkt

@@ -24,6 +24,7 @@
 #include <ArduinoJson.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
+#include <esp_image_format.h>
 #include <atomic>
 #include <esp_system.h>
 #include <esp_core_dump.h>
@@ -311,6 +312,7 @@ static const char* endWrite() {
 
 // ---- POST /api/ota/upload (multipart, one file) -----------------------------------------
 static void handleUploadData() {
+    heartbeat();   // an upload runs inside one handleClient(): each received chunk is progress
     HTTPUpload& up = g_s->upload();
     if (up.status == UPLOAD_FILE_START) {
         // A refused upload is closed here, before its body: the WebServer reads a multipart body without any
@@ -417,8 +419,28 @@ static void handleDiag() {
     g_s->send(200, "application/json", o);
 }
 
+// ---- loop watchdog (Codex r5) ---------------------------------------------------------------------------------------
+// Arduino 2.0.16's WebServer can loop forever inside handleClient() on a malformed multipart request, before any route
+// code runs. A stuck loop would stop the trial-boot confirmation, the 300 s rollback and a scheduled restart. This task
+// (core 0, above the loop's priority) restarts the board when the loop stops beating: after 20 s while a trial boot, a
+// selected image or a scheduled restart waits (a restart in a trial boot is a rollback), after 120 s otherwise.
+static std::atomic<uint32_t> g_beat{0};
+void heartbeat() { g_beat = millis(); }
+static void loopWatch(void*) {
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        const uint32_t still = millis() - g_beat.load();
+        if (still > (g_pending || g_selected || net::restartQueued() ? 20000u : 120000u)) {
+            Serial.printf("[ota] main loop stuck for %lu s: restart\n", (unsigned long)(still / 1000));
+            esp_restart();
+        }
+    }
+}
+
 void begin(WebServer& s) {
     g_s = &s;
+    heartbeat();
+    if (xTaskCreatePinnedToCore(loopWatch, "loop_watch", 2048, nullptr, 2, nullptr, 0) != pdPASS) Serial.println("[ota] loop watchdog not started");
     // Boot breadcrumb in RTC memory: no flash wear, survives everything but power loss.
     if (g_crumb.magic == 0x4F524331u) { g_prevKnown = true; g_prevUptimeS = g_crumb.lastUptimeS; ++g_crumb.boots; }
     else { g_crumb.magic = 0x4F524331u; g_crumb.boots = 1; }
@@ -439,6 +461,7 @@ void begin(WebServer& s) {
 }
 
 void tick(uint32_t now) {
+    heartbeat();
     static uint32_t lastCrumb = 0;
     if (now - lastCrumb >= 5000) { lastCrumb = now; g_crumb.lastUptimeS = now / 1000; }
     if (g_nonce[0] && now - g_nonceMs >= NONCE_TTL_MS) g_nonce[0] = 0;   // a 49.7-day millis() wrap must not revive it
@@ -473,12 +496,15 @@ bool previousIsOwnerModel() {
     const esp_partition_t* p = esp_ota_get_next_update_partition(nullptr);
     esp_ota_img_states_t st;
     if (!p || esp_ota_get_state_partition(p, &st) != ESP_OK || st != ESP_OTA_IMG_VALID) return false;
+    esp_image_metadata_t meta;   // the bootable image itself, not stale bytes after a smaller one (Codex r5)
+    const esp_partition_pos_t pos{p->address, p->size};
+    if (esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &pos, &meta) != ESP_OK) return false;
     otap::Scanner s("");
     uint8_t buf[1024];
-    for (uint32_t off = 0; off < p->size && !(s.ownerModel && s.signedOta); off += sizeof(buf)) {
-        if (esp_partition_read(p, off, buf, sizeof(buf)) != ESP_OK) return false;
-        if (off == 0 && buf[0] != 0xE9) return false;
-        s.feed(buf, sizeof(buf));
+    for (uint32_t off = 0; off < meta.image_len; off += sizeof(buf)) {
+        const uint32_t n = meta.image_len - off < sizeof(buf) ? meta.image_len - off : sizeof(buf);
+        if (esp_partition_read(p, off, buf, n) != ESP_OK) return false;
+        s.feed(buf, n);
     }
     return s.ownerModel && s.signedOta && !s.legacyOta;
 }

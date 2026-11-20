@@ -341,7 +341,10 @@ def update_safe(src):
     assert 'same = g_st.found == fwup::Found::Newer && g_offer.m.version == want && !strcmp(g_offer.m.commit, commit)' in fn(src,'static const char* startJob('),'startJob re-checks the approved build'
     assert 'ota::claimDownload()' in src and 'ota::releaseSink()' in src,'install must use the signed-OTA writer'
     wifi=fn(Path('src/net.cpp').read_text(),'static void handleWifiSave() {')
-    assert wifi.lstrip().startswith('#if ORCON_UPDATE_CHECK\n    if (updsvc::busy())'),'saving WiFi (it reboots) waits for an install (Codex r3)'
+    assert wifi.lstrip().startswith('if (updsvc::busy())'),'saving WiFi (it reboots) waits for an install, on every build (Codex r3/r5)'
+    prg=fn(Path('src/net.cpp').read_text(),'static void prgPoll(')
+    assert 'if (updsvc::busy()) {' in prg,'the PRG menu (it restarts) waits for an install (Codex r5)'
+    assert 'heartbeat();' in fn(ota_src,'void tick(uint32_t now) {') and 'xTaskCreatePinnedToCore(loopWatch' in ota_src,'the loop watchdog runs and is fed by the loop (Codex r5)'
     assert 'if (g_restart || net::restartQueued()) return "restart-pending";' in fn(src,'static const char* startJob('),'no new job while a restart is queued'
     assert 'ota::writerBusy()' in fn(src,'bool busy() {'),'a manual upload blocks RF commands too'
 upd=Path('src/fw_update_esp.cpp').read_text(); update_safe(upd)
@@ -371,6 +374,7 @@ print('PASS update check: owner session first, pinned TLS roots, no insecure TLS
 # says "changed", these say WHAT would be wrong (a trigger, a secret outside the signing job, a write token, an
 # unpinned action, an expression in a script, another image, a skipped check, hardware access, ...).
 def yaml_subset(text):
+    assert text.isascii(),'non-ASCII in the workflow (e.g. a no-break space that this reader would strip; Codex r5)'
     """A strict reader for the YAML the release workflow uses: block mappings and sequences, '|' block scalars, plain
     and quoted scalars, {} and [a, b] flow items. Anything else (anchors, tags, folded scalars, odd indentation,
     duplicate keys) raises AssertionError: fail closed."""
@@ -464,6 +468,10 @@ REL_REQUIRED=(('prepare','python3 -I tools/release_ci.py source --repo "$REPO" -
     ('verify','python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --official --notes="$NOTES"'),
     ('publish','test "$(sha256sum SHA256SUMS | cut -d\' \' -f1)" = "$SUMS"'),('publish','test "$(sha256sum RELEASE_NOTES.md | cut -d\' \' -f1)" = "$NOTES_SHA"'),
     ('publish','sha256sum -c SHA256SUMS'),('publish','if [ "$floor" -ge "$NUMBER" ]; then'),
+    ('publish','floor="$(awk \'/^v?(0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)$/ { sub(/^v/, ""); split($0, p, "."); n = p[1] * 1000000 + p[2] * 1000 + p[3]; if (n > m) m = n } END { print m + 0 }\' "$RUNNER_TEMP/tags.txt")"'),
+    ('publish','cmp <(ls "$RUNNER_TEMP/check" | sort) <( (printf \'%s\\n\' "${files[@]}"; echo SHA256SUMS) | sort)'),
+    ('prepare','git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n \'s#^refs/tags/##p\' | sed \'s/\\^{}$//\''),
+    ('publish','git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n \'s#^refs/tags/##p\' | sed \'s/\\^{}$//\''),
     ('publish','gh api -X POST "repos/${REPO}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${SHA}" > /dev/null'),
     ('publish','printf \'%s\' "$id" | grep -qxE \'[0-9]+\''),
     ('publish','for f in "${files[@]}" SHA256SUMS; do cmp -- "$f" "$RUNNER_TEMP/check/$f"; done'),
@@ -514,6 +522,7 @@ def release_workflow_safe(text):
                     assert not l.startswith(('#','!')) and not any(t in l for t in ('||','&&','exit 0')+REL_BANNED) and not REL_BANNED_CMD.search(l),(name,'a script construct that can hide a failure',l)
                     assert not REL_CTL_START.match(l) or l in REL_CONTROL,(name,'shell control line outside the reviewed set',l)
                     assert not re.search(r'(^|[^\w-])gh\s',l) or l in REL_GH,(name,'GitHub CLI call outside the reviewed set',l)
+            assert 'secrets' not in str(st.get('with')).lower() and 'github.token' not in str(st.get('with')),(name,'credential in an action input (Codex r5)')
             for k,v in (st.get('env') or {}).items():
                 assert ('secrets' in str(v).lower())==(name=='sign' and k=='ORCON_OTA_SIGNING_KEY'),(name,'secret outside the signing step',k)
                 assert 'github.token' not in str(v) or (k=='GH_TOKEN' and name in ('prepare','publish')),(name,'token outside prepare/publish',k)
@@ -543,7 +552,7 @@ def release_workflow_safe(text):
     assert not any('uses' in st and st['uses'].startswith('actions/checkout@') for st in jobs['publish']['steps']),'publish runs no repository code'
     assert all('run' in st or st['uses'].split('@')[0] in ('actions/checkout','actions/upload-artifact','actions/download-artifact') for st in jobs['sign']['steps']),'signing job: no setup actions'
 WORKFLOWS={'heltec-v2-rx-only.yml':'fbf3af64a87be3822246c0adc17ba3cb5ec42c1ddb725c455153f8fd4ea7a563',   # file -> sha256 of the reviewed content
-           'release-control.yml':'03ad689f4a9718484e13cbb85e8ff31fdd9246fadc1b07927b3b437c529bf8f8'}
+           'release-control.yml':'28e70cd6dd9f9bc132bc3681a15757987bae800bdfa7f67d274a84831e181f5f'}
 def workflows_reviewed(files):   # files: name -> bytes (None: not a regular file) of every *.yml/*.yaml entry
     assert sorted(files)==sorted(WORKFLOWS),('workflow files differ from the reviewed list',sorted(files))
     for n,data in files.items():
@@ -556,7 +565,8 @@ wf_files={x.name:(x.read_bytes() if x.is_file() and not x.is_symlink() else None
 workflows_reviewed(wf_files)
 # GitHub runs what is committed: the same check on HEAD's tree (a committed change hidden by the working copy, or a
 # symlinked .github/workflows, is refused too). Only top-level entries count, as for GitHub.
-head=subprocess.run(['git','ls-tree','-z','HEAD','--','.github/workflows/'],capture_output=True)
+NOREPLACE=dict(os.environ,GIT_NO_REPLACE_OBJECTS='1')   # never a locally replaced object instead of the commit (Codex r5)
+head=subprocess.run(['git','ls-tree','-z','HEAD','--','.github/workflows/'],capture_output=True,env=NOREPLACE)
 if head.returncode:   # Codex r4: never pass silently; a source archive without git must say so explicitly
     assert os.environ.get('ORCON_GUARD_NO_GIT')=='1',('cannot read HEAD\'s committed workflow tree',head.stderr[-200:])
     print('NOT TESTED: the committed workflow tree (ORCON_GUARD_NO_GIT=1: no git checkout)')
@@ -566,7 +576,7 @@ else:
         meta,path=entry.split(b'\t',1); mode,kind,obj=meta.split()
         name=path.decode().rsplit('/',1)[-1]
         if name.lower().endswith(('.yml','.yaml')):
-            tree[name]=(subprocess.run(['git','cat-file','blob',obj.decode()],capture_output=True,check=True).stdout
+            tree[name]=(subprocess.run(['git','cat-file','blob',obj.decode()],capture_output=True,check=True,env=NOREPLACE).stdout
                         if kind==b'blob' and mode in (b'100644',b'100755') else None)
     workflows_reviewed(tree)
 stub=wf_files['heltec-v2-rx-only.yml'].replace(b'\r\n',b'\n'); pushed=stub.replace(b'  workflow_dispatch:\n',b'  workflow_dispatch:\n  push:\n',1)
@@ -649,6 +659,11 @@ REL_MUTATIONS={
   'publish-before-compare': rel_mut('          gh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/check"\n','          gh release edit "$TAG" --repo "$REPO" --draft=false --latest\n          gh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/check"\n'),
   'unchecked-sums': rel_mut('          test "$(sha256sum SHA256SUMS | cut -d\' \' -f1)" = "$SUMS"\n',''),
   'quoted-apostrophe': rel_mut("        description: 'Versie: MAJOR.MINOR.PATCH, bijvoorbeeld 1.0.0'","        description: 'Versie''s: MAJOR.MINOR.PATCH'"),
+  'floor-zero': rel_mut('END { print m + 0 }','END { print 0 }'),
+  'no-asset-inventory': rel_mut('          cmp <(ls "$RUNNER_TEMP/check" | sort) <( (printf \'%s\\n\' "${files[@]}"; echo SHA256SUMS) | sort)\n',''),
+  'no-break-space': rel_mut('    environment: orcon-production-release\n','    environment: orcon-production-release\u00a0\n'),
+  'secret-as-action-input': rel_mut('        with:\n          name: release-signed\n','        with:\n          name: release-signed\n          token: ${{ secrets.ORCON_OTA_SIGNING_KEY }}\n').replace('          ORCON_OTA_SIGNING_KEY: ${{ secrets.ORCON_OTA_SIGNING_KEY }}\n','          ORCON_OTA_SIGNING_KEY: x\n'),
+  'nested-tag-name': rel_mut("| cut -f2 | sed -n 's#^refs/tags/##p'","| sed -n 's#^.*refs/tags/##p'"),
   'duplicate-key': rel_mut('  PYTHONDONTWRITEBYTECODE: \'1\'\n','  PYTHONDONTWRITEBYTECODE: \'1\'\n  RELEASE_ENV: heltec_v2_sx1276_rftest\n'),
 }
 for name,txt in REL_MUTATIONS.items():

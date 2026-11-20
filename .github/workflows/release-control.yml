@@ -76,7 +76,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           {
-            git ls-remote --tags "https://github.com/${REPO}.git" | sed -n 's#^.*refs/tags/##p' | sed 's/\^{}$//'
+            git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n 's#^refs/tags/##p' | sed 's/\^{}$//'
             gh api --paginate "repos/${REPO}/releases" --jq '.[].tag_name'
           } > "$RUNNER_TEMP/tags.txt"
           python3 -I tools/release_ci.py version "$VERSION" --tags "$RUNNER_TEMP/tags.txt" --notes="$NOTES" >> "$GITHUB_OUTPUT"
@@ -305,7 +305,7 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           {
-            git ls-remote --tags "https://github.com/${REPO}.git" | sed -n 's#^.*refs/tags/##p' | sed 's/\^{}$//'
+            git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n 's#^refs/tags/##p' | sed 's/\^{}$//'
             gh api --paginate "repos/${REPO}/releases" --jq '.[].tag_name'
           } > "$RUNNER_TEMP/tags.txt"
           floor="$(awk '/^v?(0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)$/ { sub(/^v/, ""); split($0, p, "."); n = p[1] * 1000000 + p[2] * 1000 + p[3]; if (n > m) m = n } END { print m + 0 }' "$RUNNER_TEMP/tags.txt")"

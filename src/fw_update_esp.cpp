@@ -81,7 +81,8 @@ struct TlsTransport : fwup::Transport {
         if (used + 1000 > ms) { err = "timeout"; return false; }
         c.setHandshakeTimeout((ms - used) / 1000);
         c.setTimeout((ms - used) / 1000);
-        if (!c.connect(ip, 443, host, FWUP_ROOTS_PEM, nullptr, nullptr)) {
+        if (!c.connect(ip, 443, host, FWUP_ROOTS_PEM, nullptr, nullptr) || millis() - t0 > ms) {   // TCP + TLS within the step too (Codex r5)
+            if (c.connected()) { c.stop(); err = "timeout"; sampleHeap(); return false; }
             char b[8];
             err = c.lastError(b, sizeof(b)) < -1 ? "tls-failed" : "connect-failed";   // -1: TCP connect or handshake timeout
             sampleHeap();

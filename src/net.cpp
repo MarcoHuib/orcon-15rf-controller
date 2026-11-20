@@ -447,9 +447,7 @@ static void handleScan() {
 
 // POST /api/wifi {ssid,pass} -> save + reboot
 static void handleWifiSave() {
-#if ORCON_UPDATE_CHECK
-    if (updsvc::busy()) { server.send(409, "application/json", "{\"error\":\"update-busy\"}"); return; }   // its reboot would cut the install
-#endif
+    if (updsvc::busy()) { server.send(409, "application/json", "{\"error\":\"update-busy\"}"); return; }   // its reboot would cut an install (all builds)
     JsonDocument d;
     if (deserializeJson(d, server.arg("plain"))) {
         server.send(400, "application/json", "{\"err\":\"bad json\"}"); return;
@@ -607,6 +605,7 @@ static void prgPoll(uint32_t now) {
     // Every menu action restarts the board. During an OTA trial boot that would roll the update
     // back first, so all three wait until the new image has confirmed itself (at most 5 minutes).
     if (ownerstore::unsettledBoot()) { notice("Even wachten:", "update nog niet", "bevestigd (5 min)", 6000); return; }
+    if (updsvc::busy()) { notice("Even wachten:", "update bezig,", "daarna herstart", 6000); return; }   // never cut an install (Codex r5)
     switch (a) {
         case Action::Recovery:
             setupweb::note(rfcon::WARN, "PRG-menu: herstelmodus (setup-accesspoint, 15 minuten)");

@@ -63,7 +63,12 @@ Het hele pakket is opnieuw gehasht tussen elke twee jobs (job-outputs). Er draai
 - elke verplichte controle als eigen scriptregel;
 - geen escapes in quoted YAML.
 
-Daarnaast staat elke verplichte controle als exacte eigen regel. Alle besturingsregels (`if`/`for`/`{`) en alle `gh`-aanroepen moeten exact gereviewd zijn. `--help`, functiedefinities, `alias`/`set`/`eval`/`source` en een kale CR zijn verboden. Een onleesbare HEAD-boom laat de controle falen. Elke eigenschap heeft een mutatie die geweigerd moet worden (66 stuks), waaronder:
+Daarnaast staat elke verplichte controle als exacte eigen regel. Alle besturingsregels (`if`/`for`/`{`) en alle `gh`-aanroepen moeten exact gereviewd zijn. `--help`, functiedefinities, `alias`/`set`/`eval`/`source` en een kale CR zijn verboden. Een onleesbare HEAD-boom laat de controle falen. Daarnaast gelden:
+- alleen ASCII in het bestand;
+- geen secrets of token in `with:`;
+- git-replacement-objecten uitgeschakeld.
+
+Elke eigenschap heeft een mutatie die geweigerd moet worden (71 stuks), waaronder:
 - PR- en tagtriggers;
 - secret in een andere job;
 - `secrets: inherit`;

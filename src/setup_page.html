@@ -395,6 +395,7 @@ if(!o){const u=await getJ('/api/update');if(u&&!u._status&&u.job==='install'&&u.
 else if(o.running!==f.oldSlot){f.stage='restart';f.t1=Date.now()}
 else{const u=await getJ('/api/update');
 if(u&&!u._status){UP=u;if(u.job==='install'&&u.phase==='failed'){UPF=null;err(say(u.error));return}
+if(u.job!=='install'&&Date.now()-f.t0>15000){UPF=null;err('De installatie is niet gestart. Probeer het opnieuw.');return}
 if(u.phase==='written'){f.stage='restart';f.t1=Date.now();f.msg='Gedownload en gecontroleerd (handtekening, controlesom, type en versie). De controller herstart nu in een proefstart…';return}
 f.msg='Downloaden en controleren… '+(u.progress&&u.progress.total?Math.floor(u.progress.done*100/u.progress.total):0)+'%'}
 else if(u&&u._status===401){f.stage='restart';f.t1=Date.now();return}
@@ -409,8 +410,8 @@ else if(o.running===f.oldSlot){   // the old image: still downloading (a missed 
 const u=await getJ('/api/update');
 if(u&&!u._status&&u.job==='install'&&u.phase==='downloading'){UP=u;f.stage='dl';f.off=0;return}
 if(u&&!u._status&&u.job==='install'&&u.phase==='failed'){UPF=null;err(say(u.error));return}
-if(f.trial||(f.off&&(o.next_state==='invalid'||o.next_state==='aborted'))){f.end=1;f.msg='De nieuwe firmware is niet bevestigd: de controller is automatisch teruggekeerd naar de vorige versie ('+String(o.fw).slice(0,7)+'). Instellingen en profielen zijn behouden.';err(f.msg)}
-else if(f.off&&(!u||u._status===401)){f.end=1;f.msg='De controller is herstart voordat de update klaar was: er is niets geïnstalleerd. Probeer het opnieuw.';err(f.msg)}
+if(f.trial){f.end=1;f.msg='De nieuwe firmware is niet bevestigd: de controller is automatisch teruggekeerd naar de vorige versie ('+String(o.fw).slice(0,7)+'). Instellingen en profielen zijn behouden.';err(f.msg)}
+else if(f.off&&u&&u._status===401){f.end=1;f.msg='De controller is herstart en draait de vorige versie ('+String(o.fw).slice(0,7)+'): de update is niet actief. Controleer de firmwarestatus en probeer het zo nodig opnieuw.';err(f.msg)}
 else if(el>60000&&!(u&&!u._status&&u.phase==='written')){f.end=1;f.msg='De controller is niet herstart; de update is niet actief. Controleer de firmwarestatus.';err(f.msg)}
 else f.msg='Wachten op de herstart…'}
 else f.msg='Wachten op de herstart…'}
@@ -605,14 +606,15 @@ if(nl<0||!/^[\x20-\x7e]*$/.test(head.slice(0,nl)))throw'bad-bundle';
 if(!confirm('Firmware “'+m.variant+'” versie '+m.version+' ('+String(m.commit).slice(0,7)+') installeren?'+(m.allow_tx?' Deze firmware zendt (bediening via RF).':' Deze firmware zendt niet (alleen ontvangen).')+' De controller herstart daarna.'))return;
 const o=await api('/api/ota');$('fwM').textContent='Handtekening controleren…';await api('/api/ota/begin',{manifest:h.manifest,sig:h.sig});
 $('fwM').textContent='Firmware uploaden… dit duurt ongeveer een minuut.';const fd=new FormData();fd.append('firmware',f.slice(nl+1),'firmware.bin');
-let r,j={};try{r=await fetch('/api/ota/upload',{method:'POST',headers:{'X-Orcon-Token':S?S.token:''},body:fd});j=await r.json()}catch(e){$('fwM').textContent='';throw'offline'}
+let r,j={};try{r=await fetch('/api/ota/upload',{method:'POST',headers:{'X-Orcon-Token':S?S.token:''},body:fd});j=await r.json()}catch(e){$('fwM').textContent='';
+UPF={fw:m.commit,rel:m.version,name:'v'+sv(m.version),oldSlot:o.running,t0:Date.now(),t1:Date.now(),stage:'restart',msg:'Geen antwoord ontvangen; nagaan of de update toch is geschreven…'};return}
 if(!r.ok){$('fwM').textContent='';throw j.error||'http-'+r.status}
 $('fwM').textContent='';UPF={fw:m.commit,rel:m.version,name:'v'+sv(m.version),oldSlot:o.running,t0:Date.now(),t1:Date.now(),stage:'restart',msg:'Geschreven en gecontroleerd. De controller herstart en test de nieuwe firmware (1 tot 5 minuten). Werkt die niet goed, dan keert de vorige vanzelf terug.'}}));
 $('upChk').addEventListener('click',()=>act(async()=>{UP=await api('/api/update/check',{})}));
 $('upInst').addEventListener('click',()=>act(async()=>{const l=UP&&UP.found==='newer'&&UP.latest;if(!l)throw'no-update-offered';
 if(!confirm('Officiële firmware v'+l.name+' ('+String(l.commit).slice(0,7)+') installeren?\n\nDe controller downloadt de update van GitHub en controleert handtekening, controlesom, type en versie. Daarna herstart hij en test hij de nieuwe firmware; werkt die niet goed, dan keert hij automatisch terug naar de huidige versie. Tijdens de update is bediening niet mogelijk.'))return;
 const o=await api('/api/ota');UPF={fw:l.commit,rel:l.release,name:'v'+l.name,oldSlot:o.running,t0:Date.now(),stage:'dl',msg:'Download wordt gestart…'};
-try{UP=await api('/api/update/install',{version:l.release,commit:l.commit})}catch(e){UPF=null;throw e}}));
+try{UP=await api('/api/update/install',{version:l.release,commit:l.commit})}catch(e){if(e!=='offline'){UPF=null;throw e}UPF.msg='Geen antwoord ontvangen; nagaan of de update toch loopt…'}}));
 const route=()=>{const h=location.hash.slice(1);return['pair','read','control','welcome','profiles','new','done','login','wizard','recover',...SETP].includes(h)?h:'home'};
 addEventListener('hashchange',()=>{if(route()!==page)go(route())});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){poll();cPoll()}});
