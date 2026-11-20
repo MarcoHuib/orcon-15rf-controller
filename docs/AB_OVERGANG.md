@@ -73,7 +73,8 @@ Mislukt de eerste update, dan heeft het board even maar één geldig image. De v
 De releasebundel van deze branch is met `release_accept` gebouwd tegen de `ota_policy.cpp` van **b75fad3** en van **2edb423**. Dat is de code die nu op het board draait. Gecontroleerd, met een lokale releasebuild met wegwerpsleutel; zie het testbewijs in de PR:
 - v2-manifest geaccepteerd;
 - image als `control` geaccepteerd;
-- een controller op dezelfde of een hogere versie weigert hem (`older-release`).
+- een controller op een hogere versie weigert hem (`older-release`);
+- een controller op dezelfde versie accepteert hem bij een handmatige upload (herinstallatie). De updatecontrole meldt dan *up-to-date* en biedt hem niet aan.
 
 ## Wat alleen op hardware kan
 
