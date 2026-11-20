@@ -202,6 +202,9 @@ int main() {
     CHECK(eq(headOf("HTTP/1.1 302 Found\r\nLocation: /a\r\nLocation: /b\r\n\r\n"), "bad-response"), "two locations refused");
     CHECK(eq(headOf("HTTP/1.1 200 OK\r\nContent-Type: a\rX-Hidden: b\r\n\r\n"), "bad-response"), "a bare CR inside a header line refused (Codex r6)");
     CHECK(eq(headOf("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"), "done"), "a normal CRLF head still parses");
+    CHECK(eq(headOf("HTTP/1.1 200 OK\r\nX: a\x01b\r\n\r\n"), "bad-response") && eq(headOf("HTTP/1.1 200 OK\r\nX: a\x7f\r\n\r\n"), "bad-response"),
+          "control octets and DEL in a header refused (Codex r7)");
+    CHECK(eq(headOf("HTTP/1.1 200 OK\r\nX: a\tb\r\n\r\n"), "done"), "a tab in a header value is fine");
     CHECK(eq(headOf("HTTP/1.1 200 OK\r\nX: " + std::string(PATH_MAX_LEN + 100, 'a') + "\r\n\r\n"), "bad-response"), "overlong header refused");
     { std::string many = "HTTP/1.1 200 OK\r\n"; for (int i = 0; i < 70; ++i) many += "X-" + std::to_string(i) + ": 1\r\n";
       CHECK(eq(headOf(many + "\r\n"), "bad-response"), "too many headers refused"); }

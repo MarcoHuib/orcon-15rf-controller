@@ -133,7 +133,8 @@ int Head::push(char c) {
     if (done_) return 1;
     if (++total_ > HEAD_TOTAL_MAX || lines_ > HEAD_LINES_MAX) { err_ = "bad-response"; return -1; }
     if (c == '\n') return line();
-    if (c == 0 || n_ + 1 >= sizeof(buf_)) { err_ = "bad-response"; return -1; }
+    const unsigned char u = (unsigned char)c;   // no control octets except HTAB (and the CR of CRLF); no DEL (Codex r7)
+    if ((u < 0x20 && u != '\t' && u != '\r') || u == 0x7F || n_ + 1 >= sizeof(buf_)) { err_ = "bad-response"; return -1; }
     buf_[n_++] = c;
     return 0;
 }

@@ -444,7 +444,10 @@ static void loopWatch(void*) {
         const uint32_t limit = g_pending || g_selected || net::restartQueued() ? 20000u : 120000u;
         const uint32_t beat = g_beat.load();
         const uint32_t still = millis() - beat;
-        if (still > limit && millis() - g_beat.load() > limit) {
+        if (still <= limit) continue;
+        const uint32_t beat2 = g_beat.load();             // again in this order, as separate statements (Codex r7)
+        const uint32_t still2 = millis() - beat2;
+        if (beat2 == beat && still2 > limit) {            // no beat in between: the loop is really stuck
             Serial.printf("[ota] main loop stuck for %lu s: restart\n", (unsigned long)(still / 1000));
             esp_restart();
         }
