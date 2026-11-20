@@ -927,7 +927,8 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
     }
     {   // forgotten password on an installed device: instructions from the home network, the key page in the recovery mode
         const st = { fw: 'test', auth: { enabled: true, logged_in: false, password_set: true, login_wait_s: 0 }, wifi: { ap: false }, setup: { state: 'done', via_ap: false, physical: false } };
-        const p = await page({ 'GET /api/setup/state': () => [200, st], 'POST /api/provision/recover': () => [200, { ok: true, token: 'tok9' }] });
+        const PW = { state: 'done', physical: true, key: { registered: true } };
+        const p = await page({ 'GET /api/setup/state': () => [200, st], 'GET /api/provision/state': () => [200, PW], 'POST /api/provision/recover': () => [200, { ok: true, token: 'tok9' }] });
         await p.refresh(); assert.equal(p.location.hash, '#login');
         p.$('aForgot').click(); await flush();
         assert.equal(p.$('aHintOwn').hidden, false); assert.equal(p.$('aCodeBox'), undefined); assert.equal(p.$('aHint'), undefined);
@@ -943,6 +944,13 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.match(rc.body.pem, /BEGIN ENCRYPTED/); assert.equal(rc.body.passphrase, 'goede sleutelzin'); assert.equal(rc.body.password, 'nieuw-wachtwoord');
         assert.equal(p.$('rPass').value, ''); assert.equal(p.$('rNew').value, ''); assert.equal(p.$('rPaste').value, '');
         ok('recovery mode on the AP: key file, passphrase and new password in one request; every field emptied');
+        { const NK = { state: 'done', physical: true, key: { registered: false } };
+          const k = await page({ 'GET /api/setup/state': () => [200, st], 'GET /api/provision/state': () => [200, NK] }); await k.refresh();
+          k.$('aForgot').click(); await flush(); await k.refresh(); assert.equal(k.location.hash, '#recover');
+          assert.equal(k.$('rNoKey').hidden, false); assert.match(html, /id="rNoKey" hidden>[^<]*geen herstelsleutel[^<]*Fabrieksreset/);
+          assert.equal(k.$('rForm').hidden, true); assert.equal(k.$('rGo').disabled, true);
+          k.$('rGo').click(); await flush(); assert.equal(k.posts().length, 0);
+          ok('recovery mode on a board without an owner key: the factory reset is explained first, no key-file form'); }
         st.setup = { state: 'done', via_ap: false, physical: false };
         const q = await page({ 'GET /api/setup/state': () => [200, st] }); await q.refresh(); q.$('aForgot').click(); await flush();
         assert.equal(q.$('aSet').hidden, false); assert.equal(q.$('aHintOwn').hidden, false); assert.match(q.$('aHintOwn').textContent, /herstelsleutel.*Herstelmodus/);

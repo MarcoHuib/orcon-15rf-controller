@@ -136,6 +136,29 @@ int main() {
       bool all = true;
       for (size_t ch : {1u, 7u, 13u, 64u, 255u}) all = all && !checkImage(y, scan(split, ch), (uint32_t)split.size(), y.sha256);
       CHECK(all, "owner-model marker found across any chunk boundary"); }
+    // ---- trial boot: confirm only when healthy (the caller adds the owner key), at most once a second, rollback at the deadline ----
+    { const uint32_t C = 60000, R = 300000; uint32_t last = 0;
+      CHECK(trialStep(59999, true, last, C, R) == Trial::Wait && last == 0, "trial: no confirmation before 60 s");
+      CHECK(trialStep(60000, true, last, C, R) == Trial::TryConfirm && last == 60000, "trial: healthy at 60 s: one attempt");
+      CHECK(trialStep(60500, true, last, C, R) == Trial::Wait, "trial: a failed attempt (e.g. no owner key) is retried after 1 s, not every pass");
+      CHECK(trialStep(61000, true, last, C, R) == Trial::TryConfirm, "trial: the next attempt reads the key again");
+      CHECK(trialStep(200000, false, last, C, R) == Trial::Wait, "trial: unhealthy before the deadline: wait");
+      CHECK(trialStep(300000, false, last, C, R) == Trial::Rollback, "trial: unhealthy at 300 s: rollback");
+      last = 299800;
+      CHECK(trialStep(300000, true, last, C, R) == Trial::Rollback, "trial: attempts keep failing past 300 s: rollback");
+      last = 290000;
+      CHECK(trialStep(300100, true, last, C, R) == Trial::TryConfirm, "trial: a healthy image may still confirm at the deadline");
+      last = 0;
+      CHECK(trialStep(4000000000u, false, last, C, R) == Trial::Rollback, "trial: never confirmed: rollback whatever the clock"); }
+    // ---- the removed Legacy recovery: an image with the release-key password reset is never written again ----
+    { const auto withReset = image({COMMIT, "SX1276 direct RX (TX disabled)", "RX-ONLY TEST FIRMWARE", SIGNED_OTA_MARKER, "orcon-auth-reset"});
+      Manifest x; parseManifest(manifest("rx-only", "heltec_v2_sx1276", false, (unsigned)withReset.size()).c_str(), x);
+      bool all = true;
+      for (size_t ch : {1u, 5u, 9u, 64u, 300u})
+          all = all && !strcmp(checkImage(x, scan(withReset, ch), (uint32_t)withReset.size(), x.sha256), "image-has-release-key-recovery");
+      CHECK(all, "an image with the release-key password reset is refused, across any chunk boundary");
+      Scanner s(""); s.feed(withReset.data(), withReset.size());
+      CHECK(s.ownerModel && s.signedOta && !s.legacyOta && s.releaseKeyReset, "it still reads as an owner-model image (a valid rollback target)"); }
     // ---- v2 release manifests: one signature for every board ----
     { Manifest r;
       CHECK(!parseManifest(release().c_str(), r) && r.v == 2 && r.version == 7 && r.variant == Variant::Control && r.allowTx && !r.mac[0] && !r.nonce[0],

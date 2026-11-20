@@ -374,24 +374,38 @@ LEGACY_RECOVERY=('/api/auth/setup','/api/auth/nonce','/api/auth/reset','orcon-au
 def legacy_recovery_safe(files,ota):
     for path,text in files.items():
         for bad in LEGACY_RECOVERY: assert bad not in text,(path,bad,'release-key password recovery must stay removed')
+    pol=files['src/ota_policy.cpp']
+    assert 'if (s.releaseKeyReset) return "image-has-release-key-recovery";' in fn(pol,'const char* checkImage('),'no image with the old recovery is written again'
+    assert 'releaseKeyReset |= has(b, n, PAT(P_VR));' in pol,'the scanner looks for it'
+    ts=re.sub(r'\s+',' ',fn(pol,'Trial trialStep('))
+    assert 'if (healthy && now >= confirmAfter && (!lastTry || now - lastTry >= 1000)) { lastTry = now; return Trial::TryConfirm; } return now >= rollbackAfter ? Trial::Rollback : Trial::Wait;' in ts,'trial decision (host-tested)'
     h=re.sub(r'\s+',' ',fn(ota,'void tick(uint32_t now) {'))
-    assert re.search(r'const bool healthy = !g_hold && now >= CONFIRM_AFTER_MS && net::wifiConnected\(\) && radio::rxDiagnostics\(\)\.rxState == 0 && ownerKeyRegistered\(\);',h),'a trial boot needs an owner key'
-    assert h.count('esp_ota_mark_app_valid_cancel_rollback()')==1 and ota.count('esp_ota_mark_app_valid_cancel_rollback(')==1,'tick is the only confirmation'
-    k=re.sub(r'\s+',' ',fn(ota,'static bool ownerKeyRegistered() {'))
-    assert 'known = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q) ? 1 : -1;' in k and 'return known > 0;' in k,'the key is read, not assumed'
+    assert 'const bool healthy = !g_hold && net::wifiConnected() && radio::rxDiagnostics().rxState == 0;' in h,'health check'
+    assert 'switch (otap::trialStep(now, healthy, lastTry, CONFIRM_AFTER_MS, ROLLBACK_AFTER_MS)) {' in h,'the trial follows otap::trialStep'
+    assert 'case otap::Trial::TryConfirm: if (ownerKeyRegistered() && esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {' in h,'a trial boot needs an owner key'
+    assert re.search(r'case otap::Trial::Rollback: [^{}]*?rollbackNow\(\); return; case otap::Trial::Wait: return; \}',h),'the deadline rolls back'
+    assert ota.count('esp_ota_mark_app_valid_cancel_rollback(')==1,'tick is the only confirmation'
+    k=fn(ota,'static bool ownerKeyRegistered() {')
+    assert '\n    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q);\n' in k and 'return ok;' in k,'the key is read before every attempt, not assumed or cached'
 LR_FILES={str(x):x.read_text() for x in sorted(Path('src').glob('*.[ch]*'))+[Path('src/setup_page.html'),Path('tools/orcon.py')] if x.name!='setup_page.h'}
 legacy_recovery_safe(LR_FILES,ota_src)
 for name,where,old,new in (('reset-route-back','src/setup_web.cpp','    s.on("/api/auth/login",    HTTP_POST, handleLogin);','    s.on("/api/auth/reset",    HTTP_POST, handleLogin);\n    s.on("/api/auth/login",    HTTP_POST, handleLogin);'),
                            ('legacy-state-back','src/provision.h','enum class State : uint8_t { New, Setup, Done, Locked };','enum class State : uint8_t { New, Setup, Done, Legacy, Locked };\nconstexpr State OLD = State::Legacy;'),
                            ('cli-auth-code-back','tools/orcon.py',"sub.add_parser('keygen')","sub.add_parser('keygen'); sub.add_parser('auth-code')"),
                            ('page-code-form-back','src/setup_page.html','<p class="note" id="aHintOwn"></p>','<p class="note" id="aHintOwn"></p><p>Vraag een herstelcode aan</p>'),
-                           ('signed-reset-request-back','src/web_auth.cpp','bool cookieSid(','const char* checkResetRequest(const char*, const char*);\nbool cookieSid(')):
+                           ('signed-reset-request-back','src/web_auth.cpp','bool cookieSid(','const char* checkResetRequest(const char*, const char*);\nbool cookieSid('),
+                           ('policy-allows-old-recovery','src/ota_policy.cpp','    if (s.releaseKeyReset) return "image-has-release-key-recovery";\n',''),
+                           ('trial-no-rate-limit','src/ota_policy.cpp','(!lastTry || now - lastTry >= 1000)','true'),
+                           ('trial-ignores-health','src/ota_policy.cpp','if (healthy && now >= confirmAfter','if (now >= confirmAfter')):
     files=dict(LR_FILES); m=files[where].replace(old,new,1); assert m!=files[where],name; files[where]=m
     try: legacy_recovery_safe(files,ota_src)
     except AssertionError: print('PASS legacy-recovery guard rejects mutation',name)
     else: raise AssertionError('legacy-recovery guard accepted mutation '+name)
-for name,old,new in (('trial-without-key','radio::rxDiagnostics().rxState == 0 &&\n                         ownerKeyRegistered();','radio::rxDiagnostics().rxState == 0;'),
-                     ('key-assumed','known = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q) ? 1 : -1;','known = 1;'),
+for name,old,new in (('trial-without-key','if (ownerKeyRegistered() && esp_ota_mark_app_valid_cancel_rollback() == ESP_OK)','if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK)'),
+                     ('key-assumed','    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q);','    const bool ok = true;'),
+                     ('key-read-once','    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q);','    static const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q);'),
+                     ('confirm-ignores-health','const bool healthy = !g_hold && net::wifiConnected() && radio::rxDiagnostics().rxState == 0;','const bool healthy = true;'),
+                     ('deadline-without-rollback','            rollbackNow();\n            return;\n        case otap::Trial::Wait:','            return;\n        case otap::Trial::Wait:'),
                      ('second-confirm','void rollbackNow() {','static void confirmEarly() { esp_ota_mark_app_valid_cancel_rollback(); }\nvoid rollbackNow() {')):
     m=ota_src.replace(old,new,1); assert m!=ota_src,name
     try: legacy_recovery_safe(LR_FILES,m)

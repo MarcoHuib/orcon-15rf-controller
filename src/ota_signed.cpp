@@ -483,17 +483,19 @@ void begin(WebServer& s) {
 
 // This firmware has no password reset with the firmware signing key. An older image may still have it for a
 // board without an owner key: an update on such a board is never confirmed, so the previous image (and its
-// recovery) returns until the owner registers a key (docs/HERSTELSLEUTEL_MIGRATIE.md). Read once per boot.
+// recovery) returns until the owner registers a key (docs/HERSTELSLEUTEL_MIGRATIE.md). Read again before every
+// confirmation attempt: a passing read error does not force a rollback, a key that became unreadable is noticed.
 static bool ownerKeyRegistered() {
 #if ORCON_OWNER_MODEL
-    static int known = 0;                                   // 0 not read, 1 yes, -1 no
-    if (!known) {
-        uint8_t q[65];
-        known = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q) ? 1 : -1;
-        if (known < 0) note(rfcon::ERR, "geen herstelsleutel geregistreerd: deze firmware wordt niet bevestigd en de vorige keert terug. "
-                                       "Registreer eerst een herstelsleutel in de herstelmodus (PRG-menu).");
+    uint8_t q[65];
+    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q);
+    static bool told = false;
+    if (!ok && !told) {
+        told = true;
+        note(rfcon::ERR, "geen herstelsleutel geregistreerd: deze firmware wordt niet bevestigd en de vorige keert terug. "
+                         "Registreer eerst een herstelsleutel in de herstelmodus (PRG-menu).");
     }
-    return known > 0;
+    return ok;
 #else
     return true;                                            // no ownership model: no owner key to require
 #endif
@@ -505,18 +507,22 @@ void tick(uint32_t now) {
     if (now - lastCrumb >= 5000) { lastCrumb = now; g_crumb.lastUptimeS = now / 1000; }
     if (g_nonce[0] && now - g_nonceMs >= NONCE_TTL_MS) g_nonce[0] = 0;   // a 49.7-day millis() wrap must not revive it
     if (!g_pending) return;
-    // Healthy = this image runs, joined the network (so a later OTA can still reach it), the
-    // receiver is up and the owner has a recovery key. Only then is it confirmed; otherwise the
-    // previous image returns.
-    const bool healthy = !g_hold && now >= CONFIRM_AFTER_MS && net::wifiConnected() && radio::rxDiagnostics().rxState == 0 &&
-                         ownerKeyRegistered();
-    if (healthy && esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
-        g_pending = false; note(rfcon::INFO, "nieuwe firmware bevestigd (gezond na %lu s)", (unsigned long)(now / 1000));
-        return;
-    }
-    if (now >= ROLLBACK_AFTER_MS) {   // unhealthy, or a confirmation that keeps failing: the previous image returns
-        note(rfcon::ERR, "nieuwe firmware niet gezond binnen %lu s: terug naar de vorige", (unsigned long)(ROLLBACK_AFTER_MS / 1000));
-        rollbackNow();
+    // Healthy = this image runs, joined the network (so a later OTA can still reach it) and the receiver is up. It is
+    // confirmed only if the owner also has a recovery key; otherwise the previous image returns (otap::trialStep).
+    static uint32_t lastTry = 0;
+    const bool healthy = !g_hold && net::wifiConnected() && radio::rxDiagnostics().rxState == 0;
+    switch (otap::trialStep(now, healthy, lastTry, CONFIRM_AFTER_MS, ROLLBACK_AFTER_MS)) {
+        case otap::Trial::TryConfirm:
+            if (ownerKeyRegistered() && esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
+                g_pending = false; note(rfcon::INFO, "nieuwe firmware bevestigd (gezond na %lu s)", (unsigned long)(now / 1000));
+            }
+            return;
+        case otap::Trial::Rollback:   // unhealthy, no owner key, or a confirmation that keeps failing: the previous image returns
+            note(rfcon::ERR, "nieuwe firmware niet bevestigd binnen %lu s: terug naar de vorige", (unsigned long)(ROLLBACK_AFTER_MS / 1000));
+            rollbackNow();
+            return;
+        case otap::Trial::Wait:
+            return;
     }
 }
 

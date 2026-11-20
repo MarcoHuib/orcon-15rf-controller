@@ -59,6 +59,7 @@ public:
     bool legacyOta = false;   // unauthenticated HTTP/Arduino OTA strings
     bool signedOta = false;   // SIGNED_OTA_MARKER
     bool ownerModel = false;  // OWNER_MODEL_MARKER
+    bool releaseKeyReset = false;   // the removed password reset with the firmware signing key (its request kind)
     bool commitStamp = false; // the manifest's 40-hex commit
 private:
     void match(const uint8_t* buf, size_t n);
@@ -68,5 +69,11 @@ private:
 
 // The image as received against its manifest: size, hash, variant markers, OTA marker, commit.
 const char* checkImage(const Manifest& m, const Scanner& s, uint32_t received, const uint8_t sha256[32]);
+
+// One trial-boot decision per main-loop pass (ota_signed.cpp tick). A healthy image may try to confirm itself after
+// confirmAfter ms, at most once per second; the caller reads the owner key right before each attempt. Past rollbackAfter
+// an image that is not confirmed returns to the previous one. lastTry: 0 before the first attempt.
+enum class Trial : uint8_t { Wait, TryConfirm, Rollback };
+Trial trialStep(uint32_t now, bool healthy, uint32_t& lastTry, uint32_t confirmAfter, uint32_t rollbackAfter);
 
 }  // namespace otap

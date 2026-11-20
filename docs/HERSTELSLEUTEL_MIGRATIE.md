@@ -17,7 +17,7 @@
 
 **Nieuwe apparaten:**
 - Ze worden alleen via de installatiewizard ingericht: setup-AP, stap 1 tot en met 4.
-- Een eerste wachtwoord zetten kan alleen in de toestand New.
+- Een eerste wachtwoord zetten kan alleen in de wizard: in de toestand New, of in Setup als een stroomstoring stap 1 onderbrak voordat het wachtwoord was opgeslagen. Stap 1 gaat alleen verder als vaststaat dat er nog geen wachtwoord is.
 
 ## Wat er tot nu toe was (de Legacy-paden)
 
@@ -38,7 +38,9 @@
 
 ## Wat deze wijziging doet
 
-**Verwijderd:** alle onderdelen uit de tabel hierboven. Ook de routes bestaan niet meer: ze geven 404, in elke toestand en op elke build.
+**Verwijderd:** alle onderdelen uit de tabel hierboven. Ook de routes bestaan niet meer, in elke toestand en op elke build. Een verzoek krijgt nooit een code, een nonce of een sessie. De statuscode is 404, behalve op de control-image: daar antwoordt de standaardafhandeling 403 `route-disabled-in-web-control`.
+
+**Nooit meer terug via OTA.** De OTA-policy weigert elk image dat het oude herstel nog bevat (`image-has-release-key-recovery`; het image wordt herkend aan de vraagsoort `orcon-auth-reset`). Dat geldt voor elke build met deze wijziging, ook voor builds zonder eigendomsmodel, zoals de oude PoC-images (Codex). Een image dat al in het andere slot staat, blijft een geldig rollbackdoel: de migratie kan dus altijd terug naar b75fad3.
 
 **Een board zonder herstelsleutel**, met waarde 3 in NVS of een wachtwoord zonder staat, leest nu als *done zonder sleutel*:
 - Aanmelden met het bestaande wachtwoord werkt gewoon.
@@ -50,16 +52,19 @@
 - WiFi en RX gezond zijn, zoals al het geval was;
 - én er een eigenaarssleutel is geregistreerd en leesbaar is (`ota_signed.cpp ownerKeyRegistered()`).
 
-Zonder sleutel wordt de proefstart nooit bevestigd. Na 300 s keert de vorige firmware terug, met de herstelmogelijkheid die die firmware heeft. Het board kan dus nooit via een update in een toestand komen waarin het oude herstel weg is en het nieuwe nog niet bestaat. De console meldt: "geen herstelsleutel geregistreerd: deze firmware wordt niet bevestigd…".
+Zonder sleutel wordt de proefstart nooit bevestigd. De sleutel wordt vóór elke bevestigingspoging opnieuw gelezen, hooguit één keer per seconde. Een kortstondige leesfout dwingt dus geen rollback af, en een sleutel die onleesbaar wordt, wordt opgemerkt. De beslissing zit in `otap::trialStep` (hostgetest). Na 300 s keert de vorige firmware terug, met de herstelmogelijkheid die die firmware heeft. Het board kan dus nooit via een update in een toestand komen waarin het oude herstel weg is en het nieuwe nog niet bestaat. De console meldt: "geen herstelsleutel geregistreerd: deze firmware wordt niet bevestigd…".
+
+**Uitzondering: handwerk.** Is bij een proefstart ook de eigendomsopslag onleesbaar, en is het andere slot geen geverifieerd eigenaarsmodel-image in de toestand VALID (bijvoorbeeld een via USB geïnstalleerd image), dan stopt de start in de fail-closed modus vóór de timer en de watchdog. Het OLED vraagt dan om RST; die herstart doet de rollback.
 
 Een installatie via USB heeft geen proefstart. Op een board zonder sleutel geldt dan "done zonder sleutel" (zie hierboven): je kunt aanmelden en een sleutel registreren.
 
 **Tests:**
 - `test_provision` (173): de oude waarden 0 + wachtwoord en 3 lezen als Done, zonder schrijven.
+- `test_ota_policy` (96): een image met het oude herstel wordt geweigerd, ook als de marker over een chunkgrens valt, maar blijft een eigenaarsmodel-image. Ook de proefstartbeslissing is getest: wachten, één poging per seconde, rollback bij de deadline en een laatste bevestiging die nog mag.
 - `test_setup_web` (11 varianten): de drie routes geven 404; een volledige migratie: aanmelden, geen sleutel buiten de herstelmodus, `no-owner-key` vóór de sleutel, sleutel registreren, wachtwoord ongewijzigd, herstel met het sleutelbestand.
-- `test_web_auth` (59) en `test_setup_page.js` (157): geen codeformulier en geen `auth-code`-tekst.
+- `test_web_auth` (59) en `test_setup_page.js` (158): geen codeformulier en geen `auth-code`-tekst. In de herstelmodus op een board zonder sleutel staat eerst de uitleg over de fabrieksreset, zonder sleutelformulier.
 - `test_orcon_cli` (55): `auth-code` bestaat niet meer.
-- Veiligheidsguard: geen van de oude namen of routes in `src/` en `orcon.py`, en de proefstartpoort staat in `tick()`. Er zijn 8 gerichte mutaties, die allemaal worden geweigerd.
+- Veiligheidsguard: geen van de oude namen of routes in `src/` en `orcon.py`, de policyregel, de proefstartbeslissing en de poort in `tick()`. Er zijn 14 gerichte mutaties, die allemaal worden geweigerd.
 
 ## Migratievolgorde voor jouw Heltec
 
@@ -76,12 +81,12 @@ Beide images hebben het eigendomsmodel. Uit de broncode van beide commits volgt 
 |---|---|---|---|---|
 | 0 | jij, alleen lezen | Meld je aan op `http://orcon15rf.local`. Systeem → Herstelsleutel zegt "Nog geen herstelsleutel". | Aanmelden lukt; je kent het wachtwoord. | Wachtwoord kwijt? Dan nu, met de huidige firmware, nog `auth-code` vanaf de main-checkout. Pas daarna verder. |
 | 1 | jij, fysiek | **Herstelmodus:** druk kort op RST en houd binnen 20 s PRG 15 s vast. Kies Herstelmodus: kort drukken = volgende, 2 s vasthouden = kiezen. | Het OLED toont "Herstelmodus" en het netwerk Orcon15RF-Setup met het wachtwoord. | Niets aan de hand: na 15 minuten of een RST start het board normaal. |
-| 2 | jij | Telefoon op Orcon15RF-Setup, open `http://192.168.4.1` en meld je aan. Systeem → Herstelsleutel: kies een wachtwoordzin (minstens 10 tekens) en sla `orcon-recovery-key.pem` op. Kies het opgeslagen bestand en vul de wachtwoordzin in: het board opent het bestand zelf en registreert pas dan de sleutel. | De melding "Nieuwe herstelsleutel geregistreerd (vingerafdruk …)". Systeem → Herstelsleutel: "Geregistreerd". | `key-write-failed` of `key-mismatch`: opnieuw proberen. Het oude herstel bestaat dan nog. |
+| 2 | jij | Telefoon op Orcon15RF-Setup, open `http://192.168.4.1` en meld je aan. Systeem → Herstelsleutel: kies een wachtwoordzin (minstens 10 tekens) en sla `orcon-recovery-key.pem` op. Kies het opgeslagen bestand en vul de wachtwoordzin in: het board opent het bestand zelf en registreert pas dan de sleutel. | De melding "Nieuwe herstelsleutel geregistreerd (vingerafdruk …)". Systeem → Herstelsleutel: "Geregistreerd". | `key-mismatch`: opnieuw proberen. Bij `key-write-failed` kan de sleutel al half zijn opgeslagen; het oude herstel kan dan al uit staan. **Bewaar daarom altijd het gedownloade bestand**, herstart, en ga door naar stap 4 en 5. |
 | 3 | jij | Bewaar het sleutelbestand en de wachtwoordzin elk op twee plekken (bijvoorbeeld de wachtwoordmanager en een USB-stick), niet samen met het beheerderswachtwoord. | — | Zonder bestand en wachtwoordzin is alleen nog een fabrieksreset mogelijk. |
-| 4 | jij, alleen lezen | Na een normale herstart: `curl -s -X POST -H 'Content-Type: application/json' -d '{}' http://orcon15rf.local/api/auth/nonce` | Antwoord `403 {"error":"owner-key-required"}`. Er wordt niets uitgegeven. | Krijg je een nonce? Dan is de registratie niet blijvend: terug naar stap 1. |
-| 5 | jij (aanbevolen) | Bewijs eenmalig dat het nieuwe herstel werkt: herstelmodus → "Wachtwoord vergeten" → het sleutelbestand, de wachtwoordzin en een nieuw (of hetzelfde) wachtwoord. | Aanmelden met dat wachtwoord lukt. | Mislukt het herstel, dan heb je nog je bestaande wachtwoord. Controleer bestand en wachtwoordzin. |
+| 4 | jij, alleen lezen | Na een normale herstart: `curl -s -X POST -H 'Content-Type: application/json' -d '{}' http://orcon15rf.local/api/auth/nonce` | Antwoord `403 {"error":"owner-key-required"}`. Er wordt niets uitgegeven. Let op: hetzelfde antwoord komt ook als de eigendomsopslag onleesbaar is; stap 5 is daarom het echte bewijs. | Krijg je een nonce? Dan is de registratie niet blijvend: terug naar stap 1. |
+| 5 | jij (**verplicht vóór stap 6**) | Bewijs eenmalig dat het nieuwe herstel werkt: herstelmodus → "Wachtwoord vergeten" → het sleutelbestand, de wachtwoordzin en een nieuw (of hetzelfde) wachtwoord. | Aanmelden met dat wachtwoord lukt. | Mislukt het herstel, dan heb je nog je bestaande wachtwoord. Controleer bestand en wachtwoordzin. |
 | 6 | jij | Zet het GitHub-secret: `gh secret set ORCON_OTA_SIGNING_KEY --env orcon-production-release --repo MarcoHuib/orcon-15rf-controller < ~/.orcon/ota-signing-key.pem` | `gh secret list --env orcon-production-release` toont de naam. | — |
-| 7 | jij | PR #16 en daarna deze PR reviewen en mergen. Daarna de eerste release via de workflow, en Systeem → Firmware → Update installeren. | Na ongeveer 60 s: "nieuwe firmware bevestigd". De poort laat hem door omdat er een sleutel is. | Zonder sleutel of bij een probleem: na 300 s automatisch terug naar b75fad3. |
+| 7 | jij | PR #16 en daarna deze PR reviewen en mergen. Daarna de eerste release via de workflow. Op b75fad3 bestaat de knop "Update installeren" nog niet: download `orcon-control-vX.Y.Z-<commit>.orconfw` uit de release en kies hem in Systeem → Firmware → Handmatig installeren. Latere updates gaan met de knop. | Na ongeveer 60 s: "nieuwe firmware bevestigd". De poort laat hem door omdat er een sleutel is. | Zonder sleutel of bij een probleem: na 300 s automatisch terug naar b75fad3. |
 | 8 | automatisch | Bij de volgende release schuift b75fad3 uit het andere slot. | Beide slots bevatten firmware zonder enig Legacy-pad. | — |
 
 **Waarom deze volgorde veilig is:**
@@ -115,6 +120,6 @@ Beide images hebben het eigendomsmodel. Uit de broncode van beide commits volgt 
 |---|---|---|
 | H1 | Stap 0 tot en met 5 hierboven, op b75fad3 | Zoals in de tabel. |
 | H2 | Release met deze wijziging installeren op het gemigreerde board | Bevestigd na ongeveer 60 s; NVS ongewijzigd: WiFi, profiel, Siri en het wachtwoord werken. |
-| H3 | `curl … /api/auth/nonce` op de nieuwe firmware | 404 |
+| H3 | `curl … /api/auth/nonce` op de nieuwe firmware | 403 `route-disabled-in-web-control` (control) of 404 (RX-only); geen nonce, geen code, geen sessie. |
 | H4 | Herstel met het sleutelbestand op de nieuwe firmware (herstelmodus) | Nieuw wachtwoord werkt. |
 | H5 | (Optioneel, alleen op een testboard zonder sleutel) dezelfde release installeren | Niet bevestigd; na 300 s terug naar de vorige firmware, met de consolemelding. |
