@@ -268,7 +268,7 @@ struct Ops : provision::ResetOps {
             if (esp_partition_read(other, off, buf, n) != ESP_OK) return false;
             s.feed(buf, n);
         }
-        if (s.ownerModel) return true;                  // a current image: it stays as the rollback target
+        if (otap::ownerRecovery(s)) return true;        // an image with owner recovery: it stays as the rollback target
         esp_image_metadata_t rm;
         const esp_partition_pos_t rpos{run->address, run->size};
         if (esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &rpos, &rm) != ESP_OK) return false;   // never copy a bad image

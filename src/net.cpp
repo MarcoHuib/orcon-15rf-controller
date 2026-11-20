@@ -562,7 +562,7 @@ static void oledDraw() {
 #if ORCON_OWNER_MODEL
         if (provision::installing(ownerstore::state())) snprintf(t, sizeof(t), "Installatie");
         else if (ownerstore::state() == provision::State::Locked) snprintf(t, sizeof(t), "Reset nodig (PRG)");
-        else if (ownerstore::physicalActive()) snprintf(t, sizeof(t), "Herstelmodus  %lum", (unsigned long)(ownerstore::physicalLeftMs() / 60000 + 1));
+        else if (ownerstore::recoveryActive()) snprintf(t, sizeof(t), "Herstelmodus  %lum", (unsigned long)(ownerstore::physicalLeftMs() / 60000 + 1));
 #endif
         oled.clearBuffer();
         oled.drawStr(0, 11, t); oled.drawStr(0, 26, WIFI_AP_NAME);

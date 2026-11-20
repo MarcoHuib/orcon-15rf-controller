@@ -390,6 +390,8 @@ def legacy_recovery_safe(files,ota):
     own=files['src/owner_store.cpp']
     assert 'return ok && onCurve(q);' in fn(own,'bool ownerKey(uint8_t q[65]) {') and 'mbedtls_ecp_check_pubkey(&g, &p) == 0' in fn(own,'static bool onCurve('),'only a usable key counts (Codex legacy r3)'
     assert 'bool recoveryActive() { return g_boot == Mode::Recovery && physicalActive(); }' in own,'WiFi wissen opens no recovery (Codex legacy r3)'
+    assert 'inline bool ownerRecovery(const Scanner& s) { return s.ownerModel && (s.ownerKey || s.releaseKeyReset); }' in files['src/ota_policy.h'],'rollback-target classifier (host-tested)'
+    assert 'if (otap::ownerRecovery(s)) return true;' in own and 'return otap::ownerRecovery(s) && s.signedOta && !s.legacyOta;' in fn(ota,'bool previousIsOwnerModel() {'),'a model-only build is never kept or chosen as a rollback target (Codex legacy r4)'
     web=files['src/setup_web.cpp']
     assert 'physicalActive' not in web and 'c.physical = ownerstore::recoveryActive();' in fn(web,'static bool provGate('),'the key and recovery routes follow the Herstelmodus only'
     h=re.sub(r'\s+',' ',fn(ota,'void tick(uint32_t now) {'))
@@ -422,7 +424,9 @@ for name,where,old,new in (('reset-route-back','src/setup_web.cpp','    s.on("/a
                            ('marker-in-every-build','src/ota_signed.cpp','#if ORCON_OWNER_MODEL\n             otap::OWNER_KEY_MARKER,','#if 1\n             otap::OWNER_KEY_MARKER,'),
                            ('off-curve-key','src/owner_store.cpp','    return ok && onCurve(q);','    return ok;'),
                            ('wifi-reset-recovers','src/owner_store.cpp','bool recoveryActive() { return g_boot == Mode::Recovery && physicalActive(); }','bool recoveryActive() { return physicalActive(); }'),
-                           ('gate-on-physical','src/setup_web.cpp','c.physical = ownerstore::recoveryActive();','c.physical = ownerstore::physicalActive();')):
+                           ('gate-on-physical','src/setup_web.cpp','c.physical = ownerstore::recoveryActive();','c.physical = ownerstore::physicalActive();'),
+                           ('classifier-model-only','src/ota_policy.h','return s.ownerModel && (s.ownerKey || s.releaseKeyReset);','return s.ownerModel;'),
+                           ('reset-keeps-model-only','src/owner_store.cpp','if (otap::ownerRecovery(s)) return true;','if (s.ownerModel) return true;')):
     files=dict(LR_FILES); m=files[where].replace(old,new,1); assert m!=files[where],name; files[where]=m
     try: legacy_recovery_safe(files,ota_src)
     except AssertionError: print('PASS legacy-recovery guard rejects mutation',name)
@@ -439,7 +443,8 @@ for name,old,new in (('trial-without-key','if (ownerKeyRegistered() && esp_ota_m
                      ('second-confirm','void rollbackNow() {','static void confirmEarly() { esp_ota_mark_app_valid_cancel_rollback(); }\nvoid rollbackNow() {'),
                      ('consent-without-session','    return setupweb::authorize(true);\n#else','    return hostOk();\n#else'),
                      ('nonce-without-consent','static void handleNonce() {\n    if (!ownerConsent()) return;','static void handleNonce() {'),
-                     ('upload-without-session','        if (!setupweb::uploadAuthorized()) {','        if (false) {')):
+                     ('upload-without-session','        if (!setupweb::uploadAuthorized()) {','        if (false) {'),
+                     ('fallback-model-only','return otap::ownerRecovery(s) && s.signedOta','return s.ownerModel && s.signedOta')):
     m=ota_src.replace(old,new,1); assert m!=ota_src,name
     try: legacy_recovery_safe(LR_FILES,m)
     except AssertionError: print('PASS legacy-recovery guard rejects mutation',name)

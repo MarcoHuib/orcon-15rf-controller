@@ -58,7 +58,7 @@ De firmware-signingsleutel zet of herstelt nooit een wachtwoord. Het oude herste
 
 **Afmelden van andere apparaten**
 - Na een wachtwoordwijziging (Systeem → Account) worden alle andere sessies afgemeld.
-- Na het instellen met een herstelcode ook.
+- Na een wachtwoordherstel met de herstelsleutel ook (Herstelmodus, `docs/PROVISIONING.md`).
 
 **Wat beschermd is**
 - **Achter de login:** bediening, profielen, uitlezen, koppelen, en WiFi, OLED, herstarten en "WiFi vergeten".

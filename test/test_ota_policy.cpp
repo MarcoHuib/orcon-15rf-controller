@@ -172,7 +172,13 @@ int main() {
           all = all && !strcmp(checkImage(x, scan(withReset, ch), (uint32_t)withReset.size(), x.sha256), "image-has-release-key-recovery");
       CHECK(all, "an image with the release-key password reset is refused, across any chunk boundary");
       Scanner s(""); s.feed(withReset.data(), withReset.size());
-      CHECK(s.ownerModel && s.signedOta && !s.legacyOta && s.releaseKeyReset, "it still reads as an owner-model image (a valid rollback target)"); }
+      CHECK(s.ownerModel && s.signedOta && !s.legacyOta && s.releaseKeyReset && ownerRecovery(s), "it still reads as an owner-model image (a valid rollback target)");
+      // A build without the ownership model carried OWNER_MODEL_MARKER before the owner-key marker existed: not a rollback target.
+      const auto modelOnly = image({COMMIT, "SX1276 direct RX (TX disabled)", "RX-ONLY TEST FIRMWARE", SIGNED_OTA_MARKER}, 3000, true, false);
+      const auto current = image({COMMIT, "SX1276 direct RX (TX disabled)", "RX-ONLY TEST FIRMWARE", SIGNED_OTA_MARKER});
+      const auto preOwner = image({COMMIT, "SX1276 direct RX (TX disabled)", "RX-ONLY TEST FIRMWARE", SIGNED_OTA_MARKER, "orcon-auth-reset"}, 3000, false, false);
+      Scanner a(""), b(""), c(""); a.feed(modelOnly.data(), modelOnly.size()); b.feed(current.data(), current.size()); c.feed(preOwner.data(), preOwner.size());
+      CHECK(!ownerRecovery(a) && ownerRecovery(b) && !ownerRecovery(c), "rollback targets: this firmware and the older owner images, never a model-only build or a pre-owner image (Codex legacy r4)"); }
     // ---- v2 release manifests: one signature for every board ----
     { Manifest r;
       CHECK(!parseManifest(release().c_str(), r) && r.v == 2 && r.version == 7 && r.variant == Variant::Control && r.allowTx && !r.mac[0] && !r.nonce[0],

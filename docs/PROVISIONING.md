@@ -70,11 +70,11 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
 - Een onleesbare NVS telt als Done zonder sleutel: geen wizard en geen herstel via de releasesleutel.
 - Een onbekende waarde telt ook als Done.
 - Een opgeslagen wachtwoord dat niet te lezen is, telt als "gezet", nooit als "geen". Stap 1 gaat dan niet opnieuw open (Codex OWNER-02); aanmelden meldt "niet beschikbaar".
-- Na de registratie van een eigenaarssleutel vervallen openstaande herstelcodes van de releasesleutel. Zo'n code wordt daarna ook geweigerd (Codex OWNER-03).
+- Historisch (firmware van vóór `HERSTELSLEUTEL_MIGRATIE.md`): na de registratie van een eigenaarssleutel vervielen openstaande herstelcodes van de releasesleutel (Codex OWNER-03). De huidige firmware heeft geen herstelcodes meer.
 - **Dubbelzinnige schrijfacties** (wel opgeslagen, maar het teruglezen mislukt) worden voorzichtig behandeld (Codex OWNER-06/07):
   - Na een mislukte opslag neemt het RAM over wat er werkelijk in de opslag staat.
   - Stap 1 opent alleen als de opslag op dat moment bevestigt dat er nog geen wachtwoord is.
-  - Herstelcodes van de releasesleutel vervallen al vóór de eerste schrijfactie van een registratie, en het herstelpad sluit dan ook in RAM.
+  - Historisch: herstelcodes van de releasesleutel vervielen al vóór de eerste schrijfactie van een registratie. De huidige firmware heeft ze niet meer.
   - Bij het opstarten betekent een opgeslagen (of onleesbare) eigenaarssleutel altijd Done, wat de staat ook zegt.
   - Een wachtwoordwijziging of -herstel waarvan het opslaan dubbelzinnig mislukt, meldt alle sessies af. Is de opslag daarna onleesbaar, dan werkt ook het oude wachtwoord niet meer tot hij weer leesbaar is; er blijft niets gecachet (Codex OWNER-08).
   - Een leesfout bij het controleren van het rollbackimage tijdens een fabrieksreset betekent nooit "geen image". De marker blijft staan en de reset probeert het bij de volgende start opnieuw (Codex OWNER-09).

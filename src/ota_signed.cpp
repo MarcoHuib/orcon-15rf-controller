@@ -564,7 +564,7 @@ bool previousIsOwnerModel() {
         if (esp_partition_read(p, off, buf, n) != ESP_OK) return false;
         s.feed(buf, n);
     }
-    return s.ownerModel && s.signedOta && !s.legacyOta;
+    return otap::ownerRecovery(s) && s.signedOta && !s.legacyOta;
 }
 
 }  // namespace ota

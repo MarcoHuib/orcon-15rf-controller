@@ -75,6 +75,10 @@ private:
 
 // The image as received against its manifest: size, hash, variant markers, OTA marker, commit.
 const char* checkImage(const Manifest& m, const Scanner& s, uint32_t received, const uint8_t sha256[32]);
+// An image already on the board that keeps an owner recovery, so it may stay a rollback target: this firmware (owner
+// keys), or one of the two older ownership images (b75fad3, 2edb423) whose recovery still trusted the release key.
+// Never a build without the ownership model that only carries OWNER_MODEL_MARKER (Codex legacy r4).
+inline bool ownerRecovery(const Scanner& s) { return s.ownerModel && (s.ownerKey || s.releaseKeyReset); }
 
 // One trial-boot decision per main-loop pass (ota_signed.cpp tick). A healthy image may try to confirm itself after
 // confirmAfter ms, at most once per second; the caller reads the owner key right before each attempt. Past rollbackAfter
