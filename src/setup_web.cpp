@@ -318,7 +318,7 @@ static void handleState() {
 #if ORCON_OWNER_MODEL
         // What the page needs to choose between the wizard, the recovery screens and the login.
         o.add(",\"setup\":{\"state\":\"%s\",\"via_ap\":%s,\"physical\":%s}", provision::name(ownerstore::state()),
-              net::fromSetupAp() ? "true" : "false", ownerstore::physicalActive() ? "true" : "false");
+              net::fromSetupAp() ? "true" : "false", ownerstore::recoveryActive() ? "true" : "false");
 #endif
         o.add("}");
         reply(200, o);
@@ -370,7 +370,7 @@ static void handleState() {
 #if ORCON_OWNER_MODEL
     { uint8_t q[ownerkey::PUB_LEN];
       o.add(",\"setup\":{\"state\":\"%s\",\"via_ap\":%s,\"physical\":%s,\"key\":%s}", provision::name(ownerstore::state()),
-            net::fromSetupAp() ? "true" : "false", ownerstore::physicalActive() ? "true" : "false", ownerstore::ownerKey(q) ? "true" : "false"); }
+            net::fromSetupAp() ? "true" : "false", ownerstore::recoveryActive() ? "true" : "false", ownerstore::ownerKey(q) ? "true" : "false"); }
 #endif
     o.add("}");
     reply(200, o);
@@ -1021,7 +1021,7 @@ static void dropPending() { ownerkey::wipe(g_pendPem, sizeof(g_pendPem)); ownerk
 static bool provGate(provision::Route r, bool mutation) {
     if (mutation ? !sameOrigin(true) : !hostOk()) { if (!mutation) fail(403, "forbidden-request"); return false; }
     provision::Ctx c;
-    c.state = ownerstore::state(); c.viaAp = net::fromSetupAp(); c.staUp = net::staUp(); c.physical = ownerstore::physicalActive();
+    c.state = ownerstore::state(); c.viaAp = net::fromSetupAp(); c.staUp = net::staUp(); c.physical = ownerstore::recoveryActive();
     webauth::Session* sess = currentSession();
     c.loggedIn = sess && (!mutation || webauth::equal(g_srv->header("X-Orcon-Token").c_str(), sess->csrf));
     c.passwordSet = g_credSet || g_credUnreadable; c.keyPending = g_pend;   // unreadable never reopens step 1
@@ -1042,7 +1042,7 @@ static void handleProvState() {
     o.add("{\"state\":\"%s\",\"physical\":%s,\"physical_left_s\":%lu,\"password_set\":%s,\"logged_in\":%s,\"crypto_ok\":%s,"
           "\"sta_up\":%s,\"ap_name\":\"%s\",\"key\":{\"registered\":%s,\"fingerprint\":\"%s\",\"pending\":%s,\"pending_fingerprint\":\"%s\"},"
           "\"wifi\":{\"test\":\"%s\",\"ip\":\"%s\",\"ssid\":",
-          provision::name(ownerstore::state()), ownerstore::physicalActive() ? "true" : "false",
+          provision::name(ownerstore::state()), ownerstore::recoveryActive() ? "true" : "false",
           (unsigned long)(ownerstore::physicalLeftMs() / 1000), g_credSet ? "true" : "false", sess ? "true" : "false",
           ownerstore::cryptoReady() ? "true" : "false", net::staUp() ? "true" : "false", WIFI_AP_NAME, reg ? "true" : "false", fp,
           g_pend ? "true" : "false", g_pendFp, net::wifiTestState(), net::wifiTestIp());

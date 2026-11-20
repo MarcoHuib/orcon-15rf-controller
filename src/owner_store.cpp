@@ -143,12 +143,22 @@ bool markSetup() {
     g_state = provision::State::Setup;
     return true;
 }
+// A point no recovery file can match (off the curve, the point at infinity) is no usable key: an update must not
+// confirm on it (Codex legacy r3), and the recovery mode may register a new one.
+static bool onCurve(const uint8_t q[65]) {
+    mbedtls_ecp_group g; mbedtls_ecp_point p;
+    mbedtls_ecp_group_init(&g); mbedtls_ecp_point_init(&p);
+    const bool ok = mbedtls_ecp_group_load(&g, MBEDTLS_ECP_DP_SECP256R1) == 0 && mbedtls_ecp_point_read_binary(&g, &p, q, 65) == 0 &&
+                    mbedtls_ecp_check_pubkey(&g, &p) == 0;
+    mbedtls_ecp_point_free(&p); mbedtls_ecp_group_free(&g);
+    return ok;
+}
 bool ownerKey(uint8_t q[65]) {
     Preferences p;
     if (!p.begin(NS, true)) return false;
     const bool ok = p.getBytesLength("pub") == ownerkey::PUB_LEN && p.getBytes("pub", q, ownerkey::PUB_LEN) == ownerkey::PUB_LEN && q[0] == 0x04;
     p.end();
-    return ok;
+    return ok && onCurve(q);
 }
 // Tri-state like the state: a key that cannot be read still counts as present (fail closed).
 static bool pubPresent() {
@@ -182,6 +192,8 @@ void armMode(Mode m) { g_arm.magic = ARM_MAGIC; g_arm.mode = uint8_t(m); g_arm.i
 Mode bootMode() { return g_boot; }
 uint32_t physicalLeftMs() { return g_physical.left(millis()); }
 bool physicalActive() { return physicalLeftMs() > 0; }
+// WiFi wissen opens the setup AP for the WiFi test, never the password recovery or a new key (Codex legacy r3).
+bool recoveryActive() { return g_boot == Mode::Recovery && physicalActive(); }
 
 void begin() {
     webauth::Cred c;

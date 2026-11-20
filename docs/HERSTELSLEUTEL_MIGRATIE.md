@@ -38,11 +38,19 @@
 
 ## Wat deze wijziging doet
 
-**Verwijderd:** alle onderdelen uit de tabel hierboven. Ook de routes bestaan niet meer, in elke toestand en op elke build. Een verzoek krijgt nooit een code, een nonce of een sessie. De statuscode is 404, behalve op de control-image: daar antwoordt de standaardafhandeling 403 `route-disabled-in-web-control`.
+**Verwijderd:** alle onderdelen uit de tabel hierboven. Ook de routes bestaan niet meer, in elke toestand en op elke build. Een verzoek krijgt nooit een code, een nonce of een sessie. De statuscode is 404, behalve op builds met webbediening (control, RF-test): daar antwoordt de standaardafhandeling 403 `route-disabled-in-web-control`. De oude PoC-portals antwoorden 403 `route-disabled-in-poc`.
 
 **Geen OTA zonder eigenaar.** Builds zonder eigendomsmodel (de oude PoC-portals) hebben geen netwerkschrijver meer (`/api/ota/nonce|begin|upload`). Daar installeerde de handtekening alleen al firmware; ze worden nu alleen via USB geïnstalleerd (Codex ronde 2).
 
 **Nooit meer terug via OTA.** De OTA-policy weigert elk image dat het oude herstel nog bevat (`image-has-release-key-recovery`; het image wordt herkend aan de vraagsoort `orcon-auth-reset`). Dat geldt voor elke build met deze wijziging, ook voor builds zonder eigendomsmodel, zoals de oude PoC-images (Codex). Een image dat al in het andere slot staat, blijft een geldig rollbackdoel: de migratie kan dus altijd terug naar b75fad3.
+
+**Alleen images met eigenaarsherstel** (Codex ronde 3, MAJOR). Een build zonder eigendomsmodel (bijvoorbeeld RX-only met `ORCON_WEB_AUTH=0`) droeg toch de marker `ORCON-OWNER-MODEL v1`, want de scanner bevat die tekst zelf. Zo'n image kon zich op een board zonder sleutel bevestigen: zonder eigenaarsherstel en zonder proefstartpoort. Nu:
+- Alleen builds met het eigendomsmodel bevatten de nieuwe marker `ORCON-OWNER-KEY v1` (in `/api/ota` als `owner_model`). De scanner zoekt een gecodeerde kopie, dus andere builds bevatten hem nooit.
+- De OTA-policy weigert elk binnenkomend image zonder die marker (`image-without-owner-key`).
+- De oude marker blijft in de nieuwe images staan, want de beleidscode van b75fad3 vraagt erom. b75fad3 en 2edb423 blijven geldige rollbackdoelen.
+- Gecontroleerd in de build: de RX-only-, RF-test- en control-images bevatten de nieuwe marker; `tx_poc_dryrun` en een RX-only-build met `ORCON_WEB_AUTH=0` niet.
+
+**WiFi wissen opent geen herstel meer** (Codex ronde 3). Het PRG-menu-item *WiFi wissen* opent de setup-AP voor de WiFi-test. Sleutelregistratie en wachtwoordherstel zijn alleen mogelijk in de *Herstelmodus* (`ownerstore::recoveryActive()`), zoals `PROVISIONING.md` al beschreef.
 
 **Een board zonder herstelsleutel**, met waarde 3 in NVS of een wachtwoord zonder staat, leest nu als *done zonder sleutel*:
 - Aanmelden met het bestaande wachtwoord werkt gewoon.
@@ -52,9 +60,9 @@
 
 **De proefstartpoort.** Een nieuwe firmware die via OTA binnenkomt, bevestigt zich alleen als:
 - WiFi en RX gezond zijn, zoals al het geval was;
-- én er een eigenaarssleutel is geregistreerd en leesbaar is (`ota_signed.cpp ownerKeyRegistered()`).
+- én er een eigenaarssleutel is geregistreerd, leesbaar is en op de P-256-curve ligt (`ota_signed.cpp ownerKeyRegistered()`, `owner_store.cpp onCurve`).
 
-Zonder sleutel wordt de proefstart nooit bevestigd. De sleutel wordt vóór elke bevestigingspoging opnieuw gelezen, hooguit één keer per seconde. Een kortstondige leesfout dwingt dus geen rollback af, en een sleutel die onleesbaar wordt, wordt opgemerkt. De beslissing zit in `otap::trialStep` (hostgetest). Na 300 s keert de vorige firmware terug, met de herstelmogelijkheid die die firmware heeft. Het board kan dus nooit via een update in een toestand komen waarin het oude herstel weg is en het nieuwe nog niet bestaat. De console meldt: "geen herstelsleutel geregistreerd: deze firmware wordt niet bevestigd…".
+Zonder sleutel wordt de proefstart nooit bevestigd. De sleutel wordt vóór elke bevestigingspoging opnieuw gelezen, hooguit één keer per seconde. Een kortstondige leesfout dwingt dus geen rollback af, en een sleutel die onleesbaar wordt, wordt opgemerkt. De beslissing zit in `otap::trialStep` (hostgetest). De deadline gaat altijd voor, ook als elke lus trager is dan een seconde (Codex ronde 3). Na 300 s keert de vorige firmware terug, met de herstelmogelijkheid die die firmware heeft. Het board kan dus nooit via een update in een toestand komen waarin het oude herstel weg is en het nieuwe nog niet bestaat. De console meldt: "geen herstelsleutel geregistreerd: deze firmware wordt niet bevestigd…".
 
 **Uitzondering: handwerk.** Is bij een proefstart ook de eigendomsopslag onleesbaar, en is het andere slot geen geverifieerd eigenaarsmodel-image in de toestand VALID (bijvoorbeeld een via USB geïnstalleerd image), dan stopt de start in de fail-closed modus vóór de timer en de watchdog. Het OLED vraagt dan om RST; die herstart doet de rollback.
 
@@ -62,11 +70,18 @@ Een installatie via USB heeft geen proefstart. Op een board zonder sleutel geldt
 
 **Tests:**
 - `test_provision` (173): de oude waarden 0 + wachtwoord en 3 lezen als Done, zonder schrijven.
-- `test_ota_policy` (96): een image met het oude herstel wordt geweigerd, ook als de marker over een chunkgrens valt, maar blijft een eigenaarsmodel-image. Ook de proefstartbeslissing is getest: wachten, één poging per seconde, rollback bij de deadline en een laatste bevestiging die nog mag.
+- `test_ota_policy` (99): een image met het oude herstel wordt geweigerd, ook als de marker over een chunkgrens valt, maar blijft een eigenaarsmodel-image. Een image zonder de marker `ORCON-OWNER-KEY v1` wordt geweigerd, bij elke chunkgrootte. Ook de proefstartbeslissing is getest: wachten, één poging per seconde, en rollback bij de deadline, ook bij trage lussen met een openstaande poging.
 - `test_setup_web` (11 varianten): de drie routes geven 404; een volledige migratie: aanmelden, geen sleutel buiten de herstelmodus, `no-owner-key` vóór de sleutel, sleutel registreren, wachtwoord ongewijzigd, herstel met het sleutelbestand.
-- `test_web_auth` (59) en `test_setup_page.js` (158): geen codeformulier en geen `auth-code`-tekst. In de herstelmodus op een board zonder sleutel staat eerst de uitleg over de fabrieksreset, zonder sleutelformulier.
+- `test_web_auth` (59) en `test_setup_page.js` (159): geen codeformulier en geen `auth-code`-tekst. In de herstelmodus op een board zonder sleutel staat eerst de uitleg over de fabrieksreset. Het formulier blijft zichtbaar, want een leesfout kan tijdelijk zijn. Zonder wachtwoordrecord blijft het herstelformulier in de herstelmodus bereikbaar.
 - `test_orcon_cli` (55): `auth-code` bestaat niet meer.
-- Veiligheidsguard: geen van de oude namen of routes in `src/` en `orcon.py`, de policyregel, de proefstartbeslissing en de poort in `tick()`. Er zijn 14 gerichte mutaties, die allemaal worden geweigerd.
+- Veiligheidsguard: geen van de oude namen of routes in `src/` en `orcon.py`. Verder:
+  - de policyregels en de plekken waar de nieuwe marker mag staan;
+  - de proefstartbeslissing en de poort in `tick()`;
+  - de curvecontrole van de sleutel;
+  - herstel alleen in de Herstelmodus;
+  - de sessiecontrole van nonce, begin en upload.
+  
+  Er zijn 28 gerichte mutaties, die allemaal worden geweigerd.
 
 ## Migratievolgorde voor jouw Heltec
 
@@ -86,7 +101,7 @@ Beide images hebben het eigendomsmodel. Uit de broncode van beide commits volgt 
 | 2 | jij | Telefoon op Orcon15RF-Setup, open `http://192.168.4.1` en meld je aan. Systeem → Herstelsleutel: kies een wachtwoordzin (minstens 10 tekens) en sla `orcon-recovery-key.pem` op. Kies het opgeslagen bestand en vul de wachtwoordzin in: het board opent het bestand zelf en registreert pas dan de sleutel. | De melding "Nieuwe herstelsleutel geregistreerd (vingerafdruk …)". Systeem → Herstelsleutel: "Geregistreerd". | `key-mismatch`: opnieuw proberen. Bij `key-write-failed` kan de sleutel al half zijn opgeslagen; het oude herstel kan dan al uit staan. **Bewaar daarom altijd het gedownloade bestand**, herstart, en ga door naar stap 4 en 5. |
 | 3 | jij | Bewaar het sleutelbestand en de wachtwoordzin elk op twee plekken (bijvoorbeeld de wachtwoordmanager en een USB-stick), niet samen met het beheerderswachtwoord. | — | Zonder bestand en wachtwoordzin is alleen nog een fabrieksreset mogelijk. |
 | 4 | jij, alleen lezen | Na een normale herstart: `curl -s -X POST -H 'Content-Type: application/json' -d '{}' http://orcon15rf.local/api/auth/nonce` | Antwoord `403 {"error":"owner-key-required"}`. Er wordt niets uitgegeven. Let op: hetzelfde antwoord komt ook als de eigendomsopslag onleesbaar is; stap 5 is daarom het echte bewijs. | Krijg je een nonce? Dan is de registratie niet blijvend: terug naar stap 1. |
-| 5 | jij (**verplicht vóór stap 6**) | Bewijs eenmalig dat het nieuwe herstel werkt: herstelmodus → "Wachtwoord vergeten" → het sleutelbestand, de wachtwoordzin en **hetzelfde** wachtwoord dat je nu hebt. Zo verandert er niets, ook niet als het antwoord onderweg verloren gaat. | Na een normale herstart: aanmelden met dat wachtwoord lukt. | Een fout (`key-mismatch`, onjuiste wachtwoordzin): bestand en wachtwoordzin controleren. Ging er iets mis tijdens het opslaan, dan geldt hoe dan ook nog hetzelfde wachtwoord. |
+| 5 | jij (**verplicht vóór stap 6**) | Bewijs eenmalig dat het nieuwe herstel werkt: herstelmodus → "Wachtwoord vergeten" → het sleutelbestand, de wachtwoordzin en **hetzelfde** wachtwoord dat je nu hebt. Zo verandert er niets, ook niet als het antwoord onderweg verloren gaat. | **Eerst**, nog vóór de herstart: na "Wachtwoord herstellen" verschijnt geen foutmelding en opent de pagina meteen het startscherm. Je bent dan aangemeld met de sessie uit het herstel. Alleen dat bewijst het herstel; aanmelden met hetzelfde wachtwoord lukt ook als het herstel mislukte (Codex ronde 3). **Daarna**: normaal herstarten en aanmelden met dat wachtwoord. | Een fout (`key-mismatch`, onjuiste wachtwoordzin): bestand en wachtwoordzin controleren. Ging er iets mis tijdens het opslaan, dan geldt hoe dan ook nog hetzelfde wachtwoord. |
 | 6 | jij | Zet het GitHub-secret: `gh secret set ORCON_OTA_SIGNING_KEY --env orcon-production-release --repo MarcoHuib/orcon-15rf-controller < ~/.orcon/ota-signing-key.pem` | `gh secret list --env orcon-production-release` toont de naam. | — |
 | 7 | jij | PR #16 en daarna deze PR reviewen en mergen. Daarna de eerste release via de workflow. b75fad3 kan nog niet zelf op GitHub kijken: download `orcon-control-vX.Y.Z-<commit>.orconfw` uit de release en kies hem in Systeem → Firmware, paneel **Update installeren** (bestand kiezen, dan de knop Update installeren). Vanaf de nieuwe firmware heet dat paneel "Handmatig installeren" en komt er een knop "Controleer op updates" bij. | Na ongeveer 60 s: "nieuwe firmware bevestigd". De poort laat hem door omdat er een sleutel is. | Zonder sleutel of bij een probleem: na 300 s automatisch terug naar b75fad3. |
 | 8 | automatisch | Bij de volgende release schuift b75fad3 uit het andere slot. | Beide slots bevatten firmware zonder enig Legacy-pad. | — |
@@ -99,9 +114,8 @@ Beide images hebben het eigendomsmodel. Uit de broncode van beide commits volgt 
 - De nieuwe firmware van stap 7 kan je niet buitensluiten: zonder sleutel bevestigt hij zich niet.
 
 **Restpunten (Codex, niet opgelost):**
-- Kan de firmware bij het starten de OTA-status niet lezen, dan wordt een proefstart niet als proefstart herkend: geen deadline, alleen een RST rolt terug.
-- De poort controleert dat een opgeslagen sleutel leesbaar is en dat de cryptografie van het image werkt, maar niet dat het punt op de curve ligt.
-- Er is geen hosttest van de hele startvolgorde (opstarthaak → proefstart → `tick`); de guard pint die code wel vast.
+- Kan de firmware bij het starten de OTA-status niet lezen, dan wordt een proefstart niet als proefstart herkend: geen deadline. Het image blijft in otadata onbevestigd, dus elke herstart (RST, stroom, watchdog) rolt terug. In ESP-IDF 4.4 geeft een leesfout van otadata dezelfde code als een USB-installatie zonder otadata-regel; een betrouwbaar onderscheid vraagt meer dan een herhaalde leespoging.
+- Er is geen hosttest van de hele startvolgorde (opstarthaak → proefstart → `tick`) en van de OTA-routes met een ontbrekende sessie of CSRF-token. De guard pint die code wel vast, met mutaties.
 
 **Restpunt.** Raakt NVS precies de namespace `orconown` kwijt terwijl `orconauth` blijft, dan leest een **oud** image (b75fad3, 2edb423, PR #16) het board weer als *legacy*. Dat kan alleen door ingrijpen via USB of door schade aan het flashgeheugen; geen enkele route doet het. Na stap 8 staat er geen oud image meer op het board.
 

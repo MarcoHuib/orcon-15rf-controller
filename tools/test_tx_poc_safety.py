@@ -377,8 +377,21 @@ def legacy_recovery_safe(files,ota):
     pol=files['src/ota_policy.cpp']
     assert 'if (s.releaseKeyReset) return "image-has-release-key-recovery";' in fn(pol,'const char* checkImage('),'no image with the old recovery is written again'
     assert 'releaseKeyReset |= has(b, n, PAT(P_VR));' in pol,'the scanner looks for it'
-    ts=re.sub(r'\s+',' ',fn(pol,'Trial trialStep('))
-    assert 'if (healthy && now >= confirmAfter && (!lastTry || now - lastTry >= 1000)) { lastTry = now; return Trial::TryConfirm; } return now >= rollbackAfter ? Trial::Rollback : Trial::Wait;' in ts,'trial decision (host-tested)'
+    ts=re.sub(r'\s+',' ',re.sub(r'//[^\n]*','',fn(pol,'Trial trialStep(')))
+    assert ts.endswith(' if (now >= rollbackAfter) return Trial::Rollback; if (healthy && now >= confirmAfter && (!lastTry || now - lastTry >= 1000)) { lastTry = now; return Trial::TryConfirm; } return Trial::Wait;'),'trial decision (host-tested): the deadline first (Codex legacy r3)'
+    ci=fn(pol,'const char* checkImage(')
+    assert 'if (!s.ownerKey) return "image-without-owner-key";' in ci and 'ownerKey |= has(b, n, PAT(P_OK));' in pol,'every incoming image has owner-key recovery (Codex legacy r3)'
+    # The plain owner-key marker exists only in ota_policy.h and in the status of ownership builds: a build without the
+    # model (and its scanner) never carries it, so it can never be admitted (Codex legacy r3).
+    for path,text in files.items():
+        if path.endswith('ota_policy.h'): assert text.count('"ORCON-OWNER-KEY v1"')==1,path; continue
+        assert 'ORCON-OWNER-KEY' not in text,(path,'plain owner-key marker')
+        if 'OWNER_KEY_MARKER' in text: assert path.endswith('ota_signed.cpp') and text.count('OWNER_KEY_MARKER')==1 and '#if ORCON_OWNER_MODEL\n             otap::OWNER_KEY_MARKER,' in text,(path,'owner-key marker outside an ownership build')
+    own=files['src/owner_store.cpp']
+    assert 'return ok && onCurve(q);' in fn(own,'bool ownerKey(uint8_t q[65]) {') and 'mbedtls_ecp_check_pubkey(&g, &p) == 0' in fn(own,'static bool onCurve('),'only a usable key counts (Codex legacy r3)'
+    assert 'bool recoveryActive() { return g_boot == Mode::Recovery && physicalActive(); }' in own,'WiFi wissen opens no recovery (Codex legacy r3)'
+    web=files['src/setup_web.cpp']
+    assert 'physicalActive' not in web and 'c.physical = ownerstore::recoveryActive();' in fn(web,'static bool provGate('),'the key and recovery routes follow the Herstelmodus only'
     h=re.sub(r'\s+',' ',fn(ota,'void tick(uint32_t now) {'))
     assert 'const bool healthy = !g_hold && net::wifiConnected() && radio::rxDiagnostics().rxState == 0;' in h,'health check'
     assert 'switch (otap::trialStep(now, healthy, lastTry, CONFIRM_AFTER_MS, ROLLBACK_AFTER_MS)) {' in h,'the trial follows otap::trialStep'
@@ -389,6 +402,9 @@ def legacy_recovery_safe(files,ota):
     assert '\n    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q) && ownerstore::cryptoReady();\n' in k and 'return ok;' in k,'the key is read before every attempt, not assumed or cached, and usable by this image'
     assert 'extern "C" bool verifyRollbackLater() { return true; }' in ota,'the core never confirms a new image at startup'
     assert 'g_pending = esp_ota_get_state_partition(run, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;' in fn(ota,'void begin(WebServer& s) {') and ota.count('g_pending = ')==2,'the trial state comes from the OTA data'
+    assert fn(ota,'static bool ownerConsent() {').startswith('\n#if ORCON_OWNER_MODEL\n    return setupweb::authorize(true);\n#else'),'manual install: the owner session and CSRF token (Codex legacy r3)'
+    for h in ('static void handleNonce() {','static void handleBegin() {'): assert fn(ota,h).lstrip().startswith('if (!ownerConsent()) return;'),(h,'asks the owner first')
+    assert '#if ORCON_OWNER_MODEL\n        if (!setupweb::uploadAuthorized()) { g_st = St::Failed; g_err = "login-required"; dropClient(); return; }\n#endif\n        if (startWrite()) return;' in fn(ota,'static void handleUploadData() {'),'the upload checks the session before it writes'
     assert re.search(r'#if ORCON_OWNER_MODEL\n(?:\s*//[^\n]*\n)*\s*s\.on\("/api/ota/nonce",[^\n]*\n\s*s\.on\("/api/ota/begin",[^\n]*\n\s*s\.on\("/api/ota/upload",[^\n]*\n#endif',ota) and ota.count('s.on("/api/ota/begin"')==1,'no network writer without the owner session (Codex legacy r2)'
 LR_FILES={str(x):x.read_text() for x in sorted(Path('src').glob('*.[ch]*'))+[Path('src/setup_page.html'),Path('tools/orcon.py')] if x.name!='setup_page.h'}
 legacy_recovery_safe(LR_FILES,ota_src)
@@ -399,7 +415,14 @@ for name,where,old,new in (('reset-route-back','src/setup_web.cpp','    s.on("/a
                            ('signed-reset-request-back','src/web_auth.cpp','bool cookieSid(','const char* checkResetRequest(const char*, const char*);\nbool cookieSid('),
                            ('policy-allows-old-recovery','src/ota_policy.cpp','    if (s.releaseKeyReset) return "image-has-release-key-recovery";\n',''),
                            ('trial-no-rate-limit','src/ota_policy.cpp','(!lastTry || now - lastTry >= 1000)','true'),
-                           ('trial-ignores-health','src/ota_policy.cpp','if (healthy && now >= confirmAfter','if (now >= confirmAfter')):
+                           ('trial-ignores-health','src/ota_policy.cpp','if (healthy && now >= confirmAfter','if (now >= confirmAfter'),
+                           ('confirm-starves-rollback','src/ota_policy.cpp','    if (now >= rollbackAfter) return Trial::Rollback;','    if (false) return Trial::Rollback;'),
+                           ('policy-without-owner-key','src/ota_policy.cpp','    if (!s.ownerKey) return "image-without-owner-key";\n',''),
+                           ('plain-marker-in-scanner','src/ota_policy.cpp','ownerKey |= has(b, n, PAT(P_OK));','ownerKey |= has(b, n, OWNER_KEY_MARKER);'),
+                           ('marker-in-every-build','src/ota_signed.cpp','#if ORCON_OWNER_MODEL\n             otap::OWNER_KEY_MARKER,','#if 1\n             otap::OWNER_KEY_MARKER,'),
+                           ('off-curve-key','src/owner_store.cpp','    return ok && onCurve(q);','    return ok;'),
+                           ('wifi-reset-recovers','src/owner_store.cpp','bool recoveryActive() { return g_boot == Mode::Recovery && physicalActive(); }','bool recoveryActive() { return physicalActive(); }'),
+                           ('gate-on-physical','src/setup_web.cpp','c.physical = ownerstore::recoveryActive();','c.physical = ownerstore::physicalActive();')):
     files=dict(LR_FILES); m=files[where].replace(old,new,1); assert m!=files[where],name; files[where]=m
     try: legacy_recovery_safe(files,ota_src)
     except AssertionError: print('PASS legacy-recovery guard rejects mutation',name)
@@ -413,7 +436,10 @@ for name,old,new in (('trial-without-key','if (ownerKeyRegistered() && esp_ota_m
                      ('signer-only-writer','#if ORCON_OWNER_MODEL\n    // Writing firmware needs','#if 1\n    // Writing firmware needs'),
                      ('confirm-ignores-health','const bool healthy = !g_hold && net::wifiConnected() && radio::rxDiagnostics().rxState == 0;','const bool healthy = true;'),
                      ('deadline-without-rollback','            rollbackNow();\n            return;\n        case otap::Trial::Wait:','            return;\n        case otap::Trial::Wait:'),
-                     ('second-confirm','void rollbackNow() {','static void confirmEarly() { esp_ota_mark_app_valid_cancel_rollback(); }\nvoid rollbackNow() {')):
+                     ('second-confirm','void rollbackNow() {','static void confirmEarly() { esp_ota_mark_app_valid_cancel_rollback(); }\nvoid rollbackNow() {'),
+                     ('consent-without-session','    return setupweb::authorize(true);\n#else','    return hostOk();\n#else'),
+                     ('nonce-without-consent','static void handleNonce() {\n    if (!ownerConsent()) return;','static void handleNonce() {'),
+                     ('upload-without-session','        if (!setupweb::uploadAuthorized()) {','        if (false) {')):
     m=ota_src.replace(old,new,1); assert m!=ota_src,name
     try: legacy_recovery_safe(LR_FILES,m)
     except AssertionError: print('PASS legacy-recovery guard rejects mutation',name)

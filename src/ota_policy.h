@@ -14,6 +14,11 @@ static const char SIGNED_OTA_MARKER[] = "ORCON-SIGNED-OTA v1";
 // per-device owner keys (their password recovery trusts the release key) and are never installed
 // over the air; a factory reset erases such an image from the other slot.
 static const char OWNER_MODEL_MARKER[] = "ORCON-OWNER-MODEL v1";
+// An image that runs the ownership model WITH owner-key recovery and without the release-key reset. Unlike the marker
+// above (which every build with this scanner contains), only ORCON_OWNER_MODEL builds contain it in plain text: the
+// scanner looks for an encoded copy. Required for every incoming image (Codex legacy r3); older owner-model images
+// without it stay valid rollback targets.
+static const char OWNER_KEY_MARKER[] = "ORCON-OWNER-KEY v1";
 
 // Only explicitly approved firmware variants can be installed over the air.
 enum class Variant : uint8_t { None, RxOnly, RfTest, Control };
@@ -59,6 +64,7 @@ public:
     bool legacyOta = false;   // unauthenticated HTTP/Arduino OTA strings
     bool signedOta = false;   // SIGNED_OTA_MARKER
     bool ownerModel = false;  // OWNER_MODEL_MARKER
+    bool ownerKey = false;    // OWNER_KEY_MARKER
     bool releaseKeyReset = false;   // the removed password reset with the firmware signing key (its request kind)
     bool commitStamp = false; // the manifest's 40-hex commit
 private:

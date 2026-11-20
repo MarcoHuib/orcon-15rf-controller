@@ -94,6 +94,7 @@ static const uint8_t P_L1[] = {0x1b,0x28,0x3e,0x2f,0x33,0x34,0x35,0x15,0x0e,0x1b
 static const uint8_t P_L2[] = {0x3b,0x2f,0x2e,0x32,0x05,0x2f,0x2a,0x36,0x35,0x3b,0x3e};
 static const uint8_t P_L3[] = {0x0f,0x2a,0x3e,0x3b,0x2e,0x3f,0x28,0x74,0x39,0x2a,0x2a};
 static const uint8_t P_VR[] = {0x35,0x28,0x39,0x35,0x34,0x77,0x3b,0x2f,0x2e,0x32,0x77,0x28,0x3f,0x29,0x3f,0x2e};   // the old recovery request kind
+static const uint8_t P_OK[] = {0x15,0x08,0x19,0x15,0x14,0x77,0x15,0x0d,0x14,0x1f,0x08,0x77,0x11,0x1f,0x03,0x7a,0x2c,0x6b};   // the owner-key marker (ota_policy.h)
 struct Pat { const uint8_t* p; size_t n; };
 #define PAT(x) Pat{x, sizeof(x)}
 static const Pat LEGACY[] = {PAT(P_L0), PAT(P_L1), PAT(P_L2), PAT(P_L3)};
@@ -120,7 +121,7 @@ void Scanner::match(const uint8_t* b, size_t n) {
     rxRadio |= has(b, n, PAT(P_RX)); rxBanner |= has(b, n, PAT(P_BANNER)); rfTest |= has(b, n, PAT(P_RF));
     control |= has(b, n, PAT(P_CTL));
     txCode |= has(b, n, PAT(P_TX)); dryRun |= has(b, n, PAT(P_DRY)); signedOta |= has(b, n, SIGNED_OTA_MARKER);
-    ownerModel |= has(b, n, OWNER_MODEL_MARKER); releaseKeyReset |= has(b, n, PAT(P_VR));
+    ownerModel |= has(b, n, OWNER_MODEL_MARKER); releaseKeyReset |= has(b, n, PAT(P_VR)); ownerKey |= has(b, n, PAT(P_OK));
     for (const Pat& p : LEGACY) legacyOta |= has(b, n, p);
     if (commit_[0]) commitStamp |= has(b, n, commit_);
 }
@@ -140,8 +141,9 @@ void Scanner::feed(const uint8_t* data, size_t n) {
 }
 
 Trial trialStep(uint32_t now, bool healthy, uint32_t& lastTry, uint32_t confirmAfter, uint32_t rollbackAfter) {
+    if (now >= rollbackAfter) return Trial::Rollback;   // first: slow passes with due attempts never starve it (Codex legacy r3)
     if (healthy && now >= confirmAfter && (!lastTry || now - lastTry >= 1000)) { lastTry = now; return Trial::TryConfirm; }
-    return now >= rollbackAfter ? Trial::Rollback : Trial::Wait;
+    return Trial::Wait;
 }
 
 const char* checkImage(const Manifest& m, const Scanner& s, uint32_t received, const uint8_t sha256[32]) {
@@ -156,6 +158,9 @@ const char* checkImage(const Manifest& m, const Scanner& s, uint32_t received, c
     // Firmware that still lets the signing key reset a password (state Legacy) is never written again, by any build.
     // An image already in the other slot stays a rollback target (docs/HERSTELSLEUTEL_MIGRATIE.md).
     if (s.releaseKeyReset) return "image-has-release-key-recovery";
+    // A build without the ownership model (no owner recovery, no trial key gate) would confirm itself on a keyless
+    // board and take the old recovery away for good (Codex legacy r3).
+    if (!s.ownerKey) return "image-without-owner-key";
     if (m.variant == Variant::RxOnly && !(s.rxRadio && s.rxBanner && !s.txCode && !s.rfTest && !s.control && !s.dryRun))
         return "image-not-rx-only";
     if (m.variant == Variant::RfTest && !(s.rfTest && s.txCode && !s.control && !s.rxRadio && !s.dryRun))

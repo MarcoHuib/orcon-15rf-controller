@@ -18,11 +18,13 @@ static std::string manifest(const char* variant = "rx-only", const char* env = "
              "\"sha256\":\"%s\",\"nonce\":\"%s\"%s}", mac, env, variant, tx ? "true" : "false", COMMIT, size, SHA, NONCE, extra);
     return b;
 }
-// Every image of the ownership model carries OWNER_MODEL_MARKER; owner=false builds an older one.
-static std::vector<uint8_t> image(std::initializer_list<const char*> parts, size_t pad = 3000, bool owner = true) {
+// Every current image of the ownership model carries OWNER_MODEL_MARKER and OWNER_KEY_MARKER; owner=false builds one from
+// before the model, ownerKey=false one without owner-key recovery (an older owner image, or a build without the model).
+static std::vector<uint8_t> image(std::initializer_list<const char*> parts, size_t pad = 3000, bool owner = true, bool ownerKey = true) {
     std::vector<uint8_t> v(pad, 0xA5);
     for (const char* p : parts) { v.insert(v.end(), p, p + strlen(p)); v.insert(v.end(), 97, 0x00); }
     if (owner) { v.insert(v.end(), OWNER_MODEL_MARKER, OWNER_MODEL_MARKER + strlen(OWNER_MODEL_MARKER)); v.insert(v.end(), 50, 0x00); }
+    if (ownerKey) { v.insert(v.end(), OWNER_KEY_MARKER, OWNER_KEY_MARKER + strlen(OWNER_KEY_MARKER)); v.insert(v.end(), 50, 0x00); }
     return v;
 }
 static std::string release(const char* variant = "control", const char* env = "heltec_v2_sx1276_control", bool tx = true,
@@ -135,7 +137,16 @@ int main() {
       Manifest y; parseManifest(manifest("rx-only", "heltec_v2_sx1276", false, (unsigned)split.size()).c_str(), y);
       bool all = true;
       for (size_t ch : {1u, 7u, 13u, 64u, 255u}) all = all && !checkImage(y, scan(split, ch), (uint32_t)split.size(), y.sha256);
-      CHECK(all, "owner-model marker found across any chunk boundary"); }
+      CHECK(all, "owner-model marker found across any chunk boundary");
+      // A build without the ownership model also contains OWNER_MODEL_MARKER (the scanner's own copy), but never the
+      // owner-key marker: it would confirm on a keyless board without owner recovery (Codex legacy r3).
+      const auto noKey = image({COMMIT, "SX1276 direct RX (TX disabled)", "RX-ONLY TEST FIRMWARE", SIGNED_OTA_MARKER}, 3000, true, false);
+      Manifest z; parseManifest(manifest("rx-only", "heltec_v2_sx1276", false, (unsigned)noKey.size()).c_str(), z);
+      all = true;
+      for (size_t ch : {1u, 7u, 13u, 64u, 255u}) all = all && !strcmp(checkImage(z, scan(noKey, ch), (uint32_t)noKey.size(), z.sha256), "image-without-owner-key");
+      CHECK(all, "image without the owner-key marker refused, at any chunk size");
+      Scanner k(""); k.feed(split.data(), split.size()); Scanner n(""); n.feed(noKey.data(), noKey.size());
+      CHECK(k.ownerKey && !n.ownerKey && n.ownerModel, "the encoded owner-key pattern matches the plain marker only"); }
     // ---- trial boot: confirm only when healthy (the caller adds the owner key), at most once a second, rollback at the deadline ----
     { const uint32_t C = 60000, R = 300000; uint32_t last = 0;
       CHECK(trialStep(59999, true, last, C, R) == Trial::Wait && last == 0, "trial: no confirmation before 60 s");
@@ -147,7 +158,10 @@ int main() {
       last = 299800;
       CHECK(trialStep(300000, true, last, C, R) == Trial::Rollback, "trial: attempts keep failing past 300 s: rollback");
       last = 290000;
-      CHECK(trialStep(300100, true, last, C, R) == Trial::TryConfirm, "trial: a healthy image may still confirm at the deadline");
+      CHECK(trialStep(300100, true, last, C, R) == Trial::Rollback, "trial: the deadline wins over a due attempt (Codex legacy r3)");
+      last = 0; bool rolled = false; uint32_t tries = 0;   // slow passes (>= 1 s apart), every attempt failing (no owner key)
+      for (uint32_t t = 297500; t <= 310000 && !rolled; t += 1500) { const Trial d = trialStep(t, true, last, C, R); tries += d == Trial::TryConfirm; rolled = d == Trial::Rollback && t >= R && t < R + 1500; }
+      CHECK(rolled && tries == 2, "trial: slow passes with due attempts still roll back at the first pass past 300 s");
       last = 0;
       CHECK(trialStep(4000000000u, false, last, C, R) == Trial::Rollback, "trial: never confirmed: rollback whatever the clock"); }
     // ---- the removed Legacy recovery: an image with the release-key password reset is never written again ----

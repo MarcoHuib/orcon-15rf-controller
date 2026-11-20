@@ -196,7 +196,7 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
 | Wist | niets | thuis-WiFi, ook de kopie in de WiFi-driver (`nvs.net80211`) | alles hieronder |
 | Behoudt | alles | wachtwoord, sleutel, profielen, koppeling, eigen ID, firmware | firmware, bootloader, partitietabel, OTA/rollback, releasesleutel |
 | Daarna | setup-AP, 15 minuten, één boot | setup-AP; aanmelden en de WiFi-test | staat New: de wizard opnieuw |
-| Gebruik | vergeten wachtwoord met het sleutelbestand; een nieuwe sleutel (aangemeld); een Legacy-apparaat een sleutel geven | verhuizen, nieuwe router | verkopen, overdragen, alles opnieuw |
+| Gebruik | vergeten wachtwoord met het sleutelbestand; een nieuwe sleutel (aangemeld); een apparaat zonder sleutel er een geven | verhuizen, nieuwe router | verkopen, overdragen, alles opnieuw |
 
 **Herstelmodus**
 - Dit is een RTC-vlag voor één boot. Een stroomonderbreking annuleert hem.
@@ -248,6 +248,7 @@ Bij een stroomonderbreking gaat de reset bij de volgende start verder. Zonder ma
 - De sessie van de eigenaar is verplicht.
 - Alle bestaande controles blijven: grootte, hash, commit, varianten en markers, `esp_ota_end`, proefstart en rollback.
 - Nieuw is de marker `ORCON-OWNER-MODEL v1`. Firmware van vóór dit model kan niet meer via OTA terugkomen, want het herstelpad daarvan vertrouwt de releasesleutel.
+- Daarnaast `ORCON-OWNER-KEY v1`: alleen builds met het eigendomsmodel bevatten hem. Een image zonder wordt geweigerd (`image-without-owner-key`; [HERSTELSLEUTEL_MIGRATIE.md](HERSTELSLEUTEL_MIGRATIE.md)).
 
 `tools/orcon.py`:
 - `ota-install` vraagt op apparaten met dit model het webwachtwoord.

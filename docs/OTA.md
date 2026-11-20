@@ -20,7 +20,7 @@
 - **Owner consent (ownership-model firmware, `docs/PROVISIONING.md`).** The release key proves an image is official; it does not authorise installing it. Nonce, begin, upload and hold need the owner's session with its CSRF token. Two manifest forms exist:
   - v1, targeted: this board plus a nonce. The CLI path below.
   - v2, release: one signature for every board, never older than the running release, never the RF test image. The web page installs `.orconfw` bundles made by `orcon.py release`.
-  Every image must also carry `ORCON-OWNER-MODEL v1`, so firmware from before per-device owner keys cannot come back over the air.
+  Every image must also carry `ORCON-OWNER-MODEL v1`, so firmware from before per-device owner keys cannot come back over the air. It must also carry `ORCON-OWNER-KEY v1` (`image-without-owner-key`), which only builds with the ownership model contain, so a build without owner recovery is never installed either (docs/HERSTELSLEUTEL_MIGRATIE.md).
 - **Data that survives.** NVS (WiFi, profiles, identities, OLED, MQTT) is never written by an update.
 
 ## What the device accepts (`src/ota_signed.cpp`, rules in `src/ota_policy.cpp`)

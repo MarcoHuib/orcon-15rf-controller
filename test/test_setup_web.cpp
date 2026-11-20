@@ -149,7 +149,7 @@ bool registerKey(const uint8_t q[65]) { if (g_registerFails) return false; memcp
 const ownerkey::Crypto& crypto() { return C; }
 bool cryptoReady() { return g_cryptoOk; }
 bool generate(uint8_t d[32], uint8_t q[65]) { frnd(d, 32); d[0] |= 1; return fpub(d, q); }
-bool physicalActive() { return g_physical; }
+bool recoveryActive() { return g_physical; }
 uint32_t physicalLeftMs() { return g_physical ? 600000 : 0; }
 }
 #endif

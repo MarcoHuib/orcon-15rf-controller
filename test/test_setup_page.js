@@ -950,6 +950,13 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
           assert.equal(k.$('rNoKey').hidden, false); assert.match(html, /id="rNoKey" hidden>[^<]*geen geregistreerde herstelsleutel[^<]*leesfout[^<]*Fabrieksreset/);
           assert.equal(k.$('rGo').disabled, false); assert.notEqual(k.$('rIn').hidden, true);
           ok('recovery mode, no key reported: the factory reset is explained first; the form stays (a read error can be temporary)'); }
+        { const nc = { ...st, auth: { ...st.auth, password_set: false } };   // the password record is gone, the key survives
+          const k = await page({ 'GET /api/setup/state': () => [200, nc], 'GET /api/provision/state': () => [200, PW] }); await k.refresh();
+          assert.equal(k.$('aLogin').hidden, true); assert.equal(k.$('aRec').hidden, false);
+          k.$('aRec').click(); await flush(); assert.equal(k.location.hash, '#recover'); assert.equal(k.$('recP').hidden, false);
+          const h = await page({ 'GET /api/setup/state': () => [200, { ...nc, setup: { state: 'done', via_ap: false, physical: false } }] }); await h.refresh();
+          assert.equal(h.$('aRec').hidden, true);
+          ok('recovery mode without a password record: the recovery form is still reachable; not outside the recovery mode (Codex legacy r3)'); }
         st.setup = { state: 'done', via_ap: false, physical: false };
         const q = await page({ 'GET /api/setup/state': () => [200, st] }); await q.refresh(); q.$('aForgot').click(); await flush();
         assert.equal(q.$('aSet').hidden, false); assert.equal(q.$('aHintOwn').hidden, false); assert.match(q.$('aHintOwn').textContent, /herstelsleutel.*Herstelmodus/);

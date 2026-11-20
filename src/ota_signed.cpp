@@ -151,7 +151,12 @@ static void handleInfo() {
              boot ? boot->label : "?", next ? next->label : "?", stateName(next), (unsigned long)(next ? next->size : 0),
              dl ? "download" : g_st == St::Idle ? "idle" : g_st == St::Ready ? "ready" : g_st == St::Writing ? "writing" : g_st == St::Done ? "done" : "failed",
              dl ? "none" : g_err, g_nonce[0] && millis() - g_nonceMs < NONCE_TTL_MS ? "true" : "false", g_hold ? "true" : "false",
-             otap::OWNER_MODEL_MARKER, (unsigned long)ORCON_RELEASE_VERSION, RELEASE_STAMP, rel);
+#if ORCON_OWNER_MODEL
+             otap::OWNER_KEY_MARKER,   // the only plain copy in the image: builds without the ownership model never carry it
+#else
+             "",
+#endif
+             (unsigned long)ORCON_RELEASE_VERSION, RELEASE_STAMP, rel);
     reply(200, b);
 }
 
