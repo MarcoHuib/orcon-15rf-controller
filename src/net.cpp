@@ -81,7 +81,7 @@ static void restartIn(uint32_t ms);
 static bool     g_dirty     = true;
 static uint32_t g_lastPub   = 0;
 static uint32_t g_rebootAt  = 0;      // when (millis) the scheduled restart is due, if g_rebootArmed
-static bool     g_rebootArmed = false;
+static std::atomic<bool> g_rebootArmed{false};   // also read by the loop watchdog on core 0 (Codex r6)
 static void scheduleReboot(uint32_t ms) { g_rebootAt = millis() + ms; g_rebootArmed = true; }   // wrap-safe (Codex r4)
 static char     g_ip[24]    = "0.0.0.0";   // the current address: the OLED and the Host check (DNS rebinding) use it
 static wifiwatch::Watch g_watch;          // the home network in normal operation (wifi_watch.h)

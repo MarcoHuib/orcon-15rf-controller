@@ -91,6 +91,7 @@ static bool ieq(const char* a, const char* b) { return !strcasecmp(a, b); }
 int Head::line() {
     buf_[n_] = 0;
     if (n_ && buf_[n_ - 1] == '\r') buf_[--n_] = 0;
+    if (memchr(buf_, '\r', n_)) { err_ = "bad-response"; return -1; }   // a bare CR inside a line (Codex r6)
     if (lines_++ == 0) {   // status line: HTTP/1.x NNN [reason]
         if ((strncmp(buf_, "HTTP/1.1 ", 9) && strncmp(buf_, "HTTP/1.0 ", 9)) || !isdigit((unsigned char)buf_[9]) ||
             !isdigit((unsigned char)buf_[10]) || !isdigit((unsigned char)buf_[11]) || (buf_[12] && buf_[12] != ' ')) {
@@ -254,7 +255,7 @@ bool flatObject(const char* s, size_t n) {
         if (i >= n || s[i++] != ':') return false;
         ws();
         if (i < n && s[i] == '"') { if (!str(false, f, l)) return false; }
-        else { const size_t d = i; while (i < n && isdigit((unsigned char)s[i])) ++i; if (i == d || i - d > 10) return false; }
+        else { const size_t d = i; while (i < n && isdigit((unsigned char)s[i])) ++i; if (i == d || i - d > 10 || (s[d] == '0' && i - d > 1)) return false; }   // JSON: no leading zero (Codex r6)
         ws();
         if (i < n && s[i] == ',') { ++i; ws(); continue; }
         if (i < n && s[i] == '}') { ++i; break; }

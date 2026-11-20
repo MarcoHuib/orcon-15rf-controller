@@ -200,6 +200,8 @@ int main() {
     CHECK(eq(headOf("HTTP/2 200\r\n\r\n"), "bad-response"), "unknown protocol refused");
     CHECK(eq(headOf("HTTP/1.1 2000 OK\r\n\r\n"), "bad-response"), "four-digit status refused");
     CHECK(eq(headOf("HTTP/1.1 302 Found\r\nLocation: /a\r\nLocation: /b\r\n\r\n"), "bad-response"), "two locations refused");
+    CHECK(eq(headOf("HTTP/1.1 200 OK\r\nContent-Type: a\rX-Hidden: b\r\n\r\n"), "bad-response"), "a bare CR inside a header line refused (Codex r6)");
+    CHECK(eq(headOf("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"), "done"), "a normal CRLF head still parses");
     CHECK(eq(headOf("HTTP/1.1 200 OK\r\nX: " + std::string(PATH_MAX_LEN + 100, 'a') + "\r\n\r\n"), "bad-response"), "overlong header refused");
     { std::string many = "HTTP/1.1 200 OK\r\n"; for (int i = 0; i < 70; ++i) many += "X-" + std::to_string(i) + ": 1\r\n";
       CHECK(eq(headOf(many + "\r\n"), "bad-response"), "too many headers refused"); }
@@ -211,7 +213,7 @@ int main() {
     // The strict flat-object grammar the index and the bundle head must pass before ArduinoJson (Codex r4).
     for (const char* good : {"{}", "{\"a\":1}", " {\"a\":\"x\\\"y\\u00e9\",\"b\":0}\n"}) CHECK(flatObject(good, strlen(good)), good);
     for (const char* bad : {"{'a':1}", "{a:1}", "{\"a\":'x'}", "{\"a\":1,\"a\":2}", "{\"a\":1}x", "{\"a\":\"x\\u0000\"}", "{\"a\":-1}",
-                            "{\"a\":1,}", "{\"\\u0061\":1}", "{\"a\":{\"b\":1}}", "{\"a\":[1]}", "{\"a\":true}", "{\"a\":\"x\ty\"}", "[1]", "{\"a\":1"})
+                            "{\"a\":1,}", "{\"a\":01}", "{\"a\":00}", "{\"\\u0061\":1}", "{\"a\":{\"b\":1}}", "{\"a\":[1]}", "{\"a\":true}", "{\"a\":\"x\ty\"}", "[1]", "{\"a\":1"})
         CHECK(!flatObject(bad, strlen(bad)), bad);
     CHECK(eq(headOf("HTTP/1.1 302 Found\r\nLocation: " + std::string(PATH_MAX_LEN + 20, 'a') + "\r\n\r\n"), "bad-response"), "overlong location refused");
 

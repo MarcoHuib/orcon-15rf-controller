@@ -26,6 +26,7 @@
 #include <esp_partition.h>
 #include <esp_image_format.h>
 #include <atomic>
+#include <lwip/sockets.h>   // shutdown(): end a refused upload on the live socket
 #include <esp_system.h>
 #include <esp_core_dump.h>
 #include <mbedtls/pk.h>
@@ -59,13 +60,14 @@ static std::atomic<bool> g_dl{false};   // sequentially consistent: the hand-ove
 // An image was written, verified and selected for the next boot: until the restart, nothing may open the writer again.
 // esp_ota_get_next_update_partition() would return that very slot, and a second write would erase the selected image
 // (Codex review round 1). Cleared only by the restart.
-static volatile bool g_selected = false;
+static std::atomic<bool> g_selected{false};   // also read by the loop watchdog on core 0 (Codex r6)
 
 // Survives soft resets, panics and watchdogs (not power loss): previous uptime and boots.
 struct Crumb { uint32_t magic, boots, lastUptimeS; };
 static RTC_NOINIT_ATTR Crumb g_crumb;
 static uint32_t g_prevUptimeS = 0;
-static bool g_prevKnown = false, g_pending = false;
+static bool g_prevKnown = false;
+static std::atomic<bool> g_pending{false};      // also read by the loop watchdog on core 0 (Codex r6)
 static bool g_hold = false;   // rollback test: this trial boot refuses to confirm itself (RAM only)
 #define ORCON_STR2(x) #x
 #define ORCON_STR(x) ORCON_STR2(x)
@@ -311,23 +313,31 @@ static const char* endWrite() {
 }
 
 // ---- POST /api/ota/upload (multipart, one file) -----------------------------------------
+// WebServer::client() returns a copy, and stop() on a copy only drops that copy: the core would go on reading the body
+// on the live socket (Codex r6). Shut the socket itself down, so the core's next read ends the request at once.
+static void dropClient() {
+    WiFiClient c = g_s->client();
+    if (c.fd() >= 0) shutdown(c.fd(), SHUT_RDWR);
+    c.stop();
+}
 static void handleUploadData() {
-    heartbeat();   // an upload runs inside one handleClient(): each received chunk is progress
     HTTPUpload& up = g_s->upload();
     if (up.status == UPLOAD_FILE_START) {
         // A refused upload is closed here, before its body: the WebServer reads a multipart body without any
         // time limit, so an idle client could otherwise hold the loop (confirmation, rollback, restarts; Codex r4).
-        if (g_dl) { g_s->client().stop(); return; }   // the download owns the writer: leave its state alone
-        if (g_st != St::Ready || !hostOk()) { g_st = St::Failed; g_err = "not-ready"; g_s->client().stop(); return; }
-        if (const char* e = manualBlocked()) { g_st = St::Failed; g_err = e; g_s->client().stop(); return; }
+        if (g_dl) { dropClient(); return; }   // the download owns the writer: leave its state alone
+        if (g_st != St::Ready || !hostOk()) { g_st = St::Failed; g_err = "not-ready"; dropClient(); return; }
+        if (const char* e = manualBlocked()) { g_st = St::Failed; g_err = e; dropClient(); return; }
 #if ORCON_OWNER_MODEL
-        if (!setupweb::uploadAuthorized()) { g_st = St::Failed; g_err = "login-required"; g_s->client().stop(); return; }
+        if (!setupweb::uploadAuthorized()) { g_st = St::Failed; g_err = "login-required"; dropClient(); return; }
 #endif
         if (startWrite()) return;
+        heartbeat();   // an accepted upload runs inside one handleClient(): only its chunks count as progress (Codex r6)
         note(rfcon::INFO, "OTA schrijft %s (RF-ontvangst kan tijdens het schrijven haperen)", g_part->label);
     } else if (g_dl) {
         return;
     } else if (up.status == UPLOAD_FILE_WRITE) {
+        if (g_st == St::Writing) heartbeat();
         writeChunk(up.buf, up.currentSize);
     } else if (up.status == UPLOAD_FILE_END) {
         // Selected for the next boot: restart from here, not only from the reply handler. The WebServer skips that
@@ -429,8 +439,12 @@ void heartbeat() { g_beat = millis(); }
 static void loopWatch(void*) {
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1000));
-        const uint32_t still = millis() - g_beat.load();
-        if (still > (g_pending || g_selected || net::restartQueued() ? 20000u : 120000u)) {
+        // The heartbeat first, then the clock: a beat from the other core can never be "newer" than the time it is
+        // compared with (an unsigned wrap would restart a healthy board; Codex r6). Checked twice before acting.
+        const uint32_t limit = g_pending || g_selected || net::restartQueued() ? 20000u : 120000u;
+        const uint32_t beat = g_beat.load();
+        const uint32_t still = millis() - beat;
+        if (still > limit && millis() - g_beat.load() > limit) {
             Serial.printf("[ota] main loop stuck for %lu s: restart\n", (unsigned long)(still / 1000));
             esp_restart();
         }
@@ -440,7 +454,6 @@ static void loopWatch(void*) {
 void begin(WebServer& s) {
     g_s = &s;
     heartbeat();
-    if (xTaskCreatePinnedToCore(loopWatch, "loop_watch", 2048, nullptr, 2, nullptr, 0) != pdPASS) Serial.println("[ota] loop watchdog not started");
     // Boot breadcrumb in RTC memory: no flash wear, survives everything but power loss.
     if (g_crumb.magic == 0x4F524331u) { g_prevKnown = true; g_prevUptimeS = g_crumb.lastUptimeS; ++g_crumb.boots; }
     else { g_crumb.magic = 0x4F524331u; g_crumb.boots = 1; }
@@ -448,6 +461,8 @@ void begin(WebServer& s) {
     const esp_partition_t* run = esp_ota_get_running_partition();
     esp_ota_img_states_t st;
     g_pending = esp_ota_get_state_partition(run, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;
+    // After the trial state is known, so the watchdog never starts with the wrong limit (Codex r6).
+    if (xTaskCreatePinnedToCore(loopWatch, "loop_watch", 2048, nullptr, 2, nullptr, 0) != pdPASS) Serial.println("[ota] loop watchdog not started");
     note(rfcon::INFO, "opgestart: %s, reden %s, vorige sessie %ld s, %s%s", run->label, resetName(esp_reset_reason()),
          g_prevKnown ? long(g_prevUptimeS) : -1L, variantOfThisBuild(), g_pending ? ", proefstart na OTA" : "");
     s.on("/api/ota",        HTTP_GET,  handleInfo);

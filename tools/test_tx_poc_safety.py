@@ -305,7 +305,10 @@ def selected_safe(ota):
         assert 'if (g_selected)' in '\n'.join(fn(ota,h).split('\n')[:3]),(h,'must refuse while a selected image waits for the restart')
     assert 'scrub(); }' in fn(ota,'static void abortWrite(') and fn(ota,'static const char* endWrite() {').count('scrub();')==3,'a rejected image is made unbootable'
     assert 'if (bootMismatch()) return "boot-slot-mismatch";' in mb and 'if (bootMismatch()) return "boot-slot-mismatch";' in fn(ota,'const char* claimDownload() {'),'never write the slot the bootloader still selects (Codex r4)'
-    assert fn(ota,'static void handleUploadData() {').count('g_s->client().stop();')==4,'a refused upload is closed before its body (Codex r4)'
+    assert fn(ota,'static void handleUploadData() {').count('dropClient();')==4 and 'client().stop()' not in fn(ota,'static void handleUploadData() {'),'a refused upload is closed before its body (Codex r4)'
+    assert 'if (c.fd() >= 0) shutdown(c.fd(), SHUT_RDWR);' in fn(ota,'static void dropClient() {'),'the live socket itself is shut down, not a copy of the client (Codex r6)'
+    lw=re.sub(r'\s+',' ',fn(ota,'static void loopWatch(void*) {'))
+    assert 'const uint32_t beat = g_beat.load(); const uint32_t still = millis() - beat;' in lw and 'millis() - g_beat.load() > limit' in lw,'the watchdog reads the heartbeat before the clock and checks twice (Codex r6)'
     nb=fn(Path('src/net.cpp').read_text(),'void begin() {')
     assert 'const bool backOk = !settled && ota::previousIsOwnerModel();' in nb and 'ota::rollbackNow();' in nb,'an unconfirmed update in the fail-closed boot returns only to an owner-model image (Codex r4)'
 selected_safe(ota_src)
@@ -313,7 +316,9 @@ for name,old,new in (('begin-after-select','    if (g_selected || net::restartQu
                      ('upload-during-rf','    if (setupweb::busy()) return "session-busy";\n',''),
                      ('rejected-image-kept','esp_ota_abort(g_h); scrub(); g_st','esp_ota_abort(g_h); g_st'),
                      ('write-selected-slot','    if (bootMismatch()) return "boot-slot-mismatch";\n    if (g_st == St::Writing) return "update-busy";','    if (g_st == St::Writing) return "update-busy";'),
-                     ('refused-upload-kept-open','g_err = "not-ready"; g_s->client().stop(); return;','g_err = "not-ready"; return;'),
+                     ('refused-upload-kept-open','g_err = "not-ready"; dropClient(); return;','g_err = "not-ready"; return;'),
+                     ('refused-upload-copy-only','    if (c.fd() >= 0) shutdown(c.fd(), SHUT_RDWR);\n',''),
+                     ('watchdog-clock-first','const uint32_t still = millis() - beat;','const uint32_t still = millis() - g_beat.load();'),
                      ('writer-after-select','    if (g_selected) { g_st = St::Failed; return g_err = "restart-pending"; }\n',''),
                      ('download-after-select','    if (g_selected) return "restart-pending";\n',''),
                      ('no-restart-after-select','if (!endWrite()) net::restartSoon();','endWrite();')):
