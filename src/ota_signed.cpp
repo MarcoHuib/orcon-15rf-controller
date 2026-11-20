@@ -71,6 +71,16 @@ static RTC_NOINIT_ATTR Crumb g_crumb;
 static uint32_t g_prevUptimeS = 0;
 static bool g_prevKnown = false;
 static std::atomic<bool> g_pending{false};      // also read by the loop watchdog on core 0 (Codex r6)
+// The trial state is not read yet, within the trial window. IDF 4.4 reports an otadata read error and a slot without an
+// otadata record (a USB install) both as ESP_ERR_NOT_FOUND: until one read succeeds, tick() reads again once a second
+// and no update starts. Latched closed after the window, so a USB install updates normally (Codex legacy r3-r5).
+static std::atomic<bool> g_stateOpen{true};
+static void readTrialState() {
+    esp_ota_img_states_t st;
+    const esp_err_t e = esp_ota_get_state_partition(esp_ota_get_running_partition(), &st);
+    g_pending = e == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;
+    g_stateOpen = e != ESP_OK;
+}
 static bool g_hold = false;   // rollback test: this trial boot refuses to confirm itself (RAM only)
 #define ORCON_STR2(x) #x
 #define ORCON_STR(x) ORCON_STR2(x)
@@ -198,7 +208,7 @@ static const char* manualBlocked() {
     if (g_selected || net::restartQueued()) return "restart-pending";
     if (bootMismatch()) return "boot-slot-mismatch";
     if (g_st == St::Writing) return "update-busy";
-    if (g_pending) return "confirm-running-image-first";
+    if (g_pending || g_stateOpen) return "confirm-running-image-first";
 #if !ORCON_TX_POC || ORCON_WEB_CONTROL
     if (setupweb::busy()) return "session-busy";
 #endif
@@ -373,14 +383,14 @@ static void handleUploadDone() {
 }
 
 // ---- the one-click update (fw_update_esp.cpp): the same checks and writer as begin + upload, v2 releases only ----
-bool pendingVerify() { return g_pending; }
+bool pendingVerify() { return g_pending || g_stateOpen; }
 bool writerBusy() { return g_dl || g_st == St::Writing || g_selected; }
 uint32_t updateSlotSize() { const esp_partition_t* p = esp_ota_get_next_update_partition(nullptr); return p ? p->size : 0; }
 const char* claimDownload() {   // loop task, before the worker task exists
     if (g_selected) return "restart-pending";
     if (bootMismatch()) return "boot-slot-mismatch";
     if (g_dl || g_st == St::Writing) return "update-busy";
-    if (g_pending) return "confirm-running-image-first";
+    if (g_pending || g_stateOpen) return "confirm-running-image-first";
     g_nonce[0] = 0; g_st = St::Idle; g_err = "none";   // a manual begin that was never uploaded is dropped
     g_dl = true;
     return nullptr;
@@ -470,8 +480,7 @@ void begin(WebServer& s) {
     else { g_crumb.magic = 0x4F524331u; g_crumb.boots = 1; }
     g_crumb.lastUptimeS = 0;
     const esp_partition_t* run = esp_ota_get_running_partition();
-    esp_ota_img_states_t st;
-    g_pending = esp_ota_get_state_partition(run, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;
+    readTrialState();
     // After the trial state is known, so the watchdog never starts with the wrong limit (Codex r6).
     if (xTaskCreatePinnedToCore(loopWatch, "loop_watch", 2048, nullptr, 2, nullptr, 0) != pdPASS) Serial.println("[ota] loop watchdog not started");
     note(rfcon::INFO, "opgestart: %s, reden %s, vorige sessie %ld s, %s%s", run->label, resetName(esp_reset_reason()),
@@ -517,6 +526,12 @@ void tick(uint32_t now) {
     static uint32_t lastCrumb = 0;
     if (now - lastCrumb >= 5000) { lastCrumb = now; g_crumb.lastUptimeS = now / 1000; }
     if (g_nonce[0] && now - g_nonceMs >= NONCE_TTL_MS) g_nonce[0] = 0;   // a 49.7-day millis() wrap must not revive it
+    static uint32_t lastRead = 0;
+    if (g_stateOpen && now >= ROLLBACK_AFTER_MS) g_stateOpen = false;   // never read: a USB install, or a lasting read error
+    else if (g_stateOpen && now - lastRead >= 1000) {
+        lastRead = now; readTrialState();
+        if (g_pending) note(rfcon::WARN, "proefstart alsnog herkend (OTA-status bij het opstarten niet leesbaar)");
+    }
     if (!g_pending) return;
     // Healthy = this image runs, joined the network (so a later OTA can still reach it) and the receiver is up. It is
     // confirmed only if the owner also has a recovery key; otherwise the previous image returns (otap::trialStep).
