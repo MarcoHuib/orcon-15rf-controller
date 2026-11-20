@@ -294,12 +294,15 @@ ota_src=Path('src/ota_signed.cpp').read_text(); hold_safe(ota_src)
 # every way in (nonce, begin, the writer itself, the one-click download) refuses with restart-pending.
 def selected_safe(ota):
     assert 'g_selected = true;\n    g_st = St::Done;' in ota,'the writer marks a selected image'
+    up=fn(ota,'static void handleUploadData() {')
+    assert 'if (!endWrite()) net::restartSoon();' in up and 'if (g_st != St::Done) abortWrite' in up,'a selected upload restarts even when the client is gone'
     for h in ('static void handleNonce() {','static void handleBegin() {','static const char* startWrite() {','const char* claimDownload() {'):
         assert 'if (g_selected)' in '\n'.join(fn(ota,h).split('\n')[:3]),(h,'must refuse while a selected image waits for the restart')
 selected_safe(ota_src)
 for name,old,new in (('begin-after-select','    if (g_selected) { fail(409, "restart-pending"); return; }\n    if (g_st == St::Writing || g_dl) { fail(409, "update-busy"); return; }\n    if (g_pending)','    if (g_st == St::Writing || g_dl) { fail(409, "update-busy"); return; }\n    if (g_pending)'),
                      ('writer-after-select','    if (g_selected) { g_st = St::Failed; return g_err = "restart-pending"; }\n',''),
-                     ('download-after-select','    if (g_selected) return "restart-pending";\n','')):
+                     ('download-after-select','    if (g_selected) return "restart-pending";\n',''),
+                     ('no-restart-after-select','if (!endWrite()) net::restartSoon();','endWrite();')):
     m=ota_src.replace(old,new,1); assert m!=ota_src,name
     try: selected_safe(m)
     except AssertionError: print('PASS selected-image guard rejects mutation',name)
@@ -319,13 +322,16 @@ def update_safe(src):
         assert bad not in allsrc,('forbidden in the firmware',bad)   # (Update.begin: legacy non-V2 /update in net.cpp; the image scanner refuses it)
     body=fn(src,'static void handleInstall() {')
     assert 'arg("url")' not in body and 'arg("plain")' in body and 'g_offer.m.version == want' in body,'install: only the offered version, never a URL'
+    assert body.index('if (g_running)') < body.index('g_offer.m.version == want') and 'startJob(Job::Install, false, want)' in body,'install: the approved offer cannot change underneath'
+    assert 'same = g_st.found == fwup::Found::Newer && g_offer.m.version == want' in fn(src,'static const char* startJob('),'startJob re-checks the approved version'
     assert 'ota::claimDownload()' in src and 'ota::releaseSink()' in src,'install must use the signed-OTA writer'
 upd=Path('src/fw_update_esp.cpp').read_text(); update_safe(upd)
 for name,old,new in (('status-without-login','if (!setupweb::authorize(false)) return; statusBody(200);','statusBody(200);'),
                      ('install-without-login','static void handleInstall() {\n    if (!setupweb::authorize(true)) return;','static void handleInstall() {'),
                      ('check-without-csrf','static void handleCheck() {\n    if (!setupweb::authorize(true)) return;','static void handleCheck() {\n    if (!setupweb::authorize(false)) return;'),
                      ('tls-without-roots','c.connect(ip, 443, host, FWUP_ROOTS_PEM, nullptr, nullptr)','c.connect(ip, 443)'),
-                     ('install-from-url','g_offer.m.version == want','g_s->arg("url").length()'),):
+                     ('install-from-url','g_offer.m.version == want','g_s->arg("url").length()'),
+                     ('install-any-offer','startJob(Job::Install, false, want)','startJob(Job::Install, false)'),):
     m=upd.replace(old,new,1); assert m!=upd,name
     try: update_safe(m)
     except AssertionError: print('PASS update guard rejects mutation',name)
@@ -365,7 +371,9 @@ def yaml_subset(text):
         s=s.strip()
         if s=='{}': return {}
         if s.startswith('[') and s.endswith(']'): return [scalar(x) for x in s[1:-1].split(',') if x.strip()]
-        if len(s)>=2 and s[0]==s[-1] and s[0] in '\'"': return s[1:-1]
+        if len(s)>=2 and s[0]==s[-1] and s[0] in '\'"':
+            assert not (s[0]=='"' and '\\' in s),('escape sequence in a double-quoted YAML scalar (GitHub decodes it; this reader does not)',s)
+            return s[1:-1]
         assert s and not s.startswith(('&','*','!','{','[','>','|','@','`')),('unsupported YAML value',s)
         return True if s=='true' else False if s=='false' else s
     def skip(i):
@@ -409,7 +417,25 @@ def yaml_subset(text):
     assert skip(i)==len(lines),('unparsed YAML at line',i+1)
     return doc
 REL_GUARD="github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'MarcoHuib/orcon-15rf-controller'"
-REL_ACTIONS=('actions/checkout','actions/setup-python','actions/upload-artifact','actions/download-artifact')
+REL_ACTIONS={'actions/checkout':'3d3c42e5aac5ba805825da76410c181273ba90b1','actions/setup-python':'6d4fd22b20465ccc0f7354476588e8df7c9ca0e0',   # v7.0.1, v7.1.0
+             'actions/upload-artifact':'cf430e030ddbb5b0abf93d22962f4752f3646cd9','actions/download-artifact':'9000827ccba6bdab643e8b6fd33ac0654aef8333'}   # v7.0.2, v8.0.2
+REL_EXPR={'github.event.repository.default_branch','github.event_name','github.ref','github.repository','github.run_id','github.server_url',
+          'github.sha','github.token','inputs.notes','inputs.version','needs.build.outputs.firmware_sha256','needs.prepare.outputs.number',
+          'needs.prepare.outputs.tag','needs.sign.outputs.bundle_name','needs.sign.outputs.bundle_sha256','runner.temp',
+          'secrets.ORCON_OTA_SIGNING_KEY','steps.check.outputs.firmware_sha256','steps.package.outputs.bundle_name',
+          'steps.package.outputs.bundle_sha256','steps.version.outputs.name','steps.version.outputs.number','steps.version.outputs.tag'}
+# Every check the release depends on, as the start of its own script line (a commented-out, negated or "|| true" line
+# does not count: comments, "!", "&&", "||" are refused in the scripts anyway).
+REL_REQUIRED=(('prepare','python3 -I tools/release_ci.py source '),('prepare','python3 -I tools/release_ci.py version '),
+    ('build','python -m pip install --require-hashes --no-deps --only-binary=:all: -r tools/release/requirements-platformio.txt'),
+    ('build','python -m pip check'),('build','python -I tools/release_ci.py packages '),('build','bash test/run_host_tests.sh'),
+    ('build','python tools/test_tx_poc_safety.py'),('build','git ls-files -z | xargs -0 python tools/check_privacy.py'),
+    ('build','python tools/test_orcon_cli.py'),('build','python -I tools/release_ci.py verify-build '),('build','python -I tools/check_elf_tx.py '),
+    ('build','RELEASE_BUILD_DIR=".pio/build/$RELEASE_ENV" RELEASE_VERSION="$NUMBER" RELEASE_COMMIT="$SHA" python tools/test_release_ci.py'),
+    ('build','python -I tools/release_ci.py manifest --dist dist'),('sign','python3 -I tools/release_ci.py manifest --dist dist'),
+    ('sign','python3 -I tools/release_ci.py package --dist dist'),('verify','python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept'),
+    ('publish','sha256sum -c SHA256SUMS'),('publish','gh api -X POST "repos/${REPO}/git/refs"'),
+    ('publish','gh release create "$TAG" --repo "$REPO" --verify-tag --draft'),('publish','gh release edit "$TAG" --repo "$REPO" --draft=false --latest'))
 REL_PERMS={'prepare':{'contents':'read'},'build':{'contents':'read'},'sign':{'contents':'read'},'verify':{'contents':'read'},'publish':{'contents':'write'}}
 REL_NEEDS={'prepare':None,'build':'prepare','sign':['prepare','build'],'verify':['prepare','build','sign'],'publish':['prepare','build','sign','verify']}
 def release_workflow_safe(text):
@@ -434,33 +460,36 @@ def release_workflow_safe(text):
         for st in j['steps']:
             assert set(st)<= {'name','id','uses','with','env','run'} and ('uses' in st)!=('run' in st),(name,'step keys',sorted(st))
             if 'uses' in st:
-                assert re.fullmatch(r'(%s)@[0-9a-f]{40}'%'|'.join(map(re.escape,REL_ACTIONS)),st['uses']),(name,'unpinned or unapproved action',st['uses'])
+                assert st['uses'] in {f'{k}@{v}' for k,v in REL_ACTIONS.items()},(name,'unpinned or unapproved action (or another commit than reviewed)',st['uses'])
                 if st['uses'].startswith('actions/checkout@'): assert st['with']=={'ref':'${{ github.sha }}','persist-credentials':False},(name,'checkout: exact commit, no stored credentials')
             else:
                 assert '${{' not in st['run'],(name,'expression inside a script (use env)',st['run'][:60])
+                for line in st['run'].split('\n'):
+                    l=line.strip()
+                    assert not l.startswith(('#','!')) and not any(t in l for t in ('||','&&','set +','exit 0','trap ')),(name,'a script construct that can hide a failure',l)
             for k,v in (st.get('env') or {}).items():
-                assert ('secrets.' in str(v))==(name=='sign' and k=='ORCON_OTA_SIGNING_KEY'),(name,'secret outside the signing step',k)
+                assert ('secrets' in str(v).lower())==(name=='sign' and k=='ORCON_OTA_SIGNING_KEY'),(name,'secret outside the signing step',k)
+                assert 'github.token' not in str(v) or (k=='GH_TOKEN' and name in ('prepare','publish')),(name,'token outside prepare/publish',k)
             if name=='sign' and 'secrets.' in str(st.get('env')):
                 assert st['env']=={'ORCON_OTA_SIGNING_KEY':'${{ secrets.ORCON_OTA_SIGNING_KEY }}'} and st['run'].strip()=='python3 -I tools/release_ci.py sign --dist dist',('sign step',st)
     flat=text.replace('\r\n','\n')
-    assert flat.count('secrets.')==1 and 'secrets: inherit' not in flat,'the signing key is referenced exactly once, in the signing step'
+    assert flat.lower().count('secrets')==1 and 'secrets: inherit' not in flat,'the signing key is referenced exactly once, in the signing step'
+    exprs=re.findall(r'\$\{\{\s*(.*?)\s*\}\}',flat)
+    assert len(exprs)==flat.count('${{') and set(exprs)<=REL_EXPR,('expressions outside the reviewed list',sorted(set(exprs)-REL_EXPR))
     for bad in ('pull_request','push:','schedule:','workflow_run','repository_dispatch','release:','issue_comment','issues:','continue-on-error',
                 'always()','actions/cache','write-all','id-token','heltec_v2_sx1276_tx_poc','dryrun','rftest','webctl','write_flash','erase_flash','heltec_v2.sh',
                 'ota-install','/dev/tty','/dev/cu','setInsecure','--insecure','curl -k'):
         assert bad not in flat,('forbidden in the release workflow',bad)
-    runs=lambda job:'\n'.join(st.get('run','') for st in jobs[job]['steps'])
-    for job,need in (('prepare','tools/release_ci.py source'),('prepare','tools/release_ci.py version'),('build','--require-hashes'),
-                     ('build','tools/release_ci.py packages'),('build','bash test/run_host_tests.sh'),('build','-fsanitize=address'),
-                     ('build','tools/test_tx_poc_safety.py'),('build','tools/check_privacy.py'),('build','tools/release_ci.py verify-build'),
-                     ('build','tools/check_elf_tx.py'),('build','tools/test_release_ci.py'),('build','tools/release_ci.py manifest'),
-                     ('sign','tools/release_ci.py manifest'),('sign','tools/release_ci.py package'),('verify','tools/release_ci.py verify-package'),
-                     ('publish','sha256sum -c SHA256SUMS'),('publish','git/refs'),('publish','--verify-tag --draft'),('publish','--draft=false')):
-        assert need in runs(job)+str(jobs[job]['steps']),(job,'required check missing',need)
+    lines=lambda job:[l.strip() for st in jobs[job]['steps'] for l in st.get('run','').split('\n')]
+    for job,need in REL_REQUIRED:
+        assert any(l.startswith(need) for l in lines(job)),(job,'required check missing',need)
+    assert any(st.get('run','').strip()=='bash test/run_host_tests.sh' and '-fsanitize=address' in str((st.get('env') or {}).get('CXXFLAGS'))
+               for st in jobs['build']['steps']),'host tests with AddressSanitizer missing'
     assert [l.strip() for l in flat.split('\n') if 'pio run' in l]==['pio run -e "$RELEASE_ENV"'],'exactly one firmware build: the control env'
     assert not any('uses' in st and st['uses'].startswith('actions/checkout@') for st in jobs['publish']['steps']),'publish runs no repository code'
-    assert all(('uses' in st and st['uses'].split('@')[0] in REL_ACTIONS[:1]+REL_ACTIONS[2:]) or 'run' in st for st in jobs['sign']['steps']),'signing job: no setup actions'
+    assert all('run' in st or st['uses'].split('@')[0] in ('actions/checkout','actions/upload-artifact','actions/download-artifact') for st in jobs['sign']['steps']),'signing job: no setup actions'
 WORKFLOWS={'heltec-v2-rx-only.yml':'fbf3af64a87be3822246c0adc17ba3cb5ec42c1ddb725c455153f8fd4ea7a563',   # file -> sha256 of the reviewed content
-           'release-control.yml':'cf7ff106d6b542cc9b30e444345d8696b740367fda91eedf7b41093d9fdd3831'}
+           'release-control.yml':'2ea10f9b7b1effc8b5b4b1388d37d22c8e6042be872df8ae68c623e19913640c'}
 def workflows_reviewed(files):   # files: name -> bytes (None: not a regular file) of every *.yml/*.yaml entry
     assert sorted(files)==sorted(WORKFLOWS),('workflow files differ from the reviewed list',sorted(files))
     for n,data in files.items():
@@ -534,6 +563,19 @@ REL_MUTATIONS={
   'publish-runs-repo-code': rel_mut('      - name: The verified files\n','      - name: Code\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n        with:\n          ref: ${{ github.sha }}\n          persist-credentials: false\n      - name: The verified files\n'),
   'cancel-in-progress': rel_mut('  cancel-in-progress: false\n','  cancel-in-progress: true\n'),
   'yaml-anchor': rel_mut('  RELEASE_ENV: heltec_v2_sx1276_control\n','  RELEASE_ENV: &e heltec_v2_sx1276_control\n'),
+  'swallowed-verify': rel_mut('--harness harness/release_accept\n','--harness harness/release_accept || true\n'),
+  'and-true-verify': rel_mut('--harness harness/release_accept\n','--harness harness/release_accept && true\n'),
+  'negated-check': rel_mut('          python -I tools/release_ci.py verify-build','          ! python -I tools/release_ci.py verify-build'),
+  'commented-safety': rel_mut('          python tools/test_tx_poc_safety.py\n','          # python tools/test_tx_poc_safety.py\n'),
+  'set-plus-e': rel_mut('          python tools/test_tx_poc_safety.py\n','          set +e\n          python tools/test_tx_poc_safety.py\n'),
+  'other-action-commit': rel_mut('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1','actions/checkout@'+'1'*40),
+  'escaped-secret': rel_mut('          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n','          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n          K: "${{ \\x73ecrets.ORCON_OTA_SIGNING_KEY }}"\n'),
+  'secrets-index': rel_mut('          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n','          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n          K: ${{ secrets[\'ORCON_OTA_SIGNING_KEY\'] }}\n'),
+  'tojson-secrets': rel_mut('          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n','          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n          K: ${{ toJSON(SECRETS) }}\n'),
+  'token-in-build': rel_mut('          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n','          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n          GH_TOKEN: ${{ github.token }}\n'),
+  'other-expression': rel_mut('          VERSION: ${{ inputs.version }}\n','          VERSION: ${{ github.event.inputs.version }}\n'),
+  'no-asan': rel_mut('          CXXFLAGS: -fsanitize=address,undefined -fno-sanitize-recover=all\n','          CXXFLAGS: -fsanitize=undefined -fno-sanitize-recover=all\n'),
+  'no-pip-check': rel_mut('          python -m pip check\n',''),
   'duplicate-key': rel_mut('  PYTHONDONTWRITEBYTECODE: \'1\'\n','  PYTHONDONTWRITEBYTECODE: \'1\'\n  RELEASE_ENV: heltec_v2_sx1276_rftest\n'),
 }
 for name,txt in REL_MUTATIONS.items():

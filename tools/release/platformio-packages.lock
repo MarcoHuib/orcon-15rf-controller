@@ -1,10 +1,11 @@
-# PlatformIO packages of heltec_v2_sx1276_control as resolved on 2026-11-19 (platform espressif32@6.7.0).
-# tools/release_ci.py packages compares `pio pkg list` with this list in the release workflow.
+# PlatformIO packages of heltec_v2_sx1276_control (platform espressif32@6.7.0), as a CLEAN PlatformIO core installs and
+# lists them (`pio pkg install -e ...; pio pkg list -e heltec_v2_sx1276_control`). tools/release_ci.py packages compares the
+# release workflow's listing with this file; on a developer machine it ignores tool-openocd-esp32 and toolchain-riscv32-esp
+# (installed there for other work, never used by this build). Verified 2026-11-19/20 (Codex review r2 found the first lock
+# listed those two and would have failed on a clean runner).
 espressif32 6.7.0
 framework-arduinoespressif32 3.20016.0
 tool-esptoolpy 1.40501.0
-tool-openocd-esp32 2.1100.20220706
-toolchain-riscv32-esp 8.4.0+2021r2-patch5
 toolchain-xtensa-esp32 8.4.0+2021r2-patch5
 ArduinoJson 7.4.3
 RadioLib 7.8.1

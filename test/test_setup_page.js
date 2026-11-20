@@ -274,6 +274,27 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.match(p.$('fwKv').innerHTML, /app0 · afgebroken/);
         ok('rollback: reported as such (never as success), the other slot shows the abandoned image');
     }
+    {   // a paused tab misses "written" and the restart (Codex r2): the page still follows by /api/ota, never jumps to the login
+        const OLD = '1'.repeat(40), NEW = '2'.repeat(40);
+        let rebooted = false, valid = false;
+        const latest = { release: 1003000, name: '1.3.0', commit: NEW, size: 1000, notes: '' };
+        const up = { supported: true, phase: 'idle', job: 'check', error: '', checked: true, checked_age_s: 5, found: 'newer', latest, progress: { done: 0, total: 0 } };
+        const p = await page({
+            'GET /api/setup/state': () => rebooted ? [200, { fw: NEW, auth: { enabled: true, logged_in: false, password_set: true }, setup: { state: 'done' } }]
+                : [200, state({ ...CAPS_TX, settings_pages: true, update_check: true }, { fw: OLD, setup: { state: 'done', key: true }, profiles: PF([PI(2, 'Washok', '29:000101')], 2) })],
+            'GET /api/state': () => [200, {}],
+            'GET /api/ota': () => [200, rebooted ? { fw: NEW, running: 'app0', running_state: valid ? 'valid' : 'pending-verify', next: 'app1', next_state: 'valid' }
+                                               : { fw: OLD, running: 'app1', running_state: 'valid', next: 'app0', next_state: 'valid', release: 1002003, release_name: '1.2.3' }],
+            'GET /api/update': () => rebooted ? [401, { error: 'login-required' }] : [200, up],
+            'POST /api/update/install': () => [202, { ...up, phase: 'downloading', job: 'install', progress: { done: 0, total: 1000 } }],
+        }, 'firmware');
+        dlg.confirm = true; p.$('upInst').click(); await flush();
+        rebooted = true; await p.refresh();
+        assert.equal(p.location.hash, '#firmware'); assert.match(p.$('upM').textContent, /Proefstart/); assert.ok(!/geslaagd/i.test(p.$('upM').textContent));
+        valid = true; await p.refresh();
+        assert.equal(p.location.hash, '#firmware'); assert.match(p.$('upM').textContent, /Update geslaagd: v1\.3\.0/);
+        ok('missed "written" (paused tab) and a lost session: followed through /api/ota to the confirmation, no jump to the login');
+    }
     {   // failures in plain Dutch; nothing is reported as installed; up to date; too soon
         let up = { supported: true, phase: 'idle', job: 'check', error: '', checked: true, checked_age_s: 30, found: 'up-to-date',
                    latest: { release: 1002003, name: '1.2.3', commit: '1'.repeat(40), size: 1, notes: '' }, progress: { done: 0, total: 0 } };

@@ -238,7 +238,8 @@ const backTo=()=>INST&&['welcome','new','pair','read','profiles','done'].include
 async function poll(){
 clearTimeout(T);let d=10000;
 if(DONE){draw();return}
-if(UPF&&UPF.follow&&!UPF.end){await follow();draw();if(!UPF.end)T=setTimeout(poll,3000);return}                         // installed: the controller restarts onto the home network
+// installed: the controller restarts onto the home network
+if(UPF&&!UPF.end){await follow();draw();T=setTimeout(poll,UPF&&!UPF.end?(UPF.stage==='dl'?1000:3000):1000);return}   // an install in progress
 if(!document.hidden)try{
 if(!S||!(page==='read'&&R&&R.status==='active')){const st=await api('/api/setup/state');A=st.auth||null;SU=st.setup||null;
 INST=!!(SU&&SU.via_ap&&(SU.state==='new'||SU.state==='setup'));PHYS=!!(SU&&SU.via_ap&&SU.physical);
@@ -253,7 +254,7 @@ else if(page==='pair'&&S.caps.pair_supported){P=await api('/api/setup/pair/state
 else if(page==='control'&&S.caps.control_supported){C=await api('/api/remote/state');d=C.confirm==='pending'?1000:2500}
 else if(SETP.includes(page)&&S.caps.settings_pages!==false){X=await api('/api/state');if(!N&&page==='wifi')N=await api('/api/netcfg');if(page==='integr'&&S.caps.siri_supported&&!SR)SR=await api('/api/siri/key');
 if(page==='wifinew'&&SU&&SU.via_ap)W=await api('/api/provision/state');d=page==='info'?3000:W&&W.wifi&&W.wifi.test==='testing'?1500:5000
-if(page==='firmware'){OTA=await api('/api/ota');if(S.caps.update_check){UP=await api('/api/update');upStep();if(UP.phase==='checking'||UP.phase==='downloading'||UPF&&!UPF.follow)d=1000}}}
+if(page==='firmware'){OTA=await api('/api/ota');if(S.caps.update_check){UP=await api('/api/update');if(UP.phase==='checking')d=1000}}}
 if(eo)err('');
 }catch(e){err(say(e),1)}
 if(page==='home'&&S){go(start());return}
@@ -377,19 +378,28 @@ if(!uc){if(f)$('fwM').textContent=f.msg||'';return}
 const l=u&&u.latest,nw=!!(u&&u.found==='newer'&&l),dl=!!(u&&u.job==='install'&&(u.phase==='downloading'||u.phase==='written')),p=dl&&u.progress.total?Math.floor(u.progress.done*100/u.progress.total):0;
 kv('upKv',[['Laatst gecontroleerd',u?ago(u.checked?u.checked_age_s:-1):'…'],['Nieuwste officiële versie',!u?'…':l?'v'+l.name+(nw?' (nieuw)':' (geïnstalleerd)'):u.phase==='checking'?'Controleren…':'Onbekend']]);
 $('upNotes').hidden=!(nw&&l.notes);$('upNotes').textContent=nw?l.notes:'';
-$('upTrack').hidden=!dl&&!(f&&!f.end);$('upFill').style.width=(f&&f.follow&&!f.end?100:p)+'%';$('upTrack').setAttribute('aria-valuenow',String(f&&f.follow?100:p));
+const rs=!!(f&&f.stage==='restart'&&!f.end);$('upTrack').hidden=!dl&&!(f&&!f.end);$('upFill').style.width=(rs?100:p)+'%';$('upTrack').setAttribute('aria-valuenow',String(rs?100:p));
 $('upInst').hidden=!nw||run;$('upInst').disabled=busy||run;$('upChk').disabled=busy||run;
 $('upM').textContent=f?f.msg||'':!u?'':u.phase==='checking'?'Controleren op updates…':u.phase==='failed'?say(u.error):nw?'Er is een nieuwere officiële versie beschikbaar.':u.found==='up-to-date'?'Je gebruikt de nieuwste officiële versie.':'';
 }
-// One install, step by step: the download (logged in, /api/update), then the restart and the trial boot (/api/ota, no
-// login: sessions do not survive a restart). "Geslaagd" only when the new image itself reports valid (confirmed).
-function upStep(){const f=UPF,u=UP;if(!f||f.follow||!u)return;
-if(u.phase==='downloading')f.msg='Downloaden en controleren… '+(u.progress.total?Math.floor(u.progress.done*100/u.progress.total):0)+'%';
-else if(u.phase==='written'){f.follow=1;f.t0=Date.now();f.msg='Gedownload en gecontroleerd (handtekening, controlesom, type en versie). De controller herstart nu in een proefstart…'}
-else if(u.phase==='failed'){UPF=null;err(say(u.error))}}
-async function follow(){const f=UPF,el=Date.now()-f.t0;let o=null;
-try{const ac=typeof AbortController==='function'?new AbortController():null,to=ac?setTimeout(()=>ac.abort(),4000):0;
-try{const r=await fetch('/api/ota',ac?{cache:'no-store',signal:ac.signal}:{cache:'no-store'});if(r.ok)o=await r.json()}finally{clearTimeout(to)}}catch(e){}
+// One install, followed from the click to the end without the login: sessions do not survive the restart. Stage 'dl': the
+// old image runs and downloads (/api/update while the session lasts); a failure ends here. Stage 'restart': written, or
+// the controller went away (a paused tab may miss "written"), or it already runs the other slot. Then /api/ota alone
+// tells trial boot, confirmation or rollback. "Geslaagd" only when the new image itself reports valid (confirmed).
+const getJ=async u=>{try{const ac=typeof AbortController==='function'?new AbortController():null,to=ac?setTimeout(()=>ac.abort(),4000):0;
+try{const r=await fetch(u,ac?{cache:'no-store',signal:ac.signal}:{cache:'no-store'});let j={};try{j=await r.json()}catch(e){}return r.ok?j:{_status:r.status}}finally{clearTimeout(to)}}catch(e){return null}};
+async function follow(){const f=UPF;let o=await getJ('/api/ota');if(o&&o._status)o=null;
+if(f.stage==='dl'){
+if(!o){f.stage='restart';f.t1=Date.now();f.off=1}
+else if(o.running!==f.oldSlot){f.stage='restart';f.t1=Date.now()}
+else{const u=await getJ('/api/update');
+if(u&&!u._status){UP=u;if(u.job==='install'&&u.phase==='failed'){UPF=null;err(say(u.error));return}
+if(u.phase==='written'){f.stage='restart';f.t1=Date.now();f.msg='Gedownload en gecontroleerd (handtekening, controlesom, type en versie). De controller herstart nu in een proefstart…';return}
+f.msg='Downloaden en controleren… '+(u.progress&&u.progress.total?Math.floor(u.progress.done*100/u.progress.total):0)+'%'}
+else if(u&&u._status===401){f.stage='restart';f.t1=Date.now();return}
+if(Date.now()-f.t0>900000){f.end=1;f.msg='De download is na 15 minuten niet klaar. Controleer de firmwarestatus.';err(f.msg)}
+return}}
+const el=Date.now()-f.t1;
 if(!o){f.off=1;f.msg=el>240000?'De controller is na 4 minuten nog niet terug. Wacht nog even of controleer voeding en WiFi.':'De controller herstart…'}
 else{OTA=o;const isNew=o.fw===f.fw&&o.running!==f.oldSlot;
 if(isNew&&o.running_state==='valid'){f.end=1;f.msg='Update geslaagd: '+f.name+' is bevestigd en actief ('+o.running+'). De vorige versie blijft als terugvaloptie in '+o.next+'. Meld je opnieuw aan om verder te gaan.'}
@@ -589,12 +599,12 @@ const o=await api('/api/ota');$('fwM').textContent='Handtekening controleren…'
 $('fwM').textContent='Firmware uploaden… dit duurt ongeveer een minuut.';const fd=new FormData();fd.append('firmware',f.slice(nl+1),'firmware.bin');
 let r,j={};try{r=await fetch('/api/ota/upload',{method:'POST',headers:{'X-Orcon-Token':S?S.token:''},body:fd});j=await r.json()}catch(e){$('fwM').textContent='';throw'offline'}
 if(!r.ok){$('fwM').textContent='';throw j.error||'http-'+r.status}
-$('fwM').textContent='';UPF={fw:m.commit,name:'v'+sv(m.version),oldSlot:o.running,t0:Date.now(),follow:1,msg:'Geschreven en gecontroleerd. De controller herstart en test de nieuwe firmware (1 tot 5 minuten). Werkt die niet goed, dan keert de vorige vanzelf terug.'}}));
+$('fwM').textContent='';UPF={fw:m.commit,name:'v'+sv(m.version),oldSlot:o.running,t0:Date.now(),t1:Date.now(),stage:'restart',msg:'Geschreven en gecontroleerd. De controller herstart en test de nieuwe firmware (1 tot 5 minuten). Werkt die niet goed, dan keert de vorige vanzelf terug.'}}));
 $('upChk').addEventListener('click',()=>act(async()=>{UP=await api('/api/update/check',{})}));
 $('upInst').addEventListener('click',()=>act(async()=>{const l=UP&&UP.found==='newer'&&UP.latest;if(!l)throw'no-update-offered';
 if(!confirm('Officiële firmware v'+l.name+' ('+String(l.commit).slice(0,7)+') installeren?\n\nDe controller downloadt de update van GitHub en controleert handtekening, controlesom, type en versie. Daarna herstart hij en test hij de nieuwe firmware; werkt die niet goed, dan keert hij automatisch terug naar de huidige versie. Tijdens de update is bediening niet mogelijk.'))return;
-const o=await api('/api/ota');UPF={fw:l.commit,name:'v'+l.name,oldSlot:o.running,t0:Date.now(),msg:'Download wordt gestart…'};
-try{UP=await api('/api/update/install',{version:l.release})}catch(e){UPF=null;throw e}upStep()}));
+const o=await api('/api/ota');UPF={fw:l.commit,name:'v'+l.name,oldSlot:o.running,t0:Date.now(),stage:'dl',msg:'Download wordt gestart…'};
+try{UP=await api('/api/update/install',{version:l.release})}catch(e){UPF=null;throw e}}));
 const route=()=>{const h=location.hash.slice(1);return['pair','read','control','welcome','profiles','new','done','login','wizard','recover',...SETP].includes(h)?h:'home'};
 addEventListener('hashchange',()=>{if(route()!==page)go(route())});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){poll();cPoll()}});

@@ -89,7 +89,11 @@ struct TlsTransport : fwup::Transport {
         }
         return true;
     }
+    uint32_t lastYield = 0;
     int read(uint8_t* b, size_t n, uint32_t ms) override {
+        // A fast download never starves core 0's idle task (task watchdog: 5 s, panic). Flash erases yield too
+        // (CONFIG_SPI_FLASH_YIELD_DURING_ERASE); this does not depend on that.
+        if (millis() - lastYield >= 100) { vTaskDelay(1); lastYield = millis(); }
         const uint32_t t0 = millis();
         for (;;) {
             const int a = c.available();
@@ -138,7 +142,7 @@ static void worker(void* arg) {
 }
 
 // Starts a job, or says why not. Loop task only (routes and tick).
-static const char* startJob(Job j, bool automatic) {
+static const char* startJob(Job j, bool automatic, uint32_t want = 0) {
     if (g_restart) return "restart-pending";
     if (g_running) return "update-busy";
     if (ota::pendingVerify()) return "confirm-running-image-first";
@@ -148,7 +152,9 @@ static const char* startJob(Job j, bool automatic) {
     if (!c) return "low-memory";
     c->job = j;
     if (j == Job::Install) {
-        LOCKED(c->offer = g_offer);
+        bool same = false;
+        LOCKED(c->offer = g_offer; same = g_st.found == fwup::Found::Newer && g_offer.m.version == want);
+        if (!same || !want) { delete c; return "no-update-offered"; }   // exactly the release the owner approved
         if (const char* e = ota::claimDownload()) { delete c; return e; }
     }
     const uint32_t total = j == Job::Install ? c->offer.m.size : 0;
@@ -230,12 +236,14 @@ static void handleInstall() {
     if (body.length() > 64 || deserializeJson(d, body) || !d.is<JsonObject>() || d.as<JsonObject>().size() != 1 ||
         !d["version"].is<uint32_t>()) { fail(400, "bad-json"); return; }
     const uint32_t want = d["version"].as<uint32_t>();
+    // No worker first: only a worker changes the offer, and only the loop task starts one, so from here on the offer
+    // the owner approved cannot be replaced (Codex r2: a check finishing between these lines). startJob checks again.
+    if (g_running) { fail(409, "update-busy"); return; }
     bool offered = false;
     LOCKED(offered = g_st.found == fwup::Found::Newer && g_offer.m.version == want);
     if (!offered) { fail(409, "no-update-offered"); return; }
-    if (g_running) { fail(409, "update-busy"); return; }
     if (setupweb::busy()) { fail(409, "session-busy"); return; }   // a read/pair session or an RF command in flight
-    if (const char* e = startJob(Job::Install, false)) { fail(codeOf(e), e); return; }
+    if (const char* e = startJob(Job::Install, false, want)) { fail(codeOf(e), e); return; }
     setupweb::note(rfcon::INFO, "update: download van de officiële release gestart (op verzoek van de eigenaar)");
     statusBody(202);
 }

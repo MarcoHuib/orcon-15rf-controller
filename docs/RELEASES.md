@@ -39,7 +39,7 @@ De workflow weigert een versie:
 | Job | Rechten | Wat |
 |---|---|---|
 | `prepare` | contents: read | Alleen `workflow_dispatch`, alleen `refs/heads/main` van deze repository, en de commit moet nog de kop van `main` zijn. Versie geldig, nieuw en hoger dan alle tags en releases. |
-| `build` | contents: read | Toolchain:<br>- PlatformIO 6.2.0 met hash-gepinde wheels (`tools/release/requirements-platformio.txt`);<br>- platform en bibliotheken gelijk aan `tools/release/platformio-packages.lock`.<br><br>Tests:<br>- alle host-suites, ook met AddressSanitizer + UndefinedBehaviorSanitizer;<br>- RF-veiligheidsguards en workflowpins;<br>- privacycontrole en CLI-tests.<br><br>Daarna de releasebuild met `FW_VERSION=<commit>` en `ORCON_RELEASE_VERSION=<nummer>`, en de controles daarop:<br>- ESP-imagekop en flashlayout;<br>- slotgrootte;<br>- precies één releasestempel;<br>- commitstempel;<br>- control-markers via de **eigen beleidscode van het apparaat** (`test/release_accept.cpp`);<br>- bootloader, partitietabel en `boot_app0` byte-gelijk aan de gepinde bestanden;<br>- rollback-hook en TX-bereikbaarheid in de ELF;<br>- de volledige pipeline-test op de echte build;<br>- factory-image. |
+| `build` | contents: read | Toolchain:<br>- PlatformIO 6.2.0 met hash-gepinde wheels (`tools/release/requirements-platformio.txt`), daarna `pip check`;<br>- platform en bibliotheken gelijk aan `tools/release/platformio-packages.lock`.<br><br>Tests:<br>- alle host-suites, ook met AddressSanitizer + UndefinedBehaviorSanitizer;<br>- RF-veiligheidsguards en workflowpins;<br>- privacycontrole en CLI-tests.<br><br>Daarna de releasebuild met `FW_VERSION=<commit>` en `ORCON_RELEASE_VERSION=<nummer>`, en de controles daarop:<br>- ESP-imagekop en flashlayout;<br>- slotgrootte;<br>- precies één releasestempel;<br>- commitstempel;<br>- control-markers via de **eigen beleidscode van het apparaat** (`test/release_accept.cpp`);<br>- bootloader, partitietabel en `boot_app0` byte-gelijk aan de gepinde bestanden;<br>- rollback-hook en TX-bereikbaarheid in de ELF;<br>- de volledige pipeline-test op de echte build;<br>- factory-image. |
 | `sign` | contents: read, **environment `orcon-production-release`** | De enige job die de sleutel kan lezen, en alleen in één stap:<br>- controleert dat het artifact het geteste image is;<br>- maakt het v2-manifest opnieuw uit dat image;<br>- tekent.<br><br>De sleutel bestaat alleen tijdens die stap, als 0600-bestand in een 0700-map, en wordt altijd verwijderd. Een sleutel die niet bij `src/ota_pubkey.h` hoort, wordt geweigerd. |
 | `verify` | contents: read | Controleert:<br>- de handtekening (openssl, `src/ota_pubkey.h`);<br>- het apparaatbeleid op de bundel;<br>- dat een nieuwere controller de release als *ouder* weigert;<br>- de update-index zoals de controller die leest (*nieuwer* voor een oudere controller, *up-to-date* voor deze versie);<br>- `SHA256SUMS`. |
 | `publish` | **contents: write** | Draait geen repositorycode. Eerst `sha256sum -c`. Dan:<br>1. tag aanmaken via de API (mislukt als hij al bestaat);<br>2. **draft**-release met de bestanden;<br>3. de bestanden terug downloaden en tegen `SHA256SUMS` controleren;<br>4. pas dan publiceren als *latest*. |
@@ -54,11 +54,22 @@ Het hele pakket is opnieuw gehasht tussen elke twee jobs (job-outputs). Er draai
 - `${{ }}` in scripts zetten (invoer gaat via `env`);
 - hardware aanraken.
 
-`tools/test_tx_poc_safety.py` pint het bestand (SHA-256) en controleert al deze eigenschappen op de geparste YAML. Elke eigenschap heeft een mutatie die geweigerd moet worden (36 stuks), waaronder:
+`tools/test_tx_poc_safety.py` pint het bestand (SHA-256) en controleert al deze eigenschappen op de geparste YAML:
+- exact gepinde action-commits;
+- een allowlist van alle `${{ }}`-expressies;
+- het woord *secrets* precies één keer;
+- geen `||`, `&&`, `!`, `set +e`, commentaarregels of `exit 0` in scripts;
+- elke verplichte controle als eigen scriptregel;
+- geen escapes in quoted YAML.
+
+Elke eigenschap heeft een mutatie die geweigerd moet worden (49 stuks), waaronder:
 - PR- en tagtriggers;
 - secret in een andere job;
 - `secrets: inherit`;
 - een andere branch;
+- `|| true`, een uitgecommentarieerde of omgekeerde controle;
+- een andere action-commit;
+- `secrets[...]`, `toJSON(secrets)` of een ge-escapete expressie;
 - een dry-run-, RF-test- of RX-only-image;
 - overgeslagen controles;
 - write-rechten;

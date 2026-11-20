@@ -103,9 +103,12 @@ def package_versions(text):
     return rows
 
 
+UNUSED_LOCAL = ('tool-openocd-esp32', 'toolchain-riscv32-esp')   # listed when installed for other work; never used here
+
+
 def check_packages(listing):
     lock = {l.strip() for l in (REPO / 'tools/release/platformio-packages.lock').read_text().splitlines() if l.strip() and not l.startswith('#')}
-    got = package_versions(listing)
+    got = {r for r in package_versions(listing) if r.split()[0] not in UNUSED_LOCAL}
     if got != lock: fail(f'PlatformIO packages differ from the lock: extra {sorted(got - lock)}, missing {sorted(lock - got)}')
 
 
@@ -297,6 +300,9 @@ def verify_package(dist, harness_bin):
     for p in published(dist):
         if p.name != 'SHA256SUMS' and sums.get(p.name) != sha256(p.read_bytes()): fail(f'SHA256SUMS does not cover {p.name}')
     if set(sums) != {p.name for p in published(dist) if p.name != 'SHA256SUMS'}: fail('SHA256SUMS lists other files')
+    for f in (p for p in published(dist) if p.name.endswith('-factory-usb.bin')):
+        if f.name != f"orcon-control-v{info['name']}-{info['commit'][:7]}-factory-usb.bin": fail(f'unexpected factory image name {f.name}')
+        check_factory(dist, f)
     return bundles[0]
 
 
@@ -311,13 +317,22 @@ def factory(dist, esptool, python=sys.executable):
                         str(dist / 'partitions.bin'), '0xe000', str(dist / 'boot_app0.bin'), '0x10000', str(dist / 'firmware.bin')],
                        capture_output=True, text=True)
     if r.returncode: fail('merge_bin failed: ' + (r.stdout + r.stderr)[-300:])
-    img = out.read_bytes()
-    for off, name in ((0x1000, 'bootloader.bin'), (0x8000, 'partitions.bin'), (0xE000, 'boot_app0.bin'), (0x10000, 'firmware.bin')):
-        b = (dist / name).read_bytes()
-        if img[off:off + len(b)] != b: fail(f'factory image: {name} at 0x{off:x} differs from the verified file')
-    if len(img) != 0x10000 + len((dist / 'firmware.bin').read_bytes()): fail('factory image: unexpected length')
+    check_factory(dist, out)
     write_sums(dist)
     return out
+
+
+def check_factory(dist, path):
+    """Exactly the pinned bootloader, partition table and boot_app0 and the verified control image at their offsets, 0xFF
+    in between (merge_bin padding), nothing after the image."""
+    dist, img = Path(dist), Path(path).read_bytes()
+    fw = (dist / 'firmware.bin').read_bytes()
+    want = bytearray(b'\xff' * (0x10000 + len(fw)))
+    for off, name in ((0x1000, 'bootloader.bin'), (0x8000, 'partitions.bin'), (0xE000, 'boot_app0.bin'), (0x10000, 'firmware.bin')):
+        b = (dist / name).read_bytes()
+        if name != 'firmware.bin' and sha256(b) != PINNED[name]: fail(f'factory image: {name} is not the pinned board file')
+        want[off:off + len(b)] = b
+    if img != bytes(want): fail(f'factory image {Path(path).name} is not exactly the verified boot files + control image')
 
 
 def notes_md(dist, notes='', run=''):

@@ -82,8 +82,12 @@ try:
                + '\n'.join(f'├── {l.split()[0]} @ {l.split()[1]} (required: x)' for l in (REPO / 'tools/release/platformio-packages.lock').read_text().splitlines()
                            if l and not l.startswith('#') and not l.startswith('espressif32 ')))
     rc.check_packages(listing)
+    rc.check_packages(listing + '\n├── tool-openocd-esp32 @ 2.1100.20220706 (required: x)\n├── toolchain-riscv32-esp @ 8.4.0 (required: x)')
+    clean = (REPO / 'test/fixtures/pio-pkg-list-clean.txt')
+    if clean.is_file(): rc.check_packages(clean.read_text())
     refused(rc.check_packages, listing.replace('3.20016.0', '3.20017.0'), want='differ from the lock')
     refused(rc.check_packages, listing + '\n├── evil-lib @ 1.0.0 (required: x)', want='extra')
+    refused(rc.check_packages, listing.replace('toolchain-xtensa-esp32', 'toolchain-xtensa-esp-elf'), want='missing')
     ok('toolchain: the resolved PlatformIO packages must equal the lock (a changed framework or extra library is refused)')
     assert rc.build_flags(VERSION, COMMIT) == f'-DFW_VERSION=\\"{COMMIT}\\" -DORCON_RELEASE_VERSION={VERSION}'
     refused(rc.build_flags, VERSION, 'main', want='SHA')
@@ -205,6 +209,12 @@ try:
         f = rc.factory(D, esptool, py)
         assert f.name == 'orcon-control-v1.2.3-c0ffee1-factory-usb.bin' and rc.verify_package(D, harness)
         ok('factory: one USB image from 0x0 with the verified bootloader, table, boot_app0 and control image; listed in SHA256SUMS')
+        for name, mutate in (('corrupt', lambda b: b[:0x10064] + bytes([b[0x10064] ^ 1]) + b[0x10065:]), ('truncated', lambda b: b[:-1]),
+                             ('appended', lambda b: b + b'\x00'), ('nvs-not-erased', lambda b: b[:0x9000] + b'\x00' + b[0x9001:])):
+            d = TMP / 'factory' / name; shutil.copytree(D, d)
+            g = d / f.name; g.write_bytes(mutate(g.read_bytes())); rc.write_sums(d)
+            refused(rc.verify_package, d, harness, want='factory image')
+        ok('verify-package: a factory image that is not exactly the verified parts is refused, even with fresh checksums (Codex r2)')
     else:
         if os.environ.get('RELEASE_BUILD_DIR'): raise AssertionError('factory image: esptool or pyserial missing in the release workflow')
         print('  NOT TESTED: factory image (no PlatformIO tool-esptoolpy, or no Python with pyserial)')

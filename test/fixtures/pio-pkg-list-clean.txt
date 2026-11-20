@@ -1,0 +1,10 @@
+Resolving heltec_v2_sx1276_control dependencies...
+Platform espressif32 @ 6.7.0 (required: espressif32 @ 6.7.0)
+├── framework-arduinoespressif32 @ 3.20016.0 (required: platformio/framework-arduinoespressif32 @ ~3.20016.0)
+├── tool-esptoolpy @ 1.40501.0 (required: platformio/tool-esptoolpy @ ~1.40501.0)
+└── toolchain-xtensa-esp32 @ 8.4.0+2021r2-patch5 (required: espressif/toolchain-xtensa-esp32 @ 8.4.0+2021r2-patch5)
+
+Libraries
+├── ArduinoJson @ 7.4.3 (required: bblanchon/ArduinoJson @ 7.4.3)
+├── RadioLib @ 7.8.1 (required: jgromes/RadioLib @ 7.8.1)
+└── U8g2 @ 2.36.18 (required: olikraus/U8g2 @ 2.36.18)

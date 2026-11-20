@@ -1,7 +1,8 @@
 # PlatformIO Core for the release workflow (.github/workflows/release-control.yml): the exact wheels for Linux x86_64,
-# CPython 3.12, hash-pinned (pip --require-hashes --no-deps --only-binary=:all:). Same versions as the local build
-# environment of 2026-11-19 (PlatformIO 6.2.0). Generated from a `pip download platformio==6.2.0` for that platform;
-# a change here is a reviewed toolchain change (docs/RELEASES.md).
+# CPython 3.12, hash-pinned (pip --require-hashes --no-deps --only-binary=:all:, then `pip check`). Same versions as
+# the local build environment of 2026-11-19 (PlatformIO 6.2.0), plus typing_extensions, which anyio and starlette
+# need below Python 3.15/3.13 (every Requires-Dist evaluated for CPython 3.12 on Linux). A change here is a reviewed
+# toolchain change (docs/RELEASES.md).
 ajsonrpc==1.2.0 --hash=sha256:0fa2c1cf8e619d18ffee96043822032d6520eda65d3b712f9540a3a63e9cac25
 anyio==4.16.0 --hash=sha256:c66ae634e0b8228396b801741beb3294326d4b6102f7bba4041c0dfb58c29026
 bottle==0.13.4 --hash=sha256:045684fbd2764eac9cdeb824861d1551d113e8b683d8d26e296898d3dd99a12e
@@ -21,6 +22,7 @@ requests==2.34.2 --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1
 semantic-version==2.10.0 --hash=sha256:de78a3b8e0feda74cabc54aab2da702113e33ac9d9eb9d2389bcf1f58b7d9177
 starlette==1.10.0 --hash=sha256:478c0ab3b4ced6e82719849c118fa406f0278a3499c1a898cd15cd31bdc38ce4
 tabulate==0.10.0 --hash=sha256:f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3
+typing-extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
 urllib3==2.8.0 --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3
 uvicorn==0.54.0 --hash=sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf
 wsproto==1.3.2 --hash=sha256:61eea322cdf56e8cc904bd3ad7573359a242ba65688716b0710a5eb12beab584

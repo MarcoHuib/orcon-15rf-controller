@@ -102,6 +102,7 @@ jobs:
       - name: PlatformIO, hash-pinned
         run: |
           python -m pip install --require-hashes --no-deps --only-binary=:all: -r tools/release/requirements-platformio.txt
+          python -m pip check
           pio --version
       - name: The pinned platform, framework, toolchain and libraries
         run: |
@@ -203,7 +204,7 @@ jobs:
           NOTES: ${{ inputs.notes }}
         run: |
           python3 -I tools/release_ci.py package --dist dist --notes "$NOTES"
-          b="$(cd dist && ls -- *.orconfw)"
+          b="$(ls dist | grep -E '[.]orconfw$')"
           echo "bundle_name=$b" >> "$GITHUB_OUTPUT"
           echo "bundle_sha256=$(sha256sum "dist/$b" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Hand the signed package to the verify job
@@ -306,5 +307,6 @@ jobs:
           mkdir -p "$RUNNER_TEMP/check"
           gh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/check"
           cmp <(ls "$RUNNER_TEMP/check" | sort) <( (printf '%s\n' "${files[@]}"; echo SHA256SUMS) | sort)
-          (cd "$RUNNER_TEMP/check" && sha256sum -c SHA256SUMS)
+          cd "$RUNNER_TEMP/check"
+          sha256sum -c SHA256SUMS
           gh release edit "$TAG" --repo "$REPO" --draft=false --latest

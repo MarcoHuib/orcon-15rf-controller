@@ -22,6 +22,10 @@ Wordt de nieuwe firmware niet bevestigd, dan meldt de pagina dat de controller a
 
 De handmatige `.orconfw`-upload blijft bestaan, onder *Handmatig installeren*, en wordt nu op dezelfde manier gevolgd.
 
+De pagina volgt een installatie vanaf de klik via `/api/ota`, dat geen login nodig heeft. Ook een gepauzeerd tabblad dat de fase *geschreven* mist, of een sessie die door de herstart verdween, eindigt dus bij de echte uitkomst en niet op het inlogscherm.
+
+Na het schrijven blijft de schrijver dicht tot de herstart (`restart-pending`). Een handmatige upload herstart ook als de browser de verbinding na de laatste byte verbreekt.
+
 ## Hoe het werkt
 
 | Stap | Wat | Waar |
@@ -77,6 +81,7 @@ Een controle installeert nooit iets. Installeren vraagt altijd:
   - De workertaak heeft een stack van 12 KB en wordt na de taak verwijderd.
   - Een taak start alleen bij ≥ 90 000 B vrije heap en een vrij blok van ≥ 32 000 B. TLS heeft twee recordbuffers van 16 KB nodig, plus de roots en de handshake. Anders volgt `low-memory`.
 - **Geen blokkade van RF of web.** De worker draait op core 0 met prioriteit 1, onder WiFi en lwIP. De RX-taak en de Arduino-loop draaien op core 1.
+  - De worker geeft minstens elke 100 ms één tick af, zodat de idle-taak van core 0 nooit de task-watchdog (5 s, panic) raakt, ook niet bij een snelle download.
   - De worker raakt de RF-console en de webserver niet aan.
   - `tick()` in de loop logt en herstart.
   - Tijdens het flashschrijven kan RF-ontvangst kort haperen, net als bij de handmatige upload: flash-erase pauzeert de cache.
@@ -116,6 +121,7 @@ Het grootste deel is de TLS-client: mbedTLS SSL/X.509 en WiFiClientSecure. Bootl
 | Wat | Soort | Waar |
 |---|---|---|
 | SemVer, URL's, allowlist, kop-limieten, mock-GitHub (redirects, DNS/TLS, 403/429/5xx, stilstand, afbreken, chunked, te groot), index (handtekening, manipulatie, variant, downgrade, slotgrootte), download (afgebroken, OTA-schrijffout, gemanipuleerd image, andere bundel, naloopbytes, vreemde redirect), geheugengrens | host, 134 checks | `test/test_fw_update.cpp` |
+| Routes: eerst de eigenaarssessie, gepinde TLS-roots, alleen de aangeboden versie (ook als een controle tegelijk afrondt), schrijver dicht na selectie | bronguard + mutaties | `tools/test_tx_poc_safety.py` |
 | Webinterface: controle, bevestiging, alleen het getoonde versienummer, voortgang, herstart, proefstart, bevestigd, rollback, fouten | host (node) | `test/test_setup_page.js` |
 | Geen RF, Siri, koppelen, uitlezen of herstart tijdens een update | host | `test/test_setup_web.cpp` (control) |
 | Firmware compileert, geen verboden OTA-strings, boot-bestanden gepind | build | `pio run -e heltec_v2_sx1276_control` |

@@ -302,9 +302,12 @@ static void handleUploadData() {
     } else if (up.status == UPLOAD_FILE_WRITE) {
         writeChunk(up.buf, up.currentSize);
     } else if (up.status == UPLOAD_FILE_END) {
-        endWrite();
+        // Selected for the next boot: restart from here, not only from the reply handler. The WebServer skips that
+        // handler when the client disconnects after the last byte (Codex r2), and the board would otherwise boot the
+        // new image at some later, unexpected restart.
+        if (!endWrite()) net::restartSoon();
     } else if (up.status == UPLOAD_FILE_ABORTED) {
-        abortWrite("upload-aborted");
+        if (g_st != St::Done) abortWrite("upload-aborted");   // an image already selected stays selected (restart pending)
     }
 }
 static void handleUploadDone() {
