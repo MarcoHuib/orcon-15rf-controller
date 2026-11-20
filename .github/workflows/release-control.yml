@@ -1,0 +1,331 @@
+name: Release control firmware (Heltec V2)
+
+# The OFFICIAL release of the Heltec V2 control firmware (env heltec_v2_sx1276_control), the only variant that is
+# published. Started by hand only: Actions > this workflow > Run workflow, branch main, a version number. No push, pull
+# request, tag, release or schedule starts it. Five jobs, each with the least it needs:
+#   prepare  version and source checks (manual run, default branch, its head, a new and newer version)   contents: read
+#   build    pinned toolchain, every host/safety/privacy test, the release build and its checks           contents: read
+#   sign     ONLY job with the OTA signing key: the secret of the protected environment orcon-production-release
+#            (deployments from main only); signs the manifest of the build's verified image                  contents: read
+#   verify   the device's own rules on the signed package (signature, policy, update index)                 contents: read
+#   publish  the tag (refused when it exists), a draft release, its files checked, then published           contents: write
+# Nothing here touches a board: a controller installs a release only when its logged-in owner clicks "Update installeren"
+# (docs/RELEASES.md, docs/UPDATECONTROLE.md). tools/test_tx_poc_safety.py pins this file and checks these properties.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versie: MAJOR.MINOR.PATCH, bijvoorbeeld 1.0.0'
+        required: true
+        type: string
+      notes:
+        description: 'Korte releasenotes voor de controller (optioneel, maximaal 400 bytes)'
+        required: false
+        type: string
+        default: ''
+
+permissions: {}
+
+concurrency:
+  group: orcon-release-control
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  RELEASE_ENV: heltec_v2_sx1276_control
+  PYTHONDONTWRITEBYTECODE: '1'
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
+jobs:
+  prepare:
+    name: Version and source
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'MarcoHuib/orcon-15rf-controller'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      number: ${{ steps.version.outputs.number }}
+      tag: ${{ steps.version.outputs.tag }}
+      name: ${{ steps.version.outputs.name }}
+    steps:
+      - name: Check out the exact commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Only a manual run on the head of the default branch of this repository
+        env:
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          EVENT: ${{ github.event_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SHA: ${{ github.sha }}
+        run: |
+          head="$(git ls-remote "https://github.com/${REPO}.git" "refs/heads/${DEFAULT_BRANCH}" | cut -f1)"
+          python3 -I tools/release_ci.py source --repo "$REPO" --ref "$REF" --event "$EVENT" --default-branch "$DEFAULT_BRANCH" --sha "$SHA" --head "$head"
+      - name: A valid, new and newer version
+        id: version
+        env:
+          VERSION: ${{ inputs.version }}
+          NOTES: ${{ inputs.notes }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n 's#^refs/tags/##p' | sed 's/\^{}$//'
+            gh api --paginate "repos/${REPO}/releases" --jq '.[].tag_name'
+          } > "$RUNNER_TEMP/tags.txt"
+          python3 -I tools/release_ci.py version "$VERSION" --tags "$RUNNER_TEMP/tags.txt" --notes="$NOTES" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and test
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    outputs:
+      firmware_sha256: ${{ steps.check.outputs.firmware_sha256 }}
+    steps:
+      - name: Check out the exact commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: PlatformIO, hash-pinned, in its own environment
+        run: |
+          python -m venv "$RUNNER_TEMP/pio-venv"
+          "$RUNNER_TEMP/pio-venv/bin/python" -m pip install --require-hashes --no-deps --only-binary=:all: --force-reinstall -r tools/release/requirements-platformio.txt
+          "$RUNNER_TEMP/pio-venv/bin/python" -m pip check
+          echo "$RUNNER_TEMP/pio-venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/pio-venv/bin/pio" --version
+      - name: The pinned platform, framework, toolchain and libraries
+        run: pio pkg install -e heltec_v2_sx1276 -e "$RELEASE_ENV"
+      - name: Host tests
+        env:
+          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain
+        run: bash test/run_host_tests.sh
+      - name: Host tests with AddressSanitizer and UndefinedBehaviorSanitizer
+        env:
+          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-sanitizers
+          CXXFLAGS: -fsanitize=address,undefined -fno-sanitize-recover=all
+          ASAN_OPTIONS: detect_leaks=0
+          UBSAN_OPTIONS: print_stacktrace=1
+          HOST_TEST_TIMEOUT_SECONDS: '180'
+        run: bash test/run_host_tests.sh
+      - name: RF safety guards, workflow pins, privacy, CLI
+        run: |
+          python tools/test_tx_poc_safety.py
+          git ls-files -z | xargs -0 python tools/check_privacy.py
+          python tools/test_orcon_cli.py
+      - name: Release build of the control firmware
+        env:
+          NUMBER: ${{ needs.prepare.outputs.number }}
+          SHA: ${{ github.sha }}
+        run: |
+          PLATFORMIO_BUILD_FLAGS="$(python -I tools/release_ci.py flags --version "$NUMBER" --commit "$SHA")"
+          export PLATFORMIO_BUILD_FLAGS
+          pio run -e "$RELEASE_ENV"
+          pio pkg list -e "$RELEASE_ENV" | tee "$RUNNER_TEMP/packages.txt"
+          python -I tools/release_ci.py packages --list "$RUNNER_TEMP/packages.txt"
+      - name: Check the image and prepare the signing input
+        id: check
+        env:
+          NUMBER: ${{ needs.prepare.outputs.number }}
+          SHA: ${{ github.sha }}
+        run: |
+          tc="$HOME/.platformio/packages/toolchain-xtensa-esp32/bin"
+          mkdir -p "$RUNNER_TEMP/harness"
+          g++ -std=c++17 -O1 -Wall -Wextra -Werror -I src -I ".pio/libdeps/$RELEASE_ENV/ArduinoJson/src" test/release_accept.cpp src/fw_update.cpp src/ota_policy.cpp -o "$RUNNER_TEMP/harness/release_accept"
+          python -I tools/release_ci.py verify-build --build ".pio/build/$RELEASE_ENV" --version "$NUMBER" --commit "$SHA" --harness "$RUNNER_TEMP/harness/release_accept" --nm "$tc/xtensa-esp32-elf-nm" --out dist --esptool "$HOME/.platformio/packages/tool-esptoolpy/esptool.py"
+          python -I tools/check_elf_tx.py ".pio/build/$RELEASE_ENV/firmware.elf" "$RELEASE_ENV" "$tc"
+          RELEASE_BUILD_DIR=".pio/build/$RELEASE_ENV" RELEASE_VERSION="$NUMBER" RELEASE_COMMIT="$SHA" python tools/test_release_ci.py
+          python -I tools/release_ci.py factory --dist dist --esptool "$HOME/.platformio/packages/tool-esptoolpy/esptool.py"
+          python -I tools/release_ci.py manifest --dist dist
+          echo "firmware_sha256=$(sha256sum dist/firmware.bin | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Hand the verified build to the signing job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: release-build
+          path: dist/
+          if-no-files-found: error
+          retention-days: 3
+      - name: Hand the device-policy harness to the verify job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: release-harness
+          path: ${{ runner.temp }}/harness/release_accept
+          if-no-files-found: error
+          retention-days: 3
+
+  sign:
+    name: Sign (protected environment)
+    needs: [prepare, build]
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'MarcoHuib/orcon-15rf-controller'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: orcon-production-release
+    permissions:
+      contents: read
+    outputs:
+      bundle_sha256: ${{ steps.package.outputs.bundle_sha256 }}
+      bundle_name: ${{ steps.package.outputs.bundle_name }}
+    steps:
+      - name: Check out the exact commit (release tools only)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: The verified build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: release-build
+          path: dist
+      - name: Same image as the build job checked
+        env:
+          WANT: ${{ needs.build.outputs.firmware_sha256 }}
+        run: |
+          test -n "$WANT"
+          test "$(sha256sum dist/firmware.bin | cut -d' ' -f1)" = "$WANT"
+          python3 -I tools/release_ci.py manifest --dist dist
+      - name: Sign the release manifest (the only step that sees the key)
+        env:
+          ORCON_OTA_SIGNING_KEY: ${{ secrets.ORCON_OTA_SIGNING_KEY }}
+        run: python3 -I tools/release_ci.py sign --dist dist
+      - name: Bundle, update index and checksums
+        id: package
+        env:
+          NOTES: ${{ inputs.notes }}
+        run: |
+          python3 -I tools/release_ci.py package --dist dist --notes="$NOTES"
+          b="$(ls dist | grep -E '[.]orconfw$')"
+          echo "bundle_name=$b" >> "$GITHUB_OUTPUT"
+          echo "bundle_sha256=$(sha256sum "dist/$b" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Hand the signed package to the verify job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: release-signed
+          path: dist/
+          if-no-files-found: error
+          retention-days: 3
+
+  verify:
+    name: Verify with the device rules
+    needs: [prepare, build, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      sums_sha256: ${{ steps.final.outputs.sums_sha256 }}
+      notes_sha256: ${{ steps.final.outputs.notes_sha256 }}
+    steps:
+      - name: Check out the exact commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: The signed package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: release-signed
+          path: dist
+      - name: The device-policy harness
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: release-harness
+          path: harness
+      - name: Signature, device policy, update index, checksums
+        id: final
+        env:
+          WANT: ${{ needs.sign.outputs.bundle_sha256 }}
+          BUNDLE: ${{ needs.sign.outputs.bundle_name }}
+          FW: ${{ needs.build.outputs.firmware_sha256 }}
+          NOTES: ${{ inputs.notes }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          test "$(sha256sum "dist/$BUNDLE" | cut -d' ' -f1)" = "$WANT"
+          test "$(sha256sum dist/firmware.bin | cut -d' ' -f1)" = "$FW"
+          chmod 0755 harness/release_accept
+          python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --official --notes="$NOTES"
+          python3 -I tools/release_ci.py notes --dist dist --notes="$NOTES" --run "$RUN_URL" > "$RUNNER_TEMP/RELEASE_NOTES.md"
+          mkdir -p publish
+          cut -d' ' -f3- dist/SHA256SUMS | while IFS= read -r f; do cp -- "dist/$f" publish/; done
+          cp dist/SHA256SUMS "$RUNNER_TEMP/RELEASE_NOTES.md" publish/
+          echo "sums_sha256=$(sha256sum publish/SHA256SUMS | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "notes_sha256=$(sha256sum publish/RELEASE_NOTES.md | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Hand the verified files to the publish job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: release-verified
+          path: publish/
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    name: Publish the GitHub Release
+    needs: [prepare, build, sign, verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: The verified files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: release-verified
+          path: publish
+      - name: Exactly the verified files
+        env:
+          WANT: ${{ needs.sign.outputs.bundle_sha256 }}
+          BUNDLE: ${{ needs.sign.outputs.bundle_name }}
+          SUMS: ${{ needs.verify.outputs.sums_sha256 }}
+          NOTES_SHA: ${{ needs.verify.outputs.notes_sha256 }}
+        run: |
+          cd publish
+          test "$(sha256sum SHA256SUMS | cut -d' ' -f1)" = "$SUMS"
+          test "$(sha256sum RELEASE_NOTES.md | cut -d' ' -f1)" = "$NOTES_SHA"
+          sha256sum -c SHA256SUMS
+          test "$(sha256sum -- "$BUNDLE" | cut -d' ' -f1)" = "$WANT"
+          test "$(ls | sort)" = "$( (cut -d' ' -f3- SHA256SUMS; echo SHA256SUMS; echo RELEASE_NOTES.md) | sort)"
+      - name: Still the newest version, then the tag at the released commit (fails when it already exists)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          NUMBER: ${{ needs.prepare.outputs.number }}
+          SHA: ${{ github.sha }}
+        run: |
+          {
+            git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n 's#^refs/tags/##p' | sed 's/\^{}$//'
+            gh api --paginate "repos/${REPO}/releases" --jq '.[].tag_name'
+          } > "$RUNNER_TEMP/tags.txt"
+          floor="$(awk '/^v?(0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)$/ { sub(/^v/, ""); split($0, p, "."); n = p[1] * 1000000 + p[2] * 1000 + p[3]; if (n > m) m = n } END { print m + 0 }' "$RUNNER_TEMP/tags.txt")"
+          if [ "$floor" -ge "$NUMBER" ]; then
+            echo "::error::$TAG is not newer than every tag and release (newest $floor): a rerun of an older release is refused"; exit 1
+          fi
+          gh api -X POST "repos/${REPO}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${SHA}" > /dev/null
+      - name: Draft release, check its files, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          cd publish
+          mapfile -t files < <(cut -d' ' -f3- SHA256SUMS)
+          gh release create "$TAG" --repo "$REPO" --verify-tag --draft --title "Orcon control-firmware $TAG" --notes-file RELEASE_NOTES.md -- "${files[@]}" SHA256SUMS
+          id="$(gh api --paginate "repos/${REPO}/releases" --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id")"
+          printf '%s' "$id" | grep -qxE '[0-9]+'
+          mkdir -p "$RUNNER_TEMP/check"
+          gh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/check"
+          cmp <(ls "$RUNNER_TEMP/check" | sort) <( (printf '%s\n' "${files[@]}"; echo SHA256SUMS) | sort)
+          for f in "${files[@]}" SHA256SUMS; do cmp -- "$f" "$RUNNER_TEMP/check/$f"; done
+          gh api -X PATCH "repos/${REPO}/releases/${id}" -F draft=false -f make_latest=true -F "body=@RELEASE_NOTES.md" > /dev/null

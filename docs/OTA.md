@@ -1,5 +1,9 @@
 # Signed OTA and remote diagnostics (Heltec V2)
 
+> One-click updates from the official GitHub Releases (control image) use exactly this writer and these checks: see
+> [UPDATECONTROLE.md](UPDATECONTROLE.md) (`/api/update`, `/api/update/check`, `/api/update/install`) and
+> [RELEASES.md](RELEASES.md) (how a release is built, signed and published).
+
 ## Why this is safe on the existing layout
 - **Partition table is unchanged.** It already has `otadata` plus two app slots, `app0`/`app1` of 0x330000 B each (`tools/check_parts.py`). A firmware image is about 1.1 MB.
 - **The board's bootloader already does rollback.** It is the Arduino-ESP32 2.0.16 bootloader, built with `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`. Its `bootloader_utility_get_selected_boot_partition` writes otadata state 1 (`PENDING_VERIFY`) and state 4 (`ABORTED`). `heltec_v2.sh precheck` already requires that exact bootloader. No bootloader or partition-table write is needed.

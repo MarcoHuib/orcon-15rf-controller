@@ -17,6 +17,7 @@ bool        wifiConnected();  // station mode and associated with the configured
 void        wifiDiag(char* out, size_t n);   // /api/diag: "wifi":{signal, address, outages, last reason},
 bool        maskIds();        // privacy setting: mask device IDs in the UI
 void        restartSoon();    // reboot after the HTTP reply has gone out
+bool        restartQueued();  // a restart is scheduled (no new update may start then)
 void        forgetWifi();     // drop the stored network; the next boot starts the setup AP
 
 // Ownership model (ORCON_OWNER_MODEL builds; docs/PROVISIONING.md)

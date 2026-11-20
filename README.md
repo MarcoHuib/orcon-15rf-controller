@@ -29,7 +29,7 @@ Lees een bestaande Orcon 15RF-afstandsbediening uit, bewaar profielen en gebruik
 - **Lokaal beheer:** wifi, OLED-scherm, beveiligde login en systeeminformatie in de browser.
 - **Updates en herstel:** ondertekende `.orconfw`-updates, automatische terugval en fysieke herstelopties in de ontwikkelversie.
 
-Niet beschikbaar: Siri-bediening, automatisch zoeken naar updates en een webknop voor een fabrieksreset.
+Niet beschikbaar: een webknop voor een fabrieksreset. In ontwikkeling (`feature/github-releases-control-ota`): officiële releases via GitHub en een updatecontrole met **Update installeren** in de webinterface; zie [Releases](docs/RELEASES.md) en [Updatecontrole](docs/UPDATECONTROLE.md).
 
 ## Inhoudsopgave
 
@@ -429,7 +429,7 @@ Een profiel hernoemen of wisselen herstelt geen verloren RF-koppeling.
 
 > **Ontwikkelversie, nog geen updatepakket beschikbaar.** Web-OTA met `.orconfw` staat op de ontwikkelbranch en is nog niet volledig op hardware gevalideerd. De [releasepagina](../../releases) bevat op dit moment geen officiële downloads.
 
-Na een eerste USB-installatie met OTA-ondersteuning zijn latere updates via wifi bedoeld. Er is geen automatische updatecontrole; je downloadt en installeert zelf een bestand.
+Na een eerste USB-installatie met OTA-ondersteuning zijn latere updates via wifi bedoeld. Met de control-firmware van `feature/github-releases-control-ota` (nog niet uitgebracht) kijkt de controller dagelijks of er een nieuwere officiële release is; **Systeem → Firmware → Update installeren** downloadt, controleert en installeert die pas na jouw klik ([Updatecontrole](docs/UPDATECONTROLE.md)). Handmatig een bestand installeren blijft mogelijk, zoals hieronder.
 
 ### Update installeren
 
