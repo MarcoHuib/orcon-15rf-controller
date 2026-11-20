@@ -472,9 +472,14 @@ void begin(WebServer& s) {
     note(rfcon::INFO, "opgestart: %s, reden %s, vorige sessie %ld s, %s%s", run->label, resetName(esp_reset_reason()),
          g_prevKnown ? long(g_prevUptimeS) : -1L, variantOfThisBuild(), g_pending ? ", proefstart na OTA" : "");
     s.on("/api/ota",        HTTP_GET,  handleInfo);
+#if ORCON_OWNER_MODEL
+    // Writing firmware needs the owner's session and CSRF token besides the signature. Builds without the ownership
+    // model (the old PoC portals) have no network writer at all: the signing key alone never installs anything there
+    // (Codex legacy r2). Those boards are installed over USB.
     s.on("/api/ota/nonce",  HTTP_POST, handleNonce);
     s.on("/api/ota/begin",  HTTP_POST, handleBegin);
     s.on("/api/ota/upload", HTTP_POST, handleUploadDone, handleUploadData);
+#endif
 #if !ORCON_TX_POC || ORCON_WEB_CONTROL
     s.on("/api/ota/hold",   HTTP_POST, handleHold);
 #endif
@@ -488,7 +493,8 @@ void begin(WebServer& s) {
 static bool ownerKeyRegistered() {
 #if ORCON_OWNER_MODEL
     uint8_t q[65];
-    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q);
+    // Also the recovery's own crypto self-test: a key this image could not use would be no way back (Codex legacy r2).
+    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q) && ownerstore::cryptoReady();
     static bool told = false;
     if (!ok && !told) {
         told = true;

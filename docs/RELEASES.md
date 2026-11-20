@@ -122,13 +122,11 @@ Staat de sleutel in GitHub, dan geeft een lek daar (plus toegang tot je netwerk)
 - een gecompromitteerde action;
 - GitHub zelf.
 
-**Kies een van twee:**
-1. **Aanbevolen.** Registreer eerst een herstelsleutel op de controller: RST, dan PRG 15 s → Herstelmodus, zie [INSTALLATIE.md](INSTALLATIE.md). De toestand wordt dan *done* en de releasesleutel geeft geen toegang meer (`owner-key-required`). Zet daarna het secret:
-   ```
-   gh secret set ORCON_OTA_SIGNING_KEY --env orcon-production-release --repo MarcoHuib/orcon-15rf-controller < ~/.orcon/ota-signing-key.pem
-   ```
-   `gh` versleutelt lokaal (sealed box). De inhoud verschijnt niet in de terminal of in logs. Het lokale bestand blijft staan.
-2. Je accepteert dit risico bewust en zet het secret meteen met hetzelfde commando.
+**Volgorde (verplicht):** eerst de migratie in [HERSTELSLEUTEL_MIGRATIE.md](HERSTELSLEUTEL_MIGRATIE.md), stap 0 tot en met 5: herstelsleutel registreren, controleren, en het herstel met het bestand bewezen. Pas daarna het secret:
+```
+gh secret set ORCON_OTA_SIGNING_KEY --env orcon-production-release --repo MarcoHuib/orcon-15rf-controller < ~/.orcon/ota-signing-key.pem
+```
+`gh` versleutelt lokaal (sealed box). De inhoud verschijnt niet in de terminal of in logs. Het lokale bestand blijft staan.
 
 Zonder secret faalt de job `sign` met `signing key missing`. Er wordt dan niets gepubliceerd.
 

@@ -40,6 +40,8 @@
 
 **Verwijderd:** alle onderdelen uit de tabel hierboven. Ook de routes bestaan niet meer, in elke toestand en op elke build. Een verzoek krijgt nooit een code, een nonce of een sessie. De statuscode is 404, behalve op de control-image: daar antwoordt de standaardafhandeling 403 `route-disabled-in-web-control`.
 
+**Geen OTA zonder eigenaar.** Builds zonder eigendomsmodel (de oude PoC-portals) hebben geen netwerkschrijver meer (`/api/ota/nonce|begin|upload`). Daar installeerde de handtekening alleen al firmware; ze worden nu alleen via USB geïnstalleerd (Codex ronde 2).
+
 **Nooit meer terug via OTA.** De OTA-policy weigert elk image dat het oude herstel nog bevat (`image-has-release-key-recovery`; het image wordt herkend aan de vraagsoort `orcon-auth-reset`). Dat geldt voor elke build met deze wijziging, ook voor builds zonder eigendomsmodel, zoals de oude PoC-images (Codex). Een image dat al in het andere slot staat, blijft een geldig rollbackdoel: de migratie kan dus altijd terug naar b75fad3.
 
 **Een board zonder herstelsleutel**, met waarde 3 in NVS of een wachtwoord zonder staat, leest nu als *done zonder sleutel*:
@@ -84,9 +86,9 @@ Beide images hebben het eigendomsmodel. Uit de broncode van beide commits volgt 
 | 2 | jij | Telefoon op Orcon15RF-Setup, open `http://192.168.4.1` en meld je aan. Systeem → Herstelsleutel: kies een wachtwoordzin (minstens 10 tekens) en sla `orcon-recovery-key.pem` op. Kies het opgeslagen bestand en vul de wachtwoordzin in: het board opent het bestand zelf en registreert pas dan de sleutel. | De melding "Nieuwe herstelsleutel geregistreerd (vingerafdruk …)". Systeem → Herstelsleutel: "Geregistreerd". | `key-mismatch`: opnieuw proberen. Bij `key-write-failed` kan de sleutel al half zijn opgeslagen; het oude herstel kan dan al uit staan. **Bewaar daarom altijd het gedownloade bestand**, herstart, en ga door naar stap 4 en 5. |
 | 3 | jij | Bewaar het sleutelbestand en de wachtwoordzin elk op twee plekken (bijvoorbeeld de wachtwoordmanager en een USB-stick), niet samen met het beheerderswachtwoord. | — | Zonder bestand en wachtwoordzin is alleen nog een fabrieksreset mogelijk. |
 | 4 | jij, alleen lezen | Na een normale herstart: `curl -s -X POST -H 'Content-Type: application/json' -d '{}' http://orcon15rf.local/api/auth/nonce` | Antwoord `403 {"error":"owner-key-required"}`. Er wordt niets uitgegeven. Let op: hetzelfde antwoord komt ook als de eigendomsopslag onleesbaar is; stap 5 is daarom het echte bewijs. | Krijg je een nonce? Dan is de registratie niet blijvend: terug naar stap 1. |
-| 5 | jij (**verplicht vóór stap 6**) | Bewijs eenmalig dat het nieuwe herstel werkt: herstelmodus → "Wachtwoord vergeten" → het sleutelbestand, de wachtwoordzin en een nieuw (of hetzelfde) wachtwoord. | Aanmelden met dat wachtwoord lukt. | Mislukt het herstel, dan heb je nog je bestaande wachtwoord. Controleer bestand en wachtwoordzin. |
+| 5 | jij (**verplicht vóór stap 6**) | Bewijs eenmalig dat het nieuwe herstel werkt: herstelmodus → "Wachtwoord vergeten" → het sleutelbestand, de wachtwoordzin en **hetzelfde** wachtwoord dat je nu hebt. Zo verandert er niets, ook niet als het antwoord onderweg verloren gaat. | Na een normale herstart: aanmelden met dat wachtwoord lukt. | Een fout (`key-mismatch`, onjuiste wachtwoordzin): bestand en wachtwoordzin controleren. Ging er iets mis tijdens het opslaan, dan geldt hoe dan ook nog hetzelfde wachtwoord. |
 | 6 | jij | Zet het GitHub-secret: `gh secret set ORCON_OTA_SIGNING_KEY --env orcon-production-release --repo MarcoHuib/orcon-15rf-controller < ~/.orcon/ota-signing-key.pem` | `gh secret list --env orcon-production-release` toont de naam. | — |
-| 7 | jij | PR #16 en daarna deze PR reviewen en mergen. Daarna de eerste release via de workflow. Op b75fad3 bestaat de knop "Update installeren" nog niet: download `orcon-control-vX.Y.Z-<commit>.orconfw` uit de release en kies hem in Systeem → Firmware → Handmatig installeren. Latere updates gaan met de knop. | Na ongeveer 60 s: "nieuwe firmware bevestigd". De poort laat hem door omdat er een sleutel is. | Zonder sleutel of bij een probleem: na 300 s automatisch terug naar b75fad3. |
+| 7 | jij | PR #16 en daarna deze PR reviewen en mergen. Daarna de eerste release via de workflow. b75fad3 kan nog niet zelf op GitHub kijken: download `orcon-control-vX.Y.Z-<commit>.orconfw` uit de release en kies hem in Systeem → Firmware, paneel **Update installeren** (bestand kiezen, dan de knop Update installeren). Vanaf de nieuwe firmware heet dat paneel "Handmatig installeren" en komt er een knop "Controleer op updates" bij. | Na ongeveer 60 s: "nieuwe firmware bevestigd". De poort laat hem door omdat er een sleutel is. | Zonder sleutel of bij een probleem: na 300 s automatisch terug naar b75fad3. |
 | 8 | automatisch | Bij de volgende release schuift b75fad3 uit het andere slot. | Beide slots bevatten firmware zonder enig Legacy-pad. | — |
 
 **Waarom deze volgorde veilig is:**
@@ -95,6 +97,11 @@ Beide images hebben het eigendomsmodel. Uit de broncode van beide commits volgt 
 - Het rollback-image 2edb423 volgt dezelfde regel, dus een terugval heropent niets.
 - De signingsleutel gaat pas in stap 6 naar GitHub, als hij aantoonbaar (stap 4) geen wachtwoord meer kan herstellen.
 - De nieuwe firmware van stap 7 kan je niet buitensluiten: zonder sleutel bevestigt hij zich niet.
+
+**Restpunten (Codex, niet opgelost):**
+- Kan de firmware bij het starten de OTA-status niet lezen, dan wordt een proefstart niet als proefstart herkend: geen deadline, alleen een RST rolt terug.
+- De poort controleert dat een opgeslagen sleutel leesbaar is en dat de cryptografie van het image werkt, maar niet dat het punt op de curve ligt.
+- Er is geen hosttest van de hele startvolgorde (opstarthaak → proefstart → `tick`); de guard pint die code wel vast.
 
 **Restpunt.** Raakt NVS precies de namespace `orconown` kwijt terwijl `orconauth` blijft, dan leest een **oud** image (b75fad3, 2edb423, PR #16) het board weer als *legacy*. Dat kan alleen door ingrijpen via USB of door schade aan het flashgeheugen; geen enkele route doet het. Na stap 8 staat er geen oud image meer op het board.
 

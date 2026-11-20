@@ -947,10 +947,9 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         { const NK = { state: 'done', physical: true, key: { registered: false } };
           const k = await page({ 'GET /api/setup/state': () => [200, st], 'GET /api/provision/state': () => [200, NK] }); await k.refresh();
           k.$('aForgot').click(); await flush(); await k.refresh(); assert.equal(k.location.hash, '#recover');
-          assert.equal(k.$('rNoKey').hidden, false); assert.match(html, /id="rNoKey" hidden>[^<]*geen herstelsleutel[^<]*Fabrieksreset/);
-          assert.equal(k.$('rForm').hidden, true); assert.equal(k.$('rGo').disabled, true);
-          k.$('rGo').click(); await flush(); assert.equal(k.posts().length, 0);
-          ok('recovery mode on a board without an owner key: the factory reset is explained first, no key-file form'); }
+          assert.equal(k.$('rNoKey').hidden, false); assert.match(html, /id="rNoKey" hidden>[^<]*geen geregistreerde herstelsleutel[^<]*leesfout[^<]*Fabrieksreset/);
+          assert.equal(k.$('rGo').disabled, false); assert.notEqual(k.$('rIn').hidden, true);
+          ok('recovery mode, no key reported: the factory reset is explained first; the form stays (a read error can be temporary)'); }
         st.setup = { state: 'done', via_ap: false, physical: false };
         const q = await page({ 'GET /api/setup/state': () => [200, st] }); await q.refresh(); q.$('aForgot').click(); await flush();
         assert.equal(q.$('aSet').hidden, false); assert.equal(q.$('aHintOwn').hidden, false); assert.match(q.$('aHintOwn').textContent, /herstelsleutel.*Herstelmodus/);

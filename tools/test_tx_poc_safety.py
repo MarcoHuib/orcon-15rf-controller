@@ -386,7 +386,10 @@ def legacy_recovery_safe(files,ota):
     assert re.search(r'case otap::Trial::Rollback: [^{}]*?rollbackNow\(\); return; case otap::Trial::Wait: return; \}',h),'the deadline rolls back'
     assert ota.count('esp_ota_mark_app_valid_cancel_rollback(')==1,'tick is the only confirmation'
     k=fn(ota,'static bool ownerKeyRegistered() {')
-    assert '\n    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q);\n' in k and 'return ok;' in k,'the key is read before every attempt, not assumed or cached'
+    assert '\n    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q) && ownerstore::cryptoReady();\n' in k and 'return ok;' in k,'the key is read before every attempt, not assumed or cached, and usable by this image'
+    assert 'extern "C" bool verifyRollbackLater() { return true; }' in ota,'the core never confirms a new image at startup'
+    assert 'g_pending = esp_ota_get_state_partition(run, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;' in fn(ota,'void begin(WebServer& s) {') and ota.count('g_pending = ')==2,'the trial state comes from the OTA data'
+    assert re.search(r'#if ORCON_OWNER_MODEL\n(?:\s*//[^\n]*\n)*\s*s\.on\("/api/ota/nonce",[^\n]*\n\s*s\.on\("/api/ota/begin",[^\n]*\n\s*s\.on\("/api/ota/upload",[^\n]*\n#endif',ota) and ota.count('s.on("/api/ota/begin"')==1,'no network writer without the owner session (Codex legacy r2)'
 LR_FILES={str(x):x.read_text() for x in sorted(Path('src').glob('*.[ch]*'))+[Path('src/setup_page.html'),Path('tools/orcon.py')] if x.name!='setup_page.h'}
 legacy_recovery_safe(LR_FILES,ota_src)
 for name,where,old,new in (('reset-route-back','src/setup_web.cpp','    s.on("/api/auth/login",    HTTP_POST, handleLogin);','    s.on("/api/auth/reset",    HTTP_POST, handleLogin);\n    s.on("/api/auth/login",    HTTP_POST, handleLogin);'),
@@ -402,8 +405,12 @@ for name,where,old,new in (('reset-route-back','src/setup_web.cpp','    s.on("/a
     except AssertionError: print('PASS legacy-recovery guard rejects mutation',name)
     else: raise AssertionError('legacy-recovery guard accepted mutation '+name)
 for name,old,new in (('trial-without-key','if (ownerKeyRegistered() && esp_ota_mark_app_valid_cancel_rollback() == ESP_OK)','if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK)'),
-                     ('key-assumed','    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q);','    const bool ok = true;'),
-                     ('key-read-once','    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q);','    static const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q);'),
+                     ('key-assumed','    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q) && ownerstore::cryptoReady();','    const bool ok = true;'),
+                     ('key-read-once','    const bool ok = ownerstore::state() == provision::State::Done','    static const bool ok = ownerstore::state() == provision::State::Done'),
+                     ('key-without-crypto',' && ownerstore::ownerKey(q) && ownerstore::cryptoReady();',' && ownerstore::ownerKey(q);'),
+                     ('core-confirms-at-boot','extern "C" bool verifyRollbackLater() { return true; }','extern "C" bool verifyRollbackLater() { return false; }'),
+                     ('trial-state-ignored','g_pending = esp_ota_get_state_partition(run, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;','g_pending = false; (void)st;'),
+                     ('signer-only-writer','#if ORCON_OWNER_MODEL\n    // Writing firmware needs','#if 1\n    // Writing firmware needs'),
                      ('confirm-ignores-health','const bool healthy = !g_hold && net::wifiConnected() && radio::rxDiagnostics().rxState == 0;','const bool healthy = true;'),
                      ('deadline-without-rollback','            rollbackNow();\n            return;\n        case otap::Trial::Wait:','            return;\n        case otap::Trial::Wait:'),
                      ('second-confirm','void rollbackNow() {','static void confirmEarly() { esp_ota_mark_app_valid_cancel_rollback(); }\nvoid rollbackNow() {')):
