@@ -445,6 +445,9 @@ static void handleScan() {
 
 // POST /api/wifi {ssid,pass} -> save + reboot
 static void handleWifiSave() {
+#if ORCON_UPDATE_CHECK
+    if (updsvc::busy()) { server.send(409, "application/json", "{\"error\":\"update-busy\"}"); return; }   // its reboot would cut the install
+#endif
     JsonDocument d;
     if (deserializeJson(d, server.arg("plain"))) {
         server.send(400, "application/json", "{\"err\":\"bad json\"}"); return;
@@ -1205,6 +1208,7 @@ void wifiDiag(char* out, size_t n) {
 }
 bool        maskIds()      { return g_maskIds; }
 void        restartSoon()  { g_rebootAt = millis() + 1200; }
+bool        restartQueued() { return g_rebootAt != 0; }
 // Only SSID + password: profiles, OLED and IDs stay. An empty SSID makes wifiConnect() start the setup AP.
 void        forgetWifi()   {
 #if ORCON_OWNER_MODEL

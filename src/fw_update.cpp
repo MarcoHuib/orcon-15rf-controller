@@ -103,6 +103,8 @@ int Head::line() {
     if (buf_[0] == ' ' || buf_[0] == '\t') { err_ = "bad-response"; return -1; }   // obsolete line folding
     char* colon = strchr(buf_, ':');
     if (!colon || colon == buf_) { err_ = "bad-response"; return -1; }
+    for (const char* p = buf_; p < colon; ++p)   // an RFC 9110 token: no space before the colon, no odd characters
+        if (!isalnum((unsigned char)*p) && !strchr("!#$%&'*+-.^_`|~", *p)) { err_ = "bad-response"; return -1; }
     *colon = 0;
     char* v = colon + 1;
     while (*v == ' ' || *v == '\t') ++v;
@@ -137,11 +139,16 @@ int Head::push(char c) {
 
 // ---- HTTP GET over the transport ----------------------------------------------------------------------------------
 static bool expired(Clock now, uint32_t deadline) { return int32_t(deadline - now()) <= 0; }
+// What is left of the overall deadline, capped by a per-step limit: a step that starts late never runs past it.
+static uint32_t budget(Clock now, uint32_t deadline, uint32_t cap) {
+    const int32_t left = int32_t(deadline - now());
+    return left <= 0 ? 0 : uint32_t(left) < cap ? uint32_t(left) : cap;
+}
 // Exactly n bytes, or why not (the overall deadline counts too).
 static const char* readExact(Transport& t, uint8_t* b, size_t n, Clock now, uint32_t deadline, uint32_t stallMs) {
     while (n) {
         if (expired(now, deadline)) return "timeout";
-        const int k = t.read(b, n, stallMs);
+        const int k = t.read(b, n, budget(now, deadline, stallMs));
         if (k == -1) return "timeout";
         if (k <= 0 || size_t(k) > n) return "connection-lost";
         b += k; n -= size_t(k);
@@ -156,7 +163,7 @@ const char* httpGet(Transport& t, const char* url, Clock now, uint32_t deadline,
     if (!parseUrl(url, u) || !allowedUrl(u)) return "redirect-not-allowed";
     for (int hop = 0;; ++hop) {
         if (expired(now, deadline)) return "timeout";
-        if (!t.connect(u.host, lim.connectMs)) { const char* e = t.connectError(); return e ? e : "connect-failed"; }
+        if (!t.connect(u.host, budget(now, deadline, lim.connectMs))) { const char* e = t.connectError(); return expired(now, deadline) ? "timeout" : e ? e : "connect-failed"; }
         if (!(send(t, "GET ") && send(t, u.path) && send(t, " HTTP/1.1\r\nHost: ") && send(t, u.host) &&
               send(t, "\r\nUser-Agent: orcon-heltec-v2\r\nAccept: application/octet-stream\r\nAccept-Encoding: identity\r\n"
                       "Connection: close\r\n\r\n"))) { t.stop(); return "connection-lost"; }
@@ -203,9 +210,43 @@ static bool textOk(const char* s, size_t n) {   // printable, well-formed UTF-8,
         size_t k = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 && c >= 0xC2 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 && c <= 0xF4 ? 4 : 0;
         if (!k || i + k > n) return false;
         for (size_t j = 1; j < k; ++j) if (((unsigned char)s[i + j] & 0xC0) != 0x80) return false;
+        const unsigned char c1 = k > 1 ? (unsigned char)s[i + 1] : 0;
+        if ((c == 0xE0 && c1 < 0xA0) || (c == 0xED && c1 >= 0xA0) || (c == 0xF0 && c1 < 0x90) || (c == 0xF4 && c1 >= 0x90)) return false;
         i += k;
     }
     return true;
+}
+// Exactly one JSON object with unique top-level keys (no escapes in keys), followed only by whitespace. ArduinoJson
+// stops at the end of the first value and keeps one of two equal keys; the signed text must not have such twins.
+static bool oneObject(const char* s, size_t n) {
+    size_t i = 0;
+    auto ws = [&] { while (i < n && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) ++i; };
+    ws();
+    if (i >= n || s[i] != '{') return false;
+    const char* keys[8]; size_t lens[8], nk = 0;
+    int depth = 0; bool inStr = false, isKey = false; size_t kStart = 0;
+    for (; i < n; ++i) {
+        const char c = s[i];
+        if (inStr) {
+            if (c == '\\') { if (isKey) return false; ++i; continue; }
+            if (c == '"') {
+                inStr = false;
+                if (isKey) {
+                    if (nk == 8) return false;
+                    for (size_t j = 0; j < nk; ++j) if (lens[j] == i - kStart && !memcmp(keys[j], s + kStart, lens[j])) return false;
+                    keys[nk] = s + kStart; lens[nk++] = i - kStart; isKey = false;
+                }
+            }
+            continue;
+        }
+        if (c == '"') { inStr = true; kStart = i + 1; size_t j = i; while (j > 0 && strchr(" \t\r\n", s[j - 1])) --j;
+                        isKey = depth == 1 && j > 0 && (s[j - 1] == '{' || s[j - 1] == ','); }
+        else if (c == '{' || c == '[') ++depth;
+        else if (c == '}' || c == ']') { if (--depth == 0) { ++i; break; } }
+    }
+    if (depth != 0 || inStr) return false;
+    ws();
+    return i == n;
 }
 static bool copyString(JsonVariantConst v, char* out, size_t cap) {
     if (!v.is<const char*>()) return false;
@@ -217,7 +258,7 @@ static bool copyString(JsonVariantConst v, char* out, size_t cap) {
 }
 const char* parseIndex(const char* json, size_t n, Offer& o) {
     o = Offer();
-    if (!json || !n || n > INDEX_MAX) return "bad-index";
+    if (!json || !n || n > INDEX_MAX || !oneObject(json, n)) return "bad-index";
     JsonDocument d;
     if (deserializeJson(d, json, n) || !d.is<JsonObject>()) return "bad-index";
     JsonObjectConst obj = d.as<JsonObjectConst>();
@@ -288,7 +329,7 @@ const char* install(Transport& t, Sink& sink, Clock now, const Limits& lim, cons
     }
     {
         JsonDocument d;
-        if (deserializeJson(d, (const char*)io, n) || !d.is<JsonObject>() || d.as<JsonObjectConst>().size() != 2 ||
+        if (!oneObject((const char*)io, n) || deserializeJson(d, (const char*)io, n) || !d.is<JsonObject>() || d.as<JsonObjectConst>().size() != 2 ||
             !d["manifest"].is<const char*>() || !d["sig"].is<const char*>()) { t.stop(); return "bad-bundle"; }
         if (strcmp(d["manifest"].as<const char*>(), offer.manifest) || strcmp(d["sig"].as<const char*>(), offer.sig)) {
             t.stop(); return "bundle-mismatch";
@@ -301,7 +342,7 @@ const char* install(Transport& t, Sink& sink, Clock now, const Limits& lim, cons
     while (done < offer.m.size) {
         const size_t want = offer.m.size - done < ioLen ? offer.m.size - done : ioLen;
         if (expired(now, deadline)) { e = "timeout"; break; }
-        const int k = t.read(io, want, lim.stallMs);
+        const int k = t.read(io, want, budget(now, deadline, lim.stallMs));
         if (k == -1) { e = "timeout"; break; }
         if (k <= 0 || size_t(k) > want) { e = "connection-lost"; break; }
         if ((e = sink.write(io, size_t(k)))) break;
@@ -309,6 +350,7 @@ const char* install(Transport& t, Sink& sink, Clock now, const Limits& lim, cons
         if (progress) progress(done, offer.m.size);
     }
     t.stop();
+    if (!e && expired(now, deadline)) e = "timeout";   // the last bytes came after the deadline: nothing is selected
     if (e) { sink.abort(e); return e; }
     if ((e = sink.finish())) { sink.abort(e); return e; }
     return nullptr;

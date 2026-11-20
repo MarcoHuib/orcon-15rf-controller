@@ -6,7 +6,7 @@ carry the markers the device policy looks for; a real release build is used too 
 (the workflow sets it). Needs g++ and the pinned ArduinoJson (.pio/libdeps/*/ArduinoJson) for the device-policy harness,
 and a PlatformIO build for the real bootloader/partition files; whatever is missing is reported as NOT TESTED.
 """
-import hashlib, io, json, os, re, shutil, subprocess, sys, tempfile
+import hashlib, io, json, os, re, shutil, struct, subprocess, sys, tempfile
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -67,6 +67,10 @@ try:
     refused(rc.check_version, '1.2.3', ['1.2.3'], want='already exists')
     refused(rc.check_version, '1.2.3', ['v1.3.0'], want='not newer')
     refused(rc.check_version, '1.2.3', ['v2.0.0', 'v1.0.0'], want='not newer')
+    refused(rc.check_version, '1.2.3', ['1.3.0'], want='not newer')                     # a bare tag counts too (Codex r3)
+    assert rc.check_version('1.2.3', ['v0.0.0', '0.0.0']) == VERSION                    # the reserved 0.0.0 never blocks
+    for bad in ('1.2.1\u0662', '\u0661.2.3', 'v1.\u0662.3'): refused(rc.semver_number, bad, want='invalid')   # non-ASCII digits, as the device
+    assert rc.check_version('1.2.3', ['v1.\u0663.0']) == VERSION                        # nor do they count as a published version
     ok('versions: an existing tag or release, or one not newer than every published version, is refused')
 
     # ---- release source ----------------------------------------------------------------------------------------------
@@ -81,27 +85,44 @@ try:
     listing = ('Platform espressif32 @ 6.7.0 (required: espressif32 @ 6.7.0)\n'
                + '\n'.join(f'├── {l.split()[0]} @ {l.split()[1]} (required: x)' for l in (REPO / 'tools/release/platformio-packages.lock').read_text().splitlines()
                            if l and not l.startswith('#') and not l.startswith('espressif32 ')))
-    rc.check_packages(listing)
-    rc.check_packages(listing + '\n├── tool-openocd-esp32 @ 2.1100.20220706 (required: x)\n├── toolchain-riscv32-esp @ 8.4.0 (required: x)')
-    clean = (REPO / 'test/fixtures/pio-pkg-list-clean.txt')
-    if clean.is_file(): rc.check_packages(clean.read_text())
-    refused(rc.check_packages, listing.replace('3.20016.0', '3.20017.0'), want='differ from the lock')
-    refused(rc.check_packages, listing + '\n├── evil-lib @ 1.0.0 (required: x)', want='extra')
-    refused(rc.check_packages, listing.replace('toolchain-xtensa-esp32', 'toolchain-xtensa-esp-elf'), want='missing')
-    ok('toolchain: the resolved PlatformIO packages must equal the lock (a changed framework or extra library is refused)')
+    listing = '\n'.join(l for l in listing.split('\n') if 'tool-scons' not in l)
+    core = TMP / 'pio-core'; (core / 'packages/tool-scons').mkdir(parents=True)
+    scons = lambda v: (core / 'packages/tool-scons/package.json').write_text(json.dumps({'name': 'tool-scons', 'version': v}))
+    scons('4.41101.0')
+    rc.check_packages(listing, core)
+    rc.check_packages(listing + '\n├── tool-openocd-esp32 @ 2.1100.20220706 (required: x)\n├── toolchain-riscv32-esp @ 8.4.0 (required: x)', core)
+    rc.check_packages((REPO / 'test/fixtures/pio-pkg-list-clean.txt').read_text(), core)
+    refused(rc.check_packages, listing.replace('3.20016.0', '3.20017.0'), core, want='differ from the lock')
+    refused(rc.check_packages, listing + '\n├── evil-lib @ 1.0.0 (required: x)', core, want='extra')
+    refused(rc.check_packages, listing.replace('toolchain-xtensa-esp32', 'toolchain-xtensa-esp-elf'), core, want='missing')
+    scons('4.41102.0'); refused(rc.check_packages, listing, core, want='tool-scons')            # Core's SCons from its range (Codex r3)
+    (core / 'packages/tool-scons/package.json').unlink(); refused(rc.check_packages, listing, core, want='missing')
+    ok('toolchain: the resolved PlatformIO packages and Core\'s SCons must equal the lock (changed framework/SCons or extra library refused)')
     assert rc.build_flags(VERSION, COMMIT) == f'-DFW_VERSION=\\"{COMMIT}\\" -DORCON_RELEASE_VERSION={VERSION}'
     refused(rc.build_flags, VERSION, 'main', want='SHA')
     ok('build flags: exactly the commit and the release number')
 
     # ---- the built image -----------------------------------------------------------------------------------------------
     CTL = b'txpoc packet TX (CONTROL: max 10/min, 60/h)'
-    def image(*parts, version=VERSION, commit=COMMIT, header=b'\xe9\x05\x02\x30', owner=True, signed=True):
-        body = [header + b'\x00' * 60]
+    ELF_SHA = hashlib.sha256((real / 'firmware.elf').read_bytes()).digest()
+    def esp(data, header=b'\xe9\x01\x02\x30', elf_sha=ELF_SHA, segments=None):
+        """A structurally valid ESP32 app image (one segment holding data, the ELF's SHA-256 at file offset 0xB0 as
+        esptool writes it, checksum, appended SHA-256), so the build checks reach the release rules."""
+        seg = bytearray(b'\x00' * 0x90 + elf_sha + data); seg += b'\x00' * (-len(seg) % 4)
+        b = bytearray(header + b'\x00' * 4 + b'\xee' + b'\x00' * 14 + b'\x01')
+        if segments is not None: b[1] = segments
+        b += struct.pack('<II', 0x3F400020, len(seg)) + seg
+        cs = 0xEF
+        for v in seg: cs ^= v
+        b += b'\x00' * (15 - len(b) % 16) + bytes([cs])
+        return bytes(b + hashlib.sha256(b).digest())
+    def image(*parts, version=VERSION, commit=COMMIT, header=b'\xe9\x01\x02\x30', owner=True, signed=True, **kw):
+        body = []
         for p in parts + ((b'ORCON-SIGNED-OTA v1',) if signed else ()) + ((b'ORCON-OWNER-MODEL v1',) if owner else ()):
             body += [p, b'\x00' * 97]
         if version is not None: body += [f'ORCON-RELEASE {version};'.encode(), b'\x00' * 10]
         if commit: body += [commit.encode(), b'\x00' * 10]
-        return b''.join(body) + bytes(range(256)) * 20
+        return esp(b''.join(body) + bytes(range(256)) * 20, header, **kw)
     def build_dir(name, fw, **swap):
         d = TMP / 'build' / name; d.mkdir(parents=True)
         (d / 'firmware.bin').write_bytes(fw)
@@ -115,9 +136,13 @@ try:
     assert {f.name for f in (TMP / 'dist/good').iterdir()} == {'firmware.bin', 'bootloader.bin', 'partitions.bin', 'boot_app0.bin', 'BUILD_INFO.json'}
     ok('build: a control image with the release stamp, commit and pinned boot files is accepted (device policy: control)')
     cases = [
-        ('no-esp-image', image(CTL, header=b'\x00\x05\x02\x30'), {}, 'not an ESP32'),
-        ('wrong-flash-header', image(CTL, header=b'\xe9\x05\x00\x20'), {}, 'flash header'),
-        ('too-large', image(CTL) + b'\xff' * rc.SLOT, {}, 'does not fit'),
+        ('no-esp-image', image(CTL, header=b'\x00\x01\x02\x30'), {}, 'not an ESP32'),
+        ('wrong-flash-header', image(CTL, header=b'\xe9\x01\x00\x20'), {}, 'flash header'),
+        ('too-large', image(CTL, b'\x01' * rc.SLOT), {}, 'does not fit'),
+        ('255-segments', image(CTL, segments=255), {}, 'segments'),
+        ('bad-checksum', (lambda b: b[:200] + bytes([b[200] ^ 1]) + b[201:])(image(CTL)), {}, 'mismatch'),
+        ('trailing-bytes', image(CTL) + b'\x00', {}, 'trailing'),
+        ('other-elf', image(CTL, elf_sha=b'\x11' * 32), {}, 'checked firmware.elf'),
         ('dev-build', image(CTL, version=0), {}, 'release stamp'),
         ('unstamped', image(CTL, version=None), {}, 'release stamp'),
         ('other-version', image(CTL, version=1002004), {}, 'release stamp'),
@@ -165,7 +190,9 @@ try:
     refused(rc.package, D, 'x' * 401, want='400 bytes')
     bundle = rc.package(D, 'Betere WiFi-herverbinding.')
     assert bundle.name == 'orcon-control-v1.2.3-c0ffee1.orconfw'
-    assert rc.verify_package(D, harness) == bundle
+    assert rc.verify_package(D, harness) == bundle and rc.verify_package(D, harness, notes='Betere   WiFi-herverbinding.') == bundle
+    refused(rc.verify_package, D, harness, False, 'Andere notes', want='notes differ')
+    refused(rc.verify_package, D, harness, True, want='factory image')                   # official: the factory image is required
     ok('package: bundle + update index + SHA256SUMS verify (signature; device policy; a board on 1.2.3 sees "up to date"; a newer one refuses)')
     idx = json.loads((D / 'orcon-update.json').read_text())
     assert idx['notes'] == 'Betere WiFi-herverbinding.' and idx['manifest'] == text and len((D / 'orcon-update.json').read_bytes()) <= 2048
@@ -192,6 +219,11 @@ try:
         i = json.loads((d / 'orcon-update.json').read_text()); i['manifest'] = i['manifest'].replace('"size"', '"size" ')
         (d / 'orcon-update.json').write_text(json.dumps(i, separators=(',', ':'))); rc.write_sums(d)
     tampered('index-manifest', index_other, 'device update check refuses the index')
+    def lie(d, **kw):
+        i = json.loads((d / 'BUILD_INFO.json').read_text()); i.update(kw); (d / 'BUILD_INFO.json').write_text(json.dumps(i)); rc.write_sums(d)
+    tampered('build-info-version', lambda d: lie(d, version=9009009, name='9.9.9'), 'does not match the build')
+    tampered('build-info-name', lambda d: lie(d, name='9.9.9'), 'malformed')
+    tampered('build-info-bootloader', lambda d: lie(d, bootloader='0' * 64), 'not the pinned board file')
     tampered('firmware-artifact', lambda d: (d / 'firmware.bin').write_bytes(b'\xe9' + (d / 'firmware.bin').read_bytes()[1:-1] + b'\x01'), 'differs from BUILD_INFO')
     tampered('two-bundles', lambda d: shutil.copy(d / b, d / ('x' + b)), 'exactly one')
     tampered('sums', lambda d: (d / 'SHA256SUMS').write_text('0' * 64 + '  ' + b + '\n'), 'SHA256SUMS')
@@ -207,7 +239,7 @@ try:
     py = next((x for x in pys if subprocess.run([x, '-c', 'import serial'], capture_output=True).returncode == 0), None)
     if esptool and py:
         f = rc.factory(D, esptool, py)
-        assert f.name == 'orcon-control-v1.2.3-c0ffee1-factory-usb.bin' and rc.verify_package(D, harness)
+        assert f.name == 'orcon-control-v1.2.3-c0ffee1-factory-usb.bin' and rc.verify_package(D, harness, official=True)
         ok('factory: one USB image from 0x0 with the verified bootloader, table, boot_app0 and control image; listed in SHA256SUMS')
         for name, mutate in (('corrupt', lambda b: b[:0x10064] + bytes([b[0x10064] ^ 1]) + b[0x10065:]), ('truncated', lambda b: b[:-1]),
                              ('appended', lambda b: b + b'\x00'), ('nvs-not-erased', lambda b: b[:0x9000] + b'\x00' + b[0x9001:])):

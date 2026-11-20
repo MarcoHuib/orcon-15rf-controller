@@ -25,7 +25,7 @@ developer machine; tools/test_release_ci.py runs them with throwaway keys and ta
   notes --dist DIR [--notes TEXT] [--run URL]
                                          release notes (markdown) for the GitHub Release
 """
-import argparse, hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile
+import argparse, hashlib, json, os, re, shutil, stat, struct, subprocess, sys, tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -49,7 +49,7 @@ def fail(msg):
 
 
 # ---- versions (same rule as src/fw_update.cpp parseSemver) ----------------------------------------------------------
-SEMVER = re.compile(r'v?(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})\.(0|[1-9]\d{0,2})')
+SEMVER = re.compile(r'v?(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})', re.ASCII)   # ASCII digits only, as the device
 
 
 def semver_number(text):
@@ -70,12 +70,12 @@ def check_version(text, existing):
     n = semver_number(text)
     tag = 'v' + semver_text(n)
     seen = []
-    for t in existing:
-        t = t.strip()
-        if not t: continue
-        if t == tag or t == semver_text(n): fail(f'{tag} already exists (tag or release): a version is published once; see docs/RELEASES.md "herstel"')
-        m = SEMVER.fullmatch(t)
-        if m and t.startswith('v'): seen.append(semver_number(t))
+    for t in existing:   # tags and release names, with or without "v"; anything else is not a version
+        m = SEMVER.fullmatch(t.strip())
+        if not m: continue
+        x = int(m.group(1)) * 1000000 + int(m.group(2)) * 1000 + int(m.group(3))
+        if x == n: fail(f'{tag} already exists (tag or release): a version is published once; see docs/RELEASES.md "herstel"')
+        if x: seen.append(x)   # 0.0.0 is reserved for development builds and never a release floor
     if seen and n <= max(seen):
         fail(f'{tag} is not newer than the newest published version v{semver_text(max(seen))}: boards refuse older releases')
     return n
@@ -106,9 +106,13 @@ def package_versions(text):
 UNUSED_LOCAL = ('tool-openocd-esp32', 'toolchain-riscv32-esp')   # listed when installed for other work; never used here
 
 
-def check_packages(listing):
+def check_packages(listing, core=None):
+    """The env's packages from `pio pkg list`, plus PlatformIO Core's own SCons (resolved from a range by Core; Codex r3),
+    must equal the lock exactly."""
     lock = {l.strip() for l in (REPO / 'tools/release/platformio-packages.lock').read_text().splitlines() if l.strip() and not l.startswith('#')}
     got = {r for r in package_versions(listing) if r.split()[0] not in UNUSED_LOCAL}
+    scons = Path(core or os.environ.get('PLATFORMIO_CORE_DIR') or Path.home() / '.platformio') / 'packages/tool-scons/package.json'
+    if scons.is_file(): got.add('tool-scons ' + json.loads(scons.read_text())['version'])
     if got != lock: fail(f'PlatformIO packages differ from the lock: extra {sorted(got - lock)}, missing {sorted(lock - got)}')
 
 
@@ -127,10 +131,32 @@ def harness(bin_, *args):
     return r.returncode, (r.stdout.strip().splitlines() or [''])[-1]
 
 
+def check_esp_image(b):
+    """The complete ESP32 application image as the bootloader reads it: header, 1..16 segments, the XOR checksum (seed
+    0xEF) as the last byte of the 16-byte zero padding, the appended SHA-256, nothing after it (Codex r3: the magic
+    byte alone is not enough)."""
+    if len(b) < 24 + 8 + 16 + 32 or b[0] != 0xE9: fail('firmware.bin is not an ESP32 application image')
+    if not 1 <= b[1] <= 16: fail(f'firmware.bin: {b[1]} segments')
+    if int.from_bytes(b[12:14], 'little') != 0 or b[23] != 1: fail('firmware.bin: not an ESP32 image with an appended SHA-256')
+    off, cs = 24, 0xEF
+    for _ in range(b[1]):
+        if off + 8 > len(b): fail('firmware.bin: truncated segment header')
+        ln = struct.unpack_from('<I', b, off + 4)[0]; off += 8
+        if ln % 4 or off + ln > len(b): fail('firmware.bin: bad segment length')
+        for v in b[off:off + ln]: cs ^= v
+        off += ln
+    pos = off + 15 - off % 16
+    if pos + 33 != len(b) or any(b[off:pos]): fail('firmware.bin: bad padding or trailing data')
+    if b[pos] != cs: fail('firmware.bin: segment checksum mismatch')
+    if hashlib.sha256(b[:pos + 1]).digest() != b[pos + 1:]: fail('firmware.bin: appended SHA-256 mismatch')
+
+
 def verify_build(build, version, commit, harness_bin, nm, out):
     build, out = Path(build), Path(out)
     fw = (build / 'firmware.bin').read_bytes()
-    if len(fw) < 1024 or fw[0] != 0xE9: fail('firmware.bin is not an ESP32 application image')
+    check_esp_image(fw)
+    # esptool writes the ELF's SHA-256 into the app description (offset 0xB0): the image IS the checked ELF's.
+    if fw[0xB0:0xD0] != hashlib.sha256((build / 'firmware.elf').read_bytes()).digest(): fail('firmware.bin was not made from the checked firmware.elf')
     if fw[2:4] != FLASH_HDR: fail('firmware.bin flash header is not DIO / 8 MB / 40 MHz (the Heltec V2 layout)')
     if len(fw) > SLOT: fail(f'firmware.bin ({len(fw)} B) does not fit an OTA slot ({SLOT} B)')
     stamps = set(re.findall(rb'ORCON-RELEASE (\d+);', fw))
@@ -173,6 +199,11 @@ def load_info(dist):
     fw = (Path(dist) / 'firmware.bin').read_bytes()
     if info.get('env') != ENV or info.get('variant') != VARIANT: fail('BUILD_INFO is not a control release')
     if sha256(fw) != info['firmware']['sha256'] or len(fw) != info['firmware']['size']: fail('firmware.bin differs from BUILD_INFO.json (artifact changed)')
+    if info.get('name') != semver_text(int(info.get('version', 0))) or not re.fullmatch(r'[0-9a-f]{40}', str(info.get('commit'))):
+        fail('BUILD_INFO version, name or commit malformed')
+    for n in ('bootloader', 'partitions', 'boot_app0'):
+        if info.get(n) != PINNED[n + '.bin'] or sha256((Path(dist) / (n + '.bin')).read_bytes()) != PINNED[n + '.bin']:
+            fail(f'BUILD_INFO / {n}.bin is not the pinned board file')
     return info
 
 
@@ -270,9 +301,12 @@ def write_sums(dist):
     (Path(dist) / 'SHA256SUMS').write_text('\n'.join(rows) + '\n')
 
 
-def verify_package(dist, harness_bin):
+def verify_package(dist, harness_bin, official=False, notes=None):
+    """official: the workflow's run, where the factory image must be there. notes: the dispatch input, which the
+    update index must carry exactly (normalised)."""
     dist = Path(dist)
     info = load_info(dist)
+    check_esp_image((dist / 'firmware.bin').read_bytes())
     bundles = sorted(dist.glob('*.orconfw'))
     if len(bundles) != 1: fail('exactly one .orconfw expected')
     raw = bundles[0].read_bytes()
@@ -300,7 +334,10 @@ def verify_package(dist, harness_bin):
     for p in published(dist):
         if p.name != 'SHA256SUMS' and sums.get(p.name) != sha256(p.read_bytes()): fail(f'SHA256SUMS does not cover {p.name}')
     if set(sums) != {p.name for p in published(dist) if p.name != 'SHA256SUMS'}: fail('SHA256SUMS lists other files')
-    for f in (p for p in published(dist) if p.name.endswith('-factory-usb.bin')):
+    factories = [p for p in published(dist) if p.name.endswith('-factory-usb.bin')]
+    if official and len(factories) != 1: fail('an official release carries exactly one factory image')
+    if notes is not None and json.loads((dist / INDEX).read_text())['notes'] != clean_notes(notes): fail('update index notes differ from the release input')
+    for f in factories:
         if f.name != f"orcon-control-v{info['name']}-{info['commit'][:7]}-factory-usb.bin": fail(f'unexpected factory image name {f.name}')
         check_factory(dist, f)
     return bundles[0]
@@ -360,7 +397,7 @@ def notes_md(dist, notes='', run=''):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     s = p.add_subparsers(dest='cmd', required=True)
-    v = s.add_parser('version'); v.add_argument('semver'); v.add_argument('--tags')
+    v = s.add_parser('version'); v.add_argument('semver'); v.add_argument('--tags'); v.add_argument('--notes', default='')
     so = s.add_parser('source')
     for k in ('repo', 'ref', 'event', 'default-branch', 'sha', 'head'): so.add_argument('--' + k, required=True)
     pk = s.add_parser('packages'); pk.add_argument('--list', required=True)
@@ -372,13 +409,14 @@ def main(argv=None):
         x = s.add_parser(name); x.add_argument('--dist', required=True)
         if name in ('package', 'notes'): x.add_argument('--notes', default='')
         if name == 'notes': x.add_argument('--run', default='')
-        if name == 'verify-package': x.add_argument('--harness', required=True)
+        if name == 'verify-package': x.add_argument('--harness', required=True); x.add_argument('--official', action='store_true'); x.add_argument('--notes')
         if name == 'factory': x.add_argument('--esptool', required=True); x.add_argument('--python', default=sys.executable)
     a = p.parse_args(argv)
     try:
         if a.cmd == 'version':
             tags = Path(a.tags).read_text().splitlines() if a.tags else []
             n = check_version(a.semver, tags)
+            clean_notes(a.notes)   # refused here, before anything is built
             print(f'number={n}\ntag=v{semver_text(n)}\nname={semver_text(n)}')
         elif a.cmd == 'source':
             check_source(a.repo, a.ref, a.event, a.default_branch, a.sha, a.head); print('source OK')
@@ -393,7 +431,7 @@ def main(argv=None):
             sign(a.dist, secret); secret = None
             print('signed (key matches src/ota_pubkey.h; key file removed)')
         elif a.cmd == 'package': print('package OK:', package(a.dist, a.notes).name)
-        elif a.cmd == 'verify-package': print('package VERIFIED:', verify_package(a.dist, a.harness).name)
+        elif a.cmd == 'verify-package': print('package VERIFIED:', verify_package(a.dist, a.harness, a.official, a.notes).name)
         elif a.cmd == 'factory': print('factory image:', factory(a.dist, a.esptool, a.python).name)
         elif a.cmd == 'notes': sys.stdout.write(notes_md(a.dist, a.notes, a.run))
     except (Refused, ValueError, KeyError, OSError) as e:

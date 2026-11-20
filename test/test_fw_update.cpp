@@ -204,6 +204,9 @@ int main() {
     { std::string many = "HTTP/1.1 200 OK\r\n"; for (int i = 0; i < 70; ++i) many += "X-" + std::to_string(i) + ": 1\r\n";
       CHECK(eq(headOf(many + "\r\n"), "bad-response"), "too many headers refused"); }
     { std::string s = "HTTP/1.1 200 OK\r\n"; s += std::string("X: a"); s.push_back('\0'); s += "\r\n\r\n"; CHECK(eq(headOf(s), "bad-response"), "NUL in head refused"); }
+    CHECK(eq(headOf("HTTP/1.1 200 OK\r\nTransfer-Encoding : chunked\r\n\r\n"), "bad-response"), "space before the colon refused (Codex r3)");
+    CHECK(eq(headOf("HTTP/1.1 200 OK\r\nContent Length: 5\r\n\r\n"), "bad-response"), "field name with a space refused");
+    CHECK(eq(headOf("HTTP/1.1 200 OK\r\nX-Ok_1: a\r\n\r\n"), "done"), "token field name accepted");
     CHECK(eq(headOf("HTTP/1.1 302 Found\r\nLocation: " + std::string(PATH_MAX_LEN + 20, 'a') + "\r\n\r\n"), "bad-response"), "overlong location refused");
 
     const std::vector<uint8_t> img = image(5000);
@@ -245,6 +248,14 @@ int main() {
         Mock m; publish(m, man, sig, img, "v1.3.0", badIdx); Offer o; Found f;
         CHECK(eq(runCheck(m, o, f), "bad-index"), "malformed index refused");
     }
+    { const std::string good = indexJson(man, sig);
+      for (const std::string& bad : {good.substr(0, good.size() - 1) + ",\"notes\":\"twee\"}", good + "x", good + "{}",
+                                     "{\"schema\":1,\"manifest\":" + jsonStr(man) + ",\"sig\":\"" + sig + "\",\"\\u006eotes\":\"\"}",
+                                     indexJson(man, sig, "\xed\xa0\x80"), indexJson(man, sig, "\xe0\x80\x80"), indexJson(man, sig, "\xf4\x90\x80\x80")}) {
+          Mock m; publish(m, man, sig, img, "v1.3.0", bad); Offer o; Found f;
+          CHECK(eq(runCheck(m, o, f), "bad-index"), "duplicate key, trailing data, escaped key or invalid UTF-8 refused (Codex r3)");
+      }
+      Mock m; publish(m, man, sig, img, "v1.3.0", good + "\n"); Offer o; Found f; CHECK(!runCheck(m, o, f), "trailing whitespace is fine"); }
     { Mock m; publish(m, man, sig, img, "v1.3.0", indexJson(man, sig, "Ventilatie €")); Offer o; Found f;
       CHECK(!runCheck(m, o, f) && eq(o.notes, "Ventilatie €"), "UTF-8 notes kept"); }
     { Mock m; publish(m, man, sig, img, "v1.3.0", indexJson(man, sig) + std::string(INDEX_MAX, ' ')); Offer o; Found f;
@@ -324,6 +335,15 @@ int main() {
       Offer o; Found f; runCheck(m, o, f);   // refused at the check, but force an install of it anyway
       parseIndex(indexJson(old, fakeSig(old)).c_str(), indexJson(old, fakeSig(old)).size(), o); otap::parseManifest(o.manifest, o.m);
       MockSink s; s.want = img; CHECK(eq(runInstall(m, o, s), "older-release") && !s.activated, "writer refuses a downgrade too"); }
+    // The overall deadline bounds every step: a late last chunk or a late redirect never selects an image (Codex r3).
+    { Mock m; publish(m, man, sig, img, "v1.3.0"); for (auto& r : m.routes) r.second.slowMs = 400;
+      MockSink s; s.want = img; Limits lim; lim.installMs = 4000;
+      CHECK(eq(install(m, s, clockNow, lim, good, nullptr, (uint8_t*)IO, sizeof(IO), U, H), "timeout") && !s.activated, "download past its deadline: nothing selected"); }
+    { Mock m; publish(m, man, sig, img, "v1.3.0");
+      for (auto& r : m.routes) if (r.first.find("/fw") != std::string::npos) r.second.stallAt = int(r.second.bytes.size()) - 1;
+      MockSink s; s.want = img; Limits lim; lim.installMs = 20000; lim.stallMs = 15000; const uint32_t t0 = g_now;
+      CHECK(eq(install(m, s, clockNow, lim, good, nullptr, (uint8_t*)IO, sizeof(IO), U, H), "timeout") && !s.activated && g_now - t0 <= 20000 + 1500,
+            "a stall near the deadline waits only for what is left of it"); }
     { Mock m; publish(m, man, sig, img, "v1.3.0"); for (auto& r : m.routes) r.second.slowMs = 300;
       MockSink s; s.want = img; CHECK(!runInstall(m, good, s) && s.activated, "a slow but steady download completes"); }
 

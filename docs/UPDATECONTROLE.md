@@ -26,6 +26,16 @@ De pagina volgt een installatie vanaf de klik via `/api/ota`, dat geen login nod
 
 Na het schrijven blijft de schrijver dicht tot de herstart (`restart-pending`). Een handmatige upload herstart ook als de browser de verbinding na de laatste byte verbreekt.
 
+**Beide installatieroutes**, de éénknopsupdate en de handmatige upload, blokkeren tot de herstart:
+- RF-bediening, Siri, koppelen en uitlezen;
+- herstarten en WiFi opslaan.
+
+Een installatie start niet terwijl er al een herstart klaarstaat, of terwijl een sessie of RF-commando loopt.
+
+Een afgewezen of afgebroken image wordt onbootbaar gemaakt (eerste sector gewist), zodat de noodscan van de bootloader het nooit start. Restrisico: een stroomstoring tussen de laatste byte en de controles.
+
+Een proefstart die zichzelf niet kan bevestigen, valt na 300 s ook terug.
+
 ## Hoe het werkt
 
 | Stap | Wat | Waar |
@@ -33,7 +43,7 @@ Na het schrijven blijft de schrijver dicht tot de herstart (`restart-pending`). 
 | Controle | `GET https://github.com/MarcoHuib/orcon-15rf-controller/releases/latest/download/orcon-update.json` → doorverwijzing naar `releases/download/vX.Y.Z/…` → doorverwijzing naar `release-assets.githubusercontent.com` | `fw_update.cpp` `check()` |
 | Index | `{"schema":1,"manifest":"<getekend v2-manifest>","sig":"<DER hex>","notes":"…"}`, maximaal 2048 B | `parseIndex()` |
 | Oordeel | Handtekening met de releasesleutel (`ota_pubkey.h`), dan `parseManifest` en: v2, variant `control`, env `heltec_v2_sx1276_control`, past in het slot, **nieuwer** dan de eigen `ORCON_RELEASE_VERSION` | `judge()` |
-| Installatie | Alleen na `POST /api/update/install {"version":N}` met exact het aangeboden nummer: `GET …/releases/download/vX.Y.Z/orcon-control-vX.Y.Z-<commit7>.orconfw`. De URL wordt **op het apparaat** gebouwd uit het getekende manifest; de browser levert nooit een URL of bestand. | `install()` |
+| Installatie | Alleen na `POST /api/update/install {"version":N,"commit":"…"}` met exact de aangeboden build (versie én commit): `GET …/releases/download/vX.Y.Z/orcon-control-vX.Y.Z-<commit7>.orconfw`. De URL wordt **op het apparaat** gebouwd uit het getekende manifest; de browser levert nooit een URL of bestand. | `install()` |
 | Bundel | Eerste regel exact `{"manifest","sig"}` en byte-gelijk aan wat de controle verifieerde; daarna precies `size` bytes. Content-Length moet precies kloppen. | `install()` |
 | Schrijven | Dezelfde controles en schrijfroute als de handmatige upload (`acceptManifest` → `startWrite` → `writeChunk` → `endWrite`): handtekening, manifest, versie, slotgrootte, SHA-256, variant-markers, commit-stempel, ESP-IDF-imagecontrole, dan pas het opstartslot. | `ota_signed.cpp` |
 | Herstart | 3 s na het schrijven, in een proefstart met rollback (bestaande `ota::tick`: bevestigd na 60 s met WiFi en RX, anders terug na 300 s). | `fw_update_esp.cpp`, `ota_signed.cpp` |
@@ -75,7 +85,11 @@ Een controle installeert nooit iets. Installeren vraagt altijd:
   | Content-Length | verplicht, exact |
 
   - Chunked en Content-Encoding worden geweigerd, net als dubbele of tegenstrijdige Content-Length en dubbele Location.
-  - Timeouts: verbinding/handshake 15 s, stilstand 15 s, de hele controle 45 s, de hele download 10 min.
+  - Timeouts: verbinding/handshake 15 s, stilstand 15 s, de hele controle 45 s, de hele download 10 min. Elke stap krijgt hooguit de resterende tijd, en na de deadline wordt niets meer geselecteerd.
+  - Strikt:
+    - veldnamen zijn HTTP-tokens;
+    - de index en de bundelkop zijn precies één JSON-object, zonder dubbele sleutels, escapes in sleutels of naloop;
+    - notes zijn geldige UTF-8 (geen overlong, geen surrogates).
 - **Geheugen.** Alle buffers hebben een vaste grootte, zonder groeiende allocaties.
   - Per taak wordt één context van ~10 KB op de heap gezet en weer vrijgegeven: URL, responskop, I/O-buffer van 4 KB en de aanbieding.
   - De workertaak heeft een stack van 12 KB en wordt na de taak verwijderd.
@@ -95,7 +109,8 @@ Een controle installeert nooit iets. Installeren vraagt altijd:
    - De **firmware-handtekening is daarvan onafhankelijk**. Een aanvaller met zo'n certificaat kan geen firmware installeren; hij kan hooguit een update tegenhouden of een oude, echte release opnieuw aanbieden. Die wordt dan als oud geweigerd.
 2. **CA-wissel door GitHub.** Kiest GitHub een CA buiten deze 9, dan faalt de controle met `tls-failed`. Herstel: een handmatige `.orconfw`-upload met een firmware die de nieuwe root kent.
 3. **Dynamisch geheugen niet gemeten op hardware.** `/api/update` meldt na elke taak:
-   - `mem.heap_min_job` (laagste vrije heap tijdens de taak);
+   - `mem.heap_min_job` (laagste vrije heap tijdens de taak, ook gemeten tijdens de TLS-sessie);
+   - `mem.block_min_job` (kleinste grootste vrije blok);
    - `mem.stack_free_job` (ongebruikte stack).
 
    Meet die bij de hardwarevalidatie.
@@ -120,7 +135,7 @@ Het grootste deel is de TLS-client: mbedTLS SSL/X.509 en WiFiClientSecure. Bootl
 
 | Wat | Soort | Waar |
 |---|---|---|
-| SemVer, URL's, allowlist, kop-limieten, mock-GitHub (redirects, DNS/TLS, 403/429/5xx, stilstand, afbreken, chunked, te groot), index (handtekening, manipulatie, variant, downgrade, slotgrootte), download (afgebroken, OTA-schrijffout, gemanipuleerd image, andere bundel, naloopbytes, vreemde redirect), geheugengrens | host, 134 checks | `test/test_fw_update.cpp` |
+| SemVer, URL's, allowlist, kop-limieten, mock-GitHub (redirects, DNS/TLS, 403/429/5xx, stilstand, afbreken, chunked, te groot), index (handtekening, manipulatie, variant, downgrade, slotgrootte), download (afgebroken, OTA-schrijffout, gemanipuleerd image, andere bundel, naloopbytes, vreemde redirect), geheugengrens | host, 147 checks | `test/test_fw_update.cpp` |
 | Routes: eerst de eigenaarssessie, gepinde TLS-roots, alleen de aangeboden versie (ook als een controle tegelijk afrondt), schrijver dicht na selectie | bronguard + mutaties | `tools/test_tx_poc_safety.py` |
 | Webinterface: controle, bevestiging, alleen het getoonde versienummer, voortgang, herstart, proefstart, bevestigd, rollback, fouten | host (node) | `test/test_setup_page.js` |
 | Geen RF, Siri, koppelen, uitlezen of herstart tijdens een update | host | `test/test_setup_web.cpp` (control) |

@@ -238,10 +238,10 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         ok('install: nothing happens without the owner\'s explicit confirmation');
         dlg.confirm = true; p.$('upInst').click(); await flush();
         const ins = posts.find(c => c.key === 'POST /api/update/install');
-        assert.deepEqual(ins.body, { version: 1003000 }); assert.equal(ins.headers['X-Orcon-Token'], 'tok123');
+        assert.deepEqual(ins.body, { version: 1003000, commit: NEW }); assert.equal(ins.headers['X-Orcon-Token'], 'tok123');
         assert.equal(p.$('upTrack').hidden, false); assert.match(p.$('upM').textContent, /Downloaden en controleren… 0%/); assert.equal(p.$('upInst').hidden, true);
         assert.equal(p.$('upChk').disabled, true); assert.equal(p.$('fwGo').disabled, true);
-        ok('install: only the version that was shown is requested (no URL, no file), with the session token; buttons locked');
+        ok('install: only the build that was shown (version and commit) is requested (no URL, no file), with the session token; buttons locked');
         up = { ...up, progress: { done: 450, total: 1000 } }; await p.refresh(); assert.match(p.$('upM').textContent, /45%/); assert.equal(p.$('upTrack').attrs['aria-valuenow'], '45');
         up = { ...up, phase: 'written', progress: { done: 1000, total: 1000 } }; await p.refresh();
         assert.match(p.$('upM').textContent, /herstart nu in een proefstart/); assert.ok(!/geslaagd/i.test(p.$('upM').textContent));
@@ -252,7 +252,8 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         ota = { ...ota, running_state: 'valid' }; await p.refresh();
         assert.match(p.$('upM').textContent, /Update geslaagd: v1\.3\.0 is bevestigd en actief \(app0\).*terugvaloptie in app1/);
         assert.match(p.$('fwKv').innerHTML, /2222222/);
-        ok('confirmed: success only once the new image reports valid; the previous version stays the fallback slot');
+        await p.refresh(); await p.refresh(); assert.equal(p.location.hash, '#firmware'); assert.match(p.$('upM').textContent, /Update geslaagd/);
+        ok('confirmed: success only once the new image reports valid; the previous version stays the fallback slot; the result stays visible');
     }
     {   // the new image is not confirmed: the controller rolls back by itself, and the page says so
         const OLD = '1111111111111111111111111111111111111111', NEW = '2222222222222222222222222222222222222222';
@@ -273,6 +274,25 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.match(p.$('err').textContent, /teruggekeerd/); assert.ok(!/geslaagd/i.test(p.$('upM').textContent));
         assert.match(p.$('fwKv').innerHTML, /app0 · afgebroken/);
         ok('rollback: reported as such (never as success), the other slot shows the abandoned image');
+    }
+    {   // one /api/ota poll times out during a healthy download: no rollback claim, the page keeps following the download (Codex r3)
+        const OLD = '1'.repeat(40), NEW = '2'.repeat(40);
+        let miss = false, up;
+        const latest = { release: 1003000, name: '1.3.0', commit: NEW, size: 1000, notes: '' };
+        up = { supported: true, phase: 'idle', job: 'check', error: '', checked: true, checked_age_s: 5, found: 'newer', latest, progress: { done: 0, total: 0 } };
+        const p = await page({
+            'GET /api/setup/state': () => [200, state({ ...CAPS_TX, settings_pages: true, update_check: true }, { fw: OLD, setup: { state: 'done', key: true }, profiles: PF([PI(2, 'Washok', '29:000101')], 2) })],
+            'GET /api/state': () => [200, {}],
+            'GET /api/ota': () => { if (miss) throw new Error('timeout'); return [200, { fw: OLD, running: 'app1', running_state: 'valid', next: 'app0', next_state: 'valid', release: 1002003, release_name: '1.2.3', variant: 'control' }]; },
+            'GET /api/update': () => [200, up],
+            'POST /api/update/install': () => { up = { ...up, phase: 'downloading', job: 'install', progress: { done: 100, total: 1000 } }; return [202, up]; },
+        }, 'firmware');
+        assert.match(p.$('fwKv').innerHTML, /Control-firmware \(met zender\)/);
+        dlg.confirm = true; p.$('upInst').click(); await flush();
+        miss = true; await p.refresh(); miss = false;
+        up = { ...up, progress: { done: 600, total: 1000 } }; await p.refresh(); await p.refresh();
+        assert.match(p.$('upM').textContent, /Downloaden en controleren… 60%/); assert.ok(!/teruggekeerd|niets geïnstalleerd/.test(p.$('upM').textContent + p.$('err').textContent));
+        ok('a missed status poll during the download is not reported as a rollback; the download is followed again; control build labelled as such');
     }
     {   // a paused tab misses "written" and the restart (Codex r2): the page still follows by /api/ota, never jumps to the login
         const OLD = '1'.repeat(40), NEW = '2'.repeat(40);

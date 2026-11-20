@@ -36,6 +36,7 @@ struct Status {
     uint32_t checkedAt = 0;        // millis() when it finished
     uint32_t done = 0, total = 0;  // download progress (image bytes)
     uint32_t heapMin = 0;          // lowest free heap seen during the last job (TLS + download)
+    uint32_t blockMin = 0;         // smallest "largest free block" seen then (TLS needs 16 KB in one piece)
     uint32_t stackFree = 0;        // worker stack never used during the last job (bytes)
     bool automatic = false;
 };
@@ -64,6 +65,7 @@ static const uint32_t STACK = 12288;
 // Never the insecure mode: WiFiClientSecure gets the CA buffer, so mbedTLS verification is VERIFY_REQUIRED.
 // Known limit: this core's mbedTLS is built without MBEDTLS_HAVE_TIME_DATE, so certificate dates are not checked
 // (docs/UPDATECONTROLE.md); the release signature check after the download does not depend on TLS.
+static void sampleHeap();
 struct TlsTransport : fwup::Transport {
     WiFiClientSecure c;
     const char* err = "connect-failed";
@@ -77,8 +79,10 @@ struct TlsTransport : fwup::Transport {
         if (!c.connect(ip, 443, host, FWUP_ROOTS_PEM, nullptr, nullptr)) {
             char b[8];
             err = c.lastError(b, sizeof(b)) < -1 ? "tls-failed" : "connect-failed";   // -1: TCP connect or handshake timeout
+            sampleHeap();
             return false;
         }
+        sampleHeap();   // the session's buffers are allocated now
         return true;
     }
     bool write(const char* d, size_t n) override {
@@ -93,7 +97,7 @@ struct TlsTransport : fwup::Transport {
     int read(uint8_t* b, size_t n, uint32_t ms) override {
         // A fast download never starves core 0's idle task (task watchdog: 5 s, panic). Flash erases yield too
         // (CONFIG_SPI_FLASH_YIELD_DURING_ERASE); this does not depend on that.
-        if (millis() - lastYield >= 100) { vTaskDelay(1); lastYield = millis(); }
+        if (millis() - lastYield >= 100) { vTaskDelay(1); lastYield = millis(); sampleHeap(); }
         const uint32_t t0 = millis();
         for (;;) {
             const int a = c.available();
@@ -108,7 +112,10 @@ struct TlsTransport : fwup::Transport {
 };
 
 static uint32_t clockMs() { return millis(); }
-static void sampleHeap() { const uint32_t f = ESP.getFreeHeap(); LOCKED(if (f < g_st.heapMin) g_st.heapMin = f); }
+static void sampleHeap() {   // during the TLS session too (transport connect/read), not only after it (Codex r3)
+    const uint32_t f = ESP.getFreeHeap(), b = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    LOCKED(if (f < g_st.heapMin) g_st.heapMin = f; if (b < g_st.blockMin) g_st.blockMin = b);
+}
 static void progress(uint32_t done, uint32_t total) { sampleHeap(); LOCKED(g_st.done = done; g_st.total = total); }
 
 struct Ctx { fwup::Url u; fwup::Head h; uint8_t io[4096]; fwup::Offer offer; Job job; };
@@ -142,8 +149,8 @@ static void worker(void* arg) {
 }
 
 // Starts a job, or says why not. Loop task only (routes and tick).
-static const char* startJob(Job j, bool automatic, uint32_t want = 0) {
-    if (g_restart) return "restart-pending";
+static const char* startJob(Job j, bool automatic, uint32_t want = 0, const char* commit = "") {
+    if (g_restart || net::restartQueued()) return "restart-pending";
     if (g_running) return "update-busy";
     if (ota::pendingVerify()) return "confirm-running-image-first";
     if (!net::wifiConnected()) return "no-network";
@@ -153,13 +160,14 @@ static const char* startJob(Job j, bool automatic, uint32_t want = 0) {
     c->job = j;
     if (j == Job::Install) {
         bool same = false;
-        LOCKED(c->offer = g_offer; same = g_st.found == fwup::Found::Newer && g_offer.m.version == want);
+        LOCKED(c->offer = g_offer; same = g_st.found == fwup::Found::Newer && g_offer.m.version == want && !strcmp(g_offer.m.commit, commit));
         if (!same || !want) { delete c; return "no-update-offered"; }   // exactly the release the owner approved
         if (const char* e = ota::claimDownload()) { delete c; return e; }
     }
     const uint32_t total = j == Job::Install ? c->offer.m.size : 0;
     LOCKED(g_st.phase = j == Job::Check ? Phase::Checking : Phase::Downloading; g_st.job = j; g_st.err = ""; g_st.done = 0;
-           g_st.total = total; g_st.heapMin = ESP.getFreeHeap(); g_st.automatic = automatic);
+           g_st.total = total; g_st.heapMin = ESP.getFreeHeap(); g_st.blockMin = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+           g_st.automatic = automatic);
     g_install = j == Job::Install; g_running = true; g_finished = false;
     g_lastStart = millis(); g_started = true;
     if (xTaskCreatePinnedToCore(worker, "fw_update", STACK, c, 1, nullptr, 0) != pdPASS) {
@@ -172,7 +180,9 @@ static const char* startJob(Job j, bool automatic, uint32_t want = 0) {
     return nullptr;
 }
 
-bool busy() { return (g_running && g_install) || g_restart; }
+// Either install path: the one-click download or its restart, and a manual upload that writes or waits for its
+// restart (Codex r3: RF commands, Siri, pairing, reads and settings reboots wait for both).
+bool busy() { return (g_running && g_install) || g_restart || ota::writerBusy(); }
 
 // ---- routes ------------------------------------------------------------------------------------------------------------
 static void reply(int code, const String& body) {
@@ -211,8 +221,9 @@ static void statusBody(int code) {
                  (unsigned long)o.m.version, name, o.m.commit, (unsigned long)o.m.size);
         out += b; quoted(out, o.notes); out += "},";
     } else out += "\"latest\":null,";
-    snprintf(b, sizeof(b), "\"progress\":{\"done\":%lu,\"total\":%lu},\"mem\":{\"heap_free\":%lu,\"heap_min_job\":%lu,\"stack_free_job\":%lu}}",
-             (unsigned long)s.done, (unsigned long)s.total, (unsigned long)ESP.getFreeHeap(), (unsigned long)s.heapMin, (unsigned long)s.stackFree);
+    snprintf(b, sizeof(b), "\"progress\":{\"done\":%lu,\"total\":%lu},\"mem\":{\"heap_free\":%lu,\"heap_min_job\":%lu,\"block_min_job\":%lu,"
+             "\"stack_free_job\":%lu}}", (unsigned long)s.done, (unsigned long)s.total, (unsigned long)ESP.getFreeHeap(), (unsigned long)s.heapMin,
+             (unsigned long)s.blockMin, (unsigned long)s.stackFree);
     out += b;
     reply(code, out);
 }
@@ -228,22 +239,24 @@ static void handleCheck() {
     if (const char* e = startJob(Job::Check, false)) { fail(codeOf(e), e); return; }
     statusBody(202);
 }
-// {"version":N}: exactly the release the owner saw in the last check. Nothing else (no URL, no file) is accepted.
+// {"version":N,"commit":"<40 hex>"}: exactly the build the owner saw in the last check (Codex r3: a later check could
+// offer another signed build with the same number). Nothing else (no URL, no file) is accepted.
 static void handleInstall() {
     if (!setupweb::authorize(true)) return;
     const String body = g_s->arg("plain");
     JsonDocument d;
-    if (body.length() > 64 || deserializeJson(d, body) || !d.is<JsonObject>() || d.as<JsonObject>().size() != 1 ||
-        !d["version"].is<uint32_t>()) { fail(400, "bad-json"); return; }
+    if (body.length() > 128 || deserializeJson(d, body) || !d.is<JsonObject>() || d.as<JsonObject>().size() != 2 ||
+        !d["version"].is<uint32_t>() || !d["commit"].is<const char*>() || strlen(d["commit"].as<const char*>()) != 40) { fail(400, "bad-json"); return; }
     const uint32_t want = d["version"].as<uint32_t>();
+    char commit[41]; strcpy(commit, d["commit"].as<const char*>());
     // No worker first: only a worker changes the offer, and only the loop task starts one, so from here on the offer
     // the owner approved cannot be replaced (Codex r2: a check finishing between these lines). startJob checks again.
     if (g_running) { fail(409, "update-busy"); return; }
     bool offered = false;
-    LOCKED(offered = g_st.found == fwup::Found::Newer && g_offer.m.version == want);
+    LOCKED(offered = g_st.found == fwup::Found::Newer && g_offer.m.version == want && !strcmp(g_offer.m.commit, commit));
     if (!offered) { fail(409, "no-update-offered"); return; }
     if (setupweb::busy()) { fail(409, "session-busy"); return; }   // a read/pair session or an RF command in flight
-    if (const char* e = startJob(Job::Install, false, want)) { fail(codeOf(e), e); return; }
+    if (const char* e = startJob(Job::Install, false, want, commit)) { fail(codeOf(e), e); return; }
     setupweb::note(rfcon::INFO, "update: download van de officiële release gestart (op verzoek van de eigenaar)");
     statusBody(202);
 }

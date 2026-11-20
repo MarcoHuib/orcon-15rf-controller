@@ -57,6 +57,7 @@ Bron: `tools/test_ab_transition.py`. Die test schrijft echte otadata-bytes volge
 - Een update gaat altijd naar het slot dat **niet** draait (`esp_ota_get_next_update_partition`). De draaiende b75fad3 wordt bij de eerste release dus nooit overschreven.
 - Het opstartslot verandert pas als het volledige image alle controles heeft doorstaan. Tot dan blijft b75fad3 het opstartimage.
 - Tijdens een proefstart wordt geen nieuwe update gestart, zowel in `ota_signed.cpp` als in `fw_update_esp.cpp`.
+- Een afgewezen image wordt onbootbaar gemaakt (eerste sector gewist). Een proefstart die zich niet kan bevestigen, valt na 300 s terug (Codex r3).
 
 **Wat je verliest, en dat is bewust (opdracht fase 2):** zodra de eerste control-release begint te schrijven, is het RX-only-image in app0 weg, **ook als de update daarna mislukt**. b75fad3 control blijft altijd de werkende terugval.
 

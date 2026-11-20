@@ -23,6 +23,8 @@
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include <esp_ota_ops.h>
+#include <esp_partition.h>
+#include <atomic>
 #include <esp_system.h>
 #include <esp_core_dump.h>
 #include <mbedtls/pk.h>
@@ -52,7 +54,7 @@ static const char* g_err = "none";
 // The one-click update (fw_update_esp.cpp) owns the writer while this is set: its worker task runs the same
 // checks and writes below, and the manual routes refuse with update-busy. Set and cleared via claimDownload()
 // and endDownload() only; the loop task sets it before the worker exists, so the two never race.
-static volatile bool g_dl = false;
+static std::atomic<bool> g_dl{false};   // sequentially consistent: the hand-over orders the writer fields (Codex r3)
 // An image was written, verified and selected for the next boot: until the restart, nothing may open the writer again.
 // esp_ota_get_next_update_partition() would return that very slot, and a second write would erase the selected image
 // (Codex review round 1). Cleared only by the restart.
@@ -173,11 +175,21 @@ static bool ownerConsent() {
     return true;
 #endif
 }
+// The manual install steps: never while the download owns the writer, a selected image waits for its restart, any
+// restart is queued, the running image is still on trial, or a read/pair session or RF command is in flight.
+static const char* manualBlocked() {
+    if (g_dl) return "update-busy";
+    if (g_selected || net::restartQueued()) return "restart-pending";
+    if (g_st == St::Writing) return "update-busy";
+    if (g_pending) return "confirm-running-image-first";
+#if !ORCON_TX_POC || ORCON_WEB_CONTROL
+    if (setupweb::busy()) return "session-busy";
+#endif
+    return nullptr;
+}
 static void handleNonce() {
     if (!ownerConsent()) return;
-    if (g_selected) { fail(409, "restart-pending"); return; }
-    if (g_st == St::Writing || g_dl) { fail(409, "update-busy"); return; }
-    if (g_pending) { fail(409, "confirm-running-image-first"); return; }
+    if (const char* e = manualBlocked()) { fail(409, e); return; }
     uint8_t r[16]; esp_fill_random(r, sizeof(r));
     for (int i = 0; i < 16; ++i) snprintf(g_nonce + 2 * i, 3, "%02x", r[i]);
     g_nonceMs = millis(); g_st = St::Idle; g_err = "none";
@@ -223,9 +235,7 @@ static const char* acceptManifest(const char* text, const char* sig, const char*
 // ---- POST /api/ota/begin {"manifest":"<json text>","sig":"<DER hex>"} --------------------
 static void handleBegin() {
     if (!ownerConsent()) return;
-    if (g_selected) { fail(409, "restart-pending"); return; }
-    if (g_st == St::Writing || g_dl) { fail(409, "update-busy"); return; }
-    if (g_pending) { fail(409, "confirm-running-image-first"); return; }
+    if (const char* e = manualBlocked()) { fail(409, e); return; }
     const String body = g_s->arg("plain");
     if (body.length() > 1024) { fail(413, "body-too-large"); return; }
     JsonDocument d;
@@ -250,8 +260,13 @@ static void handleBegin() {
 }
 
 // ---- the image writer: the inactive slot, hashed and scanned on the way (upload and one-click update) -----------
+// A rejected or interrupted image never stays a complete ESP image in the inactive slot: the bootloader's last-resort
+// scan (when the selected slot fails to load) would start it without the release checks (Codex r3). Erase its first
+// sector. shortcut: a power cut between the last byte and the checks still leaves one; withholding the header until
+// the checks pass would close that too.
+static void scrub() { if (g_part) esp_partition_erase_range(g_part, 0, SPI_FLASH_SEC_SIZE); }
 static void abortWrite(const char* e) {
-    if (g_st == St::Writing) { esp_ota_abort(g_h); mbedtls_sha256_free(&g_sha); }
+    if (g_st == St::Writing) { esp_ota_abort(g_h); mbedtls_sha256_free(&g_sha); scrub(); }
     g_st = St::Failed; g_err = e;
 }
 static const char* startWrite() {   // Ready -> Writing
@@ -277,10 +292,10 @@ static const char* endWrite() {
     if (g_st != St::Writing) return g_err;
     uint8_t hash[32]; mbedtls_sha256_finish_ret(&g_sha, hash); mbedtls_sha256_free(&g_sha);
     const char* e = otap::checkImage(g_m, g_scan, g_rx, hash);
-    if (e) { esp_ota_abort(g_h); g_st = St::Failed; return g_err = e; }
+    if (e) { esp_ota_abort(g_h); scrub(); g_st = St::Failed; return g_err = e; }
     // ESP-IDF validates the image (header, segments, appended SHA-256) before it can boot.
-    if (esp_ota_end(g_h) != ESP_OK) { g_st = St::Failed; return g_err = "image-invalid"; }
-    if (esp_ota_set_boot_partition(g_part) != ESP_OK) { g_st = St::Failed; return g_err = "set-boot-failed"; }
+    if (esp_ota_end(g_h) != ESP_OK) { scrub(); g_st = St::Failed; return g_err = "image-invalid"; }
+    if (esp_ota_set_boot_partition(g_part) != ESP_OK) { scrub(); g_st = St::Failed; return g_err = "set-boot-failed"; }
     g_selected = true;
     g_st = St::Done;
     return nullptr;
@@ -292,6 +307,7 @@ static void handleUploadData() {
     if (up.status == UPLOAD_FILE_START) {
         if (g_dl) return;                              // the download owns the writer: leave its state alone
         if (g_st != St::Ready || !hostOk()) { g_st = St::Failed; g_err = "not-ready"; return; }
+        if (const char* e = manualBlocked()) { g_st = St::Failed; g_err = e; return; }
 #if ORCON_OWNER_MODEL
         if (!setupweb::uploadAuthorized()) { g_st = St::Failed; g_err = "login-required"; return; }
 #endif
@@ -328,6 +344,7 @@ static void handleUploadDone() {
 
 // ---- the one-click update (fw_update_esp.cpp): the same checks and writer as begin + upload, v2 releases only ----
 bool pendingVerify() { return g_pending; }
+bool writerBusy() { return g_dl || g_st == St::Writing || g_selected; }
 uint32_t updateSlotSize() { const esp_partition_t* p = esp_ota_get_next_update_partition(nullptr); return p ? p->size : 0; }
 const char* claimDownload() {   // loop task, before the worker task exists
     if (g_selected) return "restart-pending";
@@ -418,9 +435,11 @@ void tick(uint32_t now) {
     // Healthy = this image runs, joined the network (so a later OTA can still reach it) and
     // the receiver is up. Only then is it confirmed; otherwise the previous image returns.
     const bool healthy = !g_hold && now >= CONFIRM_AFTER_MS && net::wifiConnected() && radio::rxDiagnostics().rxState == 0;
-    if (healthy) {
-        if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) { g_pending = false; note(rfcon::INFO, "nieuwe firmware bevestigd (gezond na %lu s)", (unsigned long)(now / 1000)); }
-    } else if (now >= ROLLBACK_AFTER_MS) {
+    if (healthy && esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
+        g_pending = false; note(rfcon::INFO, "nieuwe firmware bevestigd (gezond na %lu s)", (unsigned long)(now / 1000));
+        return;
+    }
+    if (now >= ROLLBACK_AFTER_MS) {   // unhealthy, or a confirmation that keeps failing: the previous image returns
         note(rfcon::ERR, "nieuwe firmware niet gezond binnen %lu s: terug naar de vorige", (unsigned long)(ROLLBACK_AFTER_MS / 1000));
         delay(200);
         const esp_err_t e = esp_ota_mark_app_invalid_rollback_and_reboot();   // returns only on failure

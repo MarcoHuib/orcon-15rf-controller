@@ -239,6 +239,7 @@ async function poll(){
 clearTimeout(T);let d=10000;
 if(DONE){draw();return}
 // installed: the controller restarts onto the home network
+if(UPF&&UPF.end&&page==='firmware'){draw();return}   // the result stays until the owner leaves this screen
 if(UPF&&!UPF.end){await follow();draw();T=setTimeout(poll,UPF&&!UPF.end?(UPF.stage==='dl'?1000:3000):1000);return}   // an install in progress
 if(!document.hidden)try{
 if(!S||!(page==='read'&&R&&R.status==='active')){const st=await api('/api/setup/state');A=st.auth||null;SU=st.setup||null;
@@ -267,7 +268,7 @@ const sid=R.sid;save(pname)?.then(e=>{if(!e)return;const t=(['offline','session-
 err(say(e)+(t?' Opslaan wordt automatisch opnieuw geprobeerd.':savedSid===sid?'':' Klik op Profiel opslaan om het opnieuw te proberen.'))})}
 }
 async function act(fn){if(busy)return;busy=true;draw();let x;try{await fn();err('')}catch(e){x=e;err(say(e))}busy=false;poll();return x}
-function go(p){if(p==='home'&&S)p=start();if(p==='wizard'&&!INST&&!DONE&&!(S&&PHYS))p=S?'home':'login';if(p==='recover'&&!PHYS)p='login';if(p==='home'&&S)p=start();if(SETP.includes(p)&&S&&S.caps.settings_pages===false)p='control';N=null;SR=null;$('setM').textContent='';$('siriM').textContent='';if(p==='wifinew'){$('wSsid').value=$('wPass').value='';$('wShow').checked=false;$('wPass').type='password'}if(p==='done'&&!fin)p='control';if(p==='new'){$('newName').value=pname;$('newM').textContent=''}if(p!=='read')cStop();page=p;menu=0;sel.clear();pick='';R=P=C=null;rsid=psid=0;$('mins').hidden=true;err('');const h=p==='home'?'':p;if(location.hash.slice(1)!==h)location.hash=h;draw();poll();if(p==='read')cPoll()}
+function go(p){if(UPF&&UPF.end&&p!=='firmware')UPF=null;if(p==='home'&&S)p=start();if(p==='wizard'&&!INST&&!DONE&&!(S&&PHYS))p=S?'home':'login';if(p==='recover'&&!PHYS)p='login';if(p==='home'&&S)p=start();if(SETP.includes(p)&&S&&S.caps.settings_pages===false)p='control';N=null;SR=null;$('setM').textContent='';$('siriM').textContent='';if(p==='wifinew'){$('wSsid').value=$('wPass').value='';$('wShow').checked=false;$('wPass').type='password'}if(p==='done'&&!fin)p='control';if(p==='new'){$('newName').value=pname;$('newM').textContent=''}if(p!=='read')cStop();page=p;menu=0;sel.clear();pick='';R=P=C=null;rsid=psid=0;$('mins').hidden=true;err('');const h=p==='home'?'':p;if(location.hash.slice(1)!==h)location.hash=h;draw();poll();if(p==='read')cPoll()}
 function draw(){
 const c=S?S.caps:{},home=page==='home',pr=page==='pair',rd=page==='read',ct=page==='control',tt=TT[page];
 const ra=!!(rd&&R&&R.status==='active'),rdone=!!(rd&&R&&R.status==='done'),pready=!!(pr&&P&&P.status==='ready');
@@ -369,7 +370,7 @@ const ago=s=>s<0?'Nog niet':s<90?'Zojuist':s<5400?Math.round(s/60)+' minuten gel
 const sv=n=>n?Math.floor(n/1e6)+'.'+Math.floor(n/1e3)%1e3+'.'+n%1e3:'dev';
 function drawFw(c,fw,kv){
 const o=OTA,u=UP,f=UPF,uc=!!(S&&S.caps&&S.caps.update_check),cur=o&&o.fw||fw;
-kv('fwKv',[['Geïnstalleerde versie',(o?(o.release_name&&o.release_name!=='dev'?'v'+o.release_name:'Ontwikkelversie'):'…')+' ('+cur.slice(0,7)+')'],['Volledige commit',cur],['Type',S&&S.rx_only?'RX-only: alleen ontvangen':c.simulated?'Web-control dry-run':c.tx_supported?'Met zender':'–'],
+kv('fwKv',[['Geïnstalleerde versie',(o?(o.release_name&&o.release_name!=='dev'?'v'+o.release_name:'Ontwikkelversie'):'…')+' ('+cur.slice(0,7)+')'],['Volledige commit',cur],['Type',o&&o.variant==='control'?'Control-firmware (met zender)':o&&o.variant==='rf-test'?'RF-testfirmware':c.simulated?'Web-control dry-run':c.tx_supported?'Met zender':S&&S.rx_only?'RX-only: alleen ontvangen':'–'],
 ['Actief geheugenslot',o?o.running+' · '+(SLOT[o.running_state]||o.running_state):'…'],['Ander geheugenslot',o?o.next+' · '+(SLOT[o.next_state]||o.next_state):'…']]);
 const run=!!(u&&(u.phase==='checking'||u.phase==='downloading'||u.phase==='written'))||!!(f&&!f.end);
 $('upP').hidden=!uc;$('fwUp').hidden=!(S&&S.setup);$('fwGo').disabled=busy||run;$('fwUpH').textContent=uc?'Handmatig installeren':'Update installeren';
@@ -404,7 +405,14 @@ if(!o){f.off=1;f.msg=el>240000?'De controller is na 4 minuten nog niet terug. Wa
 else{OTA=o;const isNew=o.fw===f.fw&&o.running!==f.oldSlot;
 if(isNew&&o.running_state==='valid'){f.end=1;f.msg='Update geslaagd: '+f.name+' is bevestigd en actief ('+o.running+'). De vorige versie blijft als terugvaloptie in '+o.next+'. Meld je opnieuw aan om verder te gaan.'}
 else if(isNew){f.trial=1;f.msg='Proefstart: de nieuwe firmware draait en controleert WiFi en radio. Na ongeveer een minuut wordt hij bevestigd; lukt dat niet binnen 5 minuten, dan keert de vorige versie vanzelf terug.'}
-else if(o.running===f.oldSlot&&(f.off||f.trial||el>60000)){f.end=1;f.msg=f.off||f.trial?'De nieuwe firmware is niet bevestigd: de controller is automatisch teruggekeerd naar de vorige versie ('+String(o.fw).slice(0,7)+'). Instellingen en profielen zijn behouden.':'De controller is niet herstart; de update is niet actief. Controleer de firmwarestatus.';err(f.msg)}
+else if(o.running===f.oldSlot&&(f.trial||o.next_state==='invalid'||o.next_state==='aborted')){f.end=1;f.msg='De nieuwe firmware is niet bevestigd: de controller is automatisch teruggekeerd naar de vorige versie ('+String(o.fw).slice(0,7)+'). Instellingen en profielen zijn behouden.';err(f.msg)}
+else if(o.running===f.oldSlot){   // the old image, no sign of a trial: still downloading (a missed poll), restarted early, or no restart
+const u=await getJ('/api/update');
+if(u&&!u._status&&u.job==='install'&&u.phase==='downloading'){UP=u;f.stage='dl';f.off=0;return}
+if(u&&!u._status&&u.job==='install'&&u.phase==='failed'){UPF=null;err(say(u.error));return}
+if(f.off&&(!u||u._status===401)){f.end=1;f.msg='De controller is herstart voordat de update klaar was: er is niets geïnstalleerd. Probeer het opnieuw.';err(f.msg)}
+else if(el>60000&&!(u&&!u._status&&u.phase==='written')){f.end=1;f.msg='De controller is niet herstart; de update is niet actief. Controleer de firmwarestatus.';err(f.msg)}
+else f.msg='Wachten op de herstart…'}
 else f.msg='Wachten op de herstart…'}
 if(!f.end&&el>600000){f.end=1;f.msg='Geen bevestiging binnen 10 minuten. Controleer later de firmwarestatus.';err(f.msg)}}
 function drawSet(c){
@@ -604,7 +612,7 @@ $('upChk').addEventListener('click',()=>act(async()=>{UP=await api('/api/update/
 $('upInst').addEventListener('click',()=>act(async()=>{const l=UP&&UP.found==='newer'&&UP.latest;if(!l)throw'no-update-offered';
 if(!confirm('Officiële firmware v'+l.name+' ('+String(l.commit).slice(0,7)+') installeren?\n\nDe controller downloadt de update van GitHub en controleert handtekening, controlesom, type en versie. Daarna herstart hij en test hij de nieuwe firmware; werkt die niet goed, dan keert hij automatisch terug naar de huidige versie. Tijdens de update is bediening niet mogelijk.'))return;
 const o=await api('/api/ota');UPF={fw:l.commit,name:'v'+l.name,oldSlot:o.running,t0:Date.now(),stage:'dl',msg:'Download wordt gestart…'};
-try{UP=await api('/api/update/install',{version:l.release})}catch(e){UPF=null;throw e}}));
+try{UP=await api('/api/update/install',{version:l.release,commit:l.commit})}catch(e){UPF=null;throw e}}));
 const route=()=>{const h=location.hash.slice(1);return['pair','read','control','welcome','profiles','new','done','login','wizard','recover',...SETP].includes(h)?h:'home'};
 addEventListener('hashchange',()=>{if(route()!==page)go(route())});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){poll();cPoll()}});
