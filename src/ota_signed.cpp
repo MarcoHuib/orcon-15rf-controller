@@ -136,14 +136,15 @@ static void handleInfo() {
     const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
     char b[640], rel[16];
     fwup::semverText(ORCON_RELEASE_VERSION, rel);
+    const bool dl = g_dl;   // the worker owns g_st/g_err while set: report a fixed state then (Codex r4)
     snprintf(b, sizeof(b),
              "{\"signed_ota\":\"%s\",\"fw\":\"%s\",\"variant\":\"%s\",\"running\":\"%s\",\"running_state\":\"%s\","
              "\"boot\":\"%s\",\"next\":\"%s\",\"next_state\":\"%s\",\"slot_size\":%lu,\"session\":\"%s\",\"last_error\":\"%s\","
              "\"nonce_active\":%s,\"hold\":%s,\"owner_model\":\"%s\",\"release\":%lu,\"release_stamp\":\"%s\",\"release_name\":\"%s\"}",
              otap::SIGNED_OTA_MARKER, FW_VERSION, variantOfThisBuild(), run ? run->label : "?", stateName(run),
              boot ? boot->label : "?", next ? next->label : "?", stateName(next), (unsigned long)(next ? next->size : 0),
-             g_dl ? "download" : g_st == St::Idle ? "idle" : g_st == St::Ready ? "ready" : g_st == St::Writing ? "writing" : g_st == St::Done ? "done" : "failed",
-             g_err, g_nonce[0] && millis() - g_nonceMs < NONCE_TTL_MS ? "true" : "false", g_hold ? "true" : "false",
+             dl ? "download" : g_st == St::Idle ? "idle" : g_st == St::Ready ? "ready" : g_st == St::Writing ? "writing" : g_st == St::Done ? "done" : "failed",
+             dl ? "none" : g_err, g_nonce[0] && millis() - g_nonceMs < NONCE_TTL_MS ? "true" : "false", g_hold ? "true" : "false",
              otap::OWNER_MODEL_MARKER, (unsigned long)ORCON_RELEASE_VERSION, RELEASE_STAMP, rel);
     reply(200, b);
 }
@@ -177,9 +178,14 @@ static bool ownerConsent() {
 }
 // The manual install steps: never while the download owns the writer, a selected image waits for its restart, any
 // restart is queued, the running image is still on trial, or a read/pair session or RF command is in flight.
+// The bootloader fell back from the selected slot (e.g. unreadable there): that slot is still the boot choice and is the
+// next update target, so bytes written there could boot before every check passed (Codex r4). Refuse until the
+// running image is the boot choice again (USB recovery, docs/AB_OVERGANG.md).
+static bool bootMismatch() { return esp_ota_get_boot_partition() != esp_ota_get_running_partition(); }
 static const char* manualBlocked() {
     if (g_dl) return "update-busy";
     if (g_selected || net::restartQueued()) return "restart-pending";
+    if (bootMismatch()) return "boot-slot-mismatch";
     if (g_st == St::Writing) return "update-busy";
     if (g_pending) return "confirm-running-image-first";
 #if !ORCON_TX_POC || ORCON_WEB_CONTROL
@@ -264,7 +270,9 @@ static void handleBegin() {
 // scan (when the selected slot fails to load) would start it without the release checks (Codex r3). Erase its first
 // sector. shortcut: a power cut between the last byte and the checks still leaves one; withholding the header until
 // the checks pass would close that too.
-static void scrub() { if (g_part) esp_partition_erase_range(g_part, 0, SPI_FLASH_SEC_SIZE); }
+static void scrub() {
+    if (g_part && esp_partition_erase_range(g_part, 0, SPI_FLASH_SEC_SIZE) != ESP_OK) Serial.println("[ota] could not erase the rejected image's first sector");
+}
 static void abortWrite(const char* e) {
     if (g_st == St::Writing) { esp_ota_abort(g_h); mbedtls_sha256_free(&g_sha); scrub(); }
     g_st = St::Failed; g_err = e;
@@ -305,11 +313,13 @@ static const char* endWrite() {
 static void handleUploadData() {
     HTTPUpload& up = g_s->upload();
     if (up.status == UPLOAD_FILE_START) {
-        if (g_dl) return;                              // the download owns the writer: leave its state alone
-        if (g_st != St::Ready || !hostOk()) { g_st = St::Failed; g_err = "not-ready"; return; }
-        if (const char* e = manualBlocked()) { g_st = St::Failed; g_err = e; return; }
+        // A refused upload is closed here, before its body: the WebServer reads a multipart body without any
+        // time limit, so an idle client could otherwise hold the loop (confirmation, rollback, restarts; Codex r4).
+        if (g_dl) { g_s->client().stop(); return; }   // the download owns the writer: leave its state alone
+        if (g_st != St::Ready || !hostOk()) { g_st = St::Failed; g_err = "not-ready"; g_s->client().stop(); return; }
+        if (const char* e = manualBlocked()) { g_st = St::Failed; g_err = e; g_s->client().stop(); return; }
 #if ORCON_OWNER_MODEL
-        if (!setupweb::uploadAuthorized()) { g_st = St::Failed; g_err = "login-required"; return; }
+        if (!setupweb::uploadAuthorized()) { g_st = St::Failed; g_err = "login-required"; g_s->client().stop(); return; }
 #endif
         if (startWrite()) return;
         note(rfcon::INFO, "OTA schrijft %s (RF-ontvangst kan tijdens het schrijven haperen)", g_part->label);
@@ -348,6 +358,7 @@ bool writerBusy() { return g_dl || g_st == St::Writing || g_selected; }
 uint32_t updateSlotSize() { const esp_partition_t* p = esp_ota_get_next_update_partition(nullptr); return p ? p->size : 0; }
 const char* claimDownload() {   // loop task, before the worker task exists
     if (g_selected) return "restart-pending";
+    if (bootMismatch()) return "boot-slot-mismatch";
     if (g_dl || g_st == St::Writing) return "update-busy";
     if (g_pending) return "confirm-running-image-first";
     g_nonce[0] = 0; g_st = St::Idle; g_err = "none";   // a manual begin that was never uploaded is dropped
@@ -441,14 +452,35 @@ void tick(uint32_t now) {
     }
     if (now >= ROLLBACK_AFTER_MS) {   // unhealthy, or a confirmation that keeps failing: the previous image returns
         note(rfcon::ERR, "nieuwe firmware niet gezond binnen %lu s: terug naar de vorige", (unsigned long)(ROLLBACK_AFTER_MS / 1000));
-        delay(200);
-        const esp_err_t e = esp_ota_mark_app_invalid_rollback_and_reboot();   // returns only on failure
-        // No usable previous otadata entry: restart anyway. The bootloader then marks this
-        // PENDING_VERIFY image ABORTED and starts another bootable slot.
-        Serial.printf("[ota] rollback via otadata failed (0x%x): restart, bootloader aborts this image\n", (unsigned)e);
-        delay(100);
-        esp_restart();
+        rollbackNow();
     }
+}
+
+void rollbackNow() {
+    delay(200);
+    const esp_err_t e = esp_ota_mark_app_invalid_rollback_and_reboot();   // returns only on failure
+    // No usable previous otadata entry: restart anyway. The bootloader then marks this
+    // PENDING_VERIFY image ABORTED and starts another bootable slot.
+    Serial.printf("[ota] rollback via otadata failed (0x%x): restart, bootloader aborts this image\n", (unsigned)e);
+    delay(100);
+    esp_restart();
+}
+
+// The other slot holds a confirmed (valid) image of the ownership model with signed OTA: only then may an unconfirmed
+// image that cannot read the ownership storage return to it by itself (net.cpp; OWNER-10 never allows a return to
+// a pre-owner image). Scans the slot's bytes for the two markers, as the OTA policy does for an upload.
+bool previousIsOwnerModel() {
+    const esp_partition_t* p = esp_ota_get_next_update_partition(nullptr);
+    esp_ota_img_states_t st;
+    if (!p || esp_ota_get_state_partition(p, &st) != ESP_OK || st != ESP_OTA_IMG_VALID) return false;
+    otap::Scanner s("");
+    uint8_t buf[1024];
+    for (uint32_t off = 0; off < p->size && !(s.ownerModel && s.signedOta); off += sizeof(buf)) {
+        if (esp_partition_read(p, off, buf, sizeof(buf)) != ESP_OK) return false;
+        if (off == 0 && buf[0] != 0xE9) return false;
+        s.feed(buf, sizeof(buf));
+    }
+    return s.ownerModel && s.signedOta && !s.legacyOta;
 }
 
 }  // namespace ota

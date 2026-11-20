@@ -155,7 +155,7 @@ bool physicalActive() { return g_physical; }
 uint32_t physicalLeftMs() { return g_physical ? 600000 : 0; }
 }
 #endif
-#if ORCON_UPDATE_CHECK
+#if ORCON_SIGNED_OTA
 namespace updsvc { bool busy() { return g_updBusy; } }
 #endif
 namespace net { bool apMode() { return g_apModeFake; } bool maskIds() { return true; } const char* ipAddr() { return "192.0.2.5"; }

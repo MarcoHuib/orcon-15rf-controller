@@ -50,6 +50,9 @@ try:
         pub = subprocess.run(['openssl', 'ec', '-in', str(k), '-pubout'], capture_output=True, text=True, check=True).stdout
         return k.read_text(), pub
     KEY, PUB = keypair('throwaway')
+    esptool = next(iter(sorted(Path.home().glob('.platformio/packages/tool-esptoolpy*/esptool.py'))), None)
+    pys = [sys.executable] + [str(p) for p in Path.home().glob('Library/Application Support/pipx/venvs/platformio/bin/python')] + [str(p) for p in Path.home().glob('.platformio/penv/bin/python')]
+    py = next((x for x in pys if subprocess.run([x, '-c', 'import serial'], capture_output=True).returncode == 0), None)
     OTHER, _ = keypair('other')
     rc.firmware_pubkey = lambda: PUB        # in this test process only: the throwaway key plays the firmware's key
 
@@ -161,6 +164,12 @@ try:
     for name, fw, swap, why in cases:
         refused(lambda: vb(name, fw, **swap), want=why)
     refused(lambda: vb('version-arg', image(CTL), version=1002004), want='release stamp')
+    if esptool and py and (real / 'firmware.bin').is_file():
+        rc.check_elf_image(real, esptool, py)
+        refused(lambda: rc.check_elf_image(build_dir('not-from-elf', image(CTL)), esptool, py), want='not the image of the checked firmware.elf')
+        ok('build: firmware.bin must equal the pinned esptool\'s image of the checked ELF; a self-consistent image with the ELF hash is refused (Codex r4)')
+    elif os.environ.get('RELEASE_BUILD_DIR'): raise AssertionError('elf2image check: esptool or pyserial missing in the release workflow')
+    else: print('  NOT TESTED: ELF-to-image regeneration (no esptool/pyserial)')
     ok(f'build: {len(cases) + 1} wrong images refused (no ESP image, flash layout, size, version stamp, commit, RX-only/RF-test/dry-run, legacy OTA, boot files)')
 
     # ---- manifest, signature, package ---------------------------------------------------------------------------------------
@@ -229,14 +238,16 @@ try:
     tampered('sums', lambda d: (d / 'SHA256SUMS').write_text('0' * 64 + '  ' + b + '\n'), 'SHA256SUMS')
     def renamed(d): (d / b).rename(d / b.replace('c0ffee1', 'c0ffee2')); rc.write_sums(d)
     tampered('bundle-name', renamed, 'bundle-name')
+    def head_variant(d, make):
+        raw = (d / b).read_bytes(); nl = raw.find(b'\n'); h = json.loads(raw[:nl])
+        (d / b).write_bytes(make(h).encode() + raw[nl:]); rc.write_sums(d)
+    tampered('extra-sig-key', lambda d: head_variant(d, lambda h: '{"manifest":%s,"sig":"00","sig":"%s"}' % (json.dumps(h['manifest']), h['sig'])), 'bad-bundle')
+    tampered('escaped-key', lambda d: head_variant(d, lambda h: '{"\\u006danifest":%s,"sig":"%s"}' % (json.dumps(h['manifest']), h['sig'])), 'bad-bundle')
     ok('verify-package: tampered image, manifest, signature (other key), index, artifact, extra bundle, checksums or name are refused')
     refused(rc.make_manifest, TMP / 'tamper/firmware-artifact', want='differs from BUILD_INFO')
     ok('manifest: an artifact changed after the build check is refused (signing job input)')
 
     # ---- factory image and notes ----------------------------------------------------------------------------------------------
-    esptool = next(iter(sorted(Path.home().glob('.platformio/packages/tool-esptoolpy*/esptool.py'))), None)
-    pys = [sys.executable] + [str(p) for p in Path.home().glob('Library/Application Support/pipx/venvs/platformio/bin/python')] + [str(p) for p in Path.home().glob('.platformio/penv/bin/python')]
-    py = next((x for x in pys if subprocess.run([x, '-c', 'import serial'], capture_output=True).returncode == 0), None)
     if esptool and py:
         f = rc.factory(D, esptool, py)
         assert f.name == 'orcon-control-v1.2.3-c0ffee1-factory-usb.bin' and rc.verify_package(D, harness, official=True)
@@ -250,6 +261,9 @@ try:
     else:
         if os.environ.get('RELEASE_BUILD_DIR'): raise AssertionError('factory image: esptool or pyserial missing in the release workflow')
         print('  NOT TESTED: factory image (no PlatformIO tool-esptoolpy, or no Python with pyserial)')
+    md2 = rc.notes_md(D, '<!-- [x](y) *z*', '')
+    assert 'Update installeren' in md2 and 'wist alle instellingen' in md2 and '<!--' not in md2 and '&#60;&#33;--' in md2 and '*z*' not in md2
+    ok('notes: markup in the owner\'s notes is shown literally, after the instructions; it can hide nothing (Codex r4)')
     md = rc.notes_md(D, 'Betere WiFi-herverbinding.', 'https://github.com/x/y/actions/runs/1')
     assert 'v1.2.3' in md and COMMIT in md and info['firmware']['sha256'] in md and 'Update installeren' in md and 'PRIVATE' not in md
     ok('notes: version, commit, image hash, checksums and the install route; no secrets')

@@ -50,7 +50,7 @@ class Head {
 public:
     // 0: need more, 1: complete (the next byte is body), <0: refused (see error()).
     int push(char c);
-    void reset() { status = 0; length = -1; chunked = encoded = done_ = false; location[0] = 0; n_ = total_ = lines_ = 0; err_ = nullptr; }
+    void reset() { status = 0; length = -1; chunked = encoded = done_ = hasLocation_ = false; location[0] = 0; n_ = total_ = lines_ = 0; err_ = nullptr; }
     int status = 0;
     int64_t length = -1;          // Content-Length; -1 when absent
     bool chunked = false;         // any Transfer-Encoding other than identity (refused for bodies)
@@ -61,9 +61,14 @@ private:
     int line();
     char buf_[PATH_MAX_LEN + 48]; size_t n_ = 0;
     size_t total_ = 0, lines_ = 0;
-    bool done_ = false;
+    bool done_ = false, hasLocation_ = false;
     const char* err_ = nullptr;
 };
+
+// Exactly one flat JSON object as this code writes it: double-quoted keys without escapes (unique), values that are a
+// double-quoted string (standard escapes, never \u0000) or a non-negative integer, then only whitespace. ArduinoJson is
+// more lenient (single quotes, bare keys, later duplicates win); the index and the bundle head must pass this first.
+bool flatObject(const char* s, size_t n);
 
 // ---- the transport (device: WiFiClientSecure with the pinned roots; host tests: a scripted mock) ------------------
 struct Transport {

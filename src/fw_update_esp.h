@@ -10,6 +10,8 @@ namespace updsvc {
 void begin(WebServer& server);   // GET /api/update, POST /api/update/check, POST /api/update/install
 void tick(uint32_t now);         // main loop: automatic checks, console notes, restart after a written update
 bool busy();                     // a check or a download runs: no RF commands, no restarts
+#elif ORCON_SIGNED_OTA
+bool busy();                     // a manual signed upload writes or waits for its restart
 #else
 inline bool busy() { return false; }
 #endif

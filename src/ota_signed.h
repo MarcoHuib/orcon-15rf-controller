@@ -16,5 +16,7 @@ bool writerBusy();               // an image is being written (either path) or w
 uint32_t updateSlotSize();       // size of the slot the next image goes to
 const char* claimDownload();     // loop task: nullptr = the download owns the writer (manual routes say update-busy)
 void endDownload();              // the worker, when done: the writer is free again
+void rollbackNow();              // mark the running (trial) image invalid and restart into the previous one
+bool previousIsOwnerModel();     // the other slot holds a confirmed image of the ownership model
 fwup::Sink& releaseSink();       // signature + manifest + slot checks, then hash/scan/write; finish selects the slot
 }

@@ -1,6 +1,6 @@
 """Local-only phase 1 source guards and negative capability compiles. No hardware/network."""
 from pathlib import Path
-import argparse, configparser, hashlib, re, subprocess
+import argparse, configparser, hashlib, os, re, subprocess
 
 p=argparse.ArgumentParser()
 p.add_argument('--compiler',default='g++')
@@ -304,10 +304,16 @@ def selected_safe(ota):
     for h in ('static const char* startWrite() {','const char* claimDownload() {'):
         assert 'if (g_selected)' in '\n'.join(fn(ota,h).split('\n')[:3]),(h,'must refuse while a selected image waits for the restart')
     assert 'scrub(); }' in fn(ota,'static void abortWrite(') and fn(ota,'static const char* endWrite() {').count('scrub();')==3,'a rejected image is made unbootable'
+    assert 'if (bootMismatch()) return "boot-slot-mismatch";' in mb and 'if (bootMismatch()) return "boot-slot-mismatch";' in fn(ota,'const char* claimDownload() {'),'never write the slot the bootloader still selects (Codex r4)'
+    assert fn(ota,'static void handleUploadData() {').count('g_s->client().stop();')==4,'a refused upload is closed before its body (Codex r4)'
+    nb=fn(Path('src/net.cpp').read_text(),'void begin() {')
+    assert 'const bool backOk = !settled && ota::previousIsOwnerModel();' in nb and 'ota::rollbackNow();' in nb,'an unconfirmed update in the fail-closed boot returns only to an owner-model image (Codex r4)'
 selected_safe(ota_src)
 for name,old,new in (('begin-after-select','    if (g_selected || net::restartQueued()) return "restart-pending";','    if (net::restartQueued()) return "restart-pending";'),
                      ('upload-during-rf','    if (setupweb::busy()) return "session-busy";\n',''),
                      ('rejected-image-kept','esp_ota_abort(g_h); scrub(); g_st','esp_ota_abort(g_h); g_st'),
+                     ('write-selected-slot','    if (bootMismatch()) return "boot-slot-mismatch";\n    if (g_st == St::Writing) return "update-busy";','    if (g_st == St::Writing) return "update-busy";'),
+                     ('refused-upload-kept-open','g_err = "not-ready"; g_s->client().stop(); return;','g_err = "not-ready"; return;'),
                      ('writer-after-select','    if (g_selected) { g_st = St::Failed; return g_err = "restart-pending"; }\n',''),
                      ('download-after-select','    if (g_selected) return "restart-pending";\n',''),
                      ('no-restart-after-select','if (!endWrite()) net::restartSoon();','endWrite();')):
@@ -368,6 +374,7 @@ def yaml_subset(text):
     """A strict reader for the YAML the release workflow uses: block mappings and sequences, '|' block scalars, plain
     and quoted scalars, {} and [a, b] flow items. Anything else (anchors, tags, folded scalars, odd indentation,
     duplicate keys) raises AssertionError: fail closed."""
+    assert not re.search('[\r\x0b\x0c\x85\u2028\u2029]',text.replace('\r\n','\n')),'a line separator other than LF/CRLF (YAML would break the line there)'
     lines=text.replace('\r\n','\n').split('\n')
     ind=lambda l: len(l)-len(l.lstrip(' '))
     def nocomment(s):
@@ -440,20 +447,40 @@ REL_EXPR={'github.event.repository.default_branch','github.event_name','github.r
           'secrets.ORCON_OTA_SIGNING_KEY','steps.check.outputs.firmware_sha256','steps.package.outputs.bundle_name',
           'steps.package.outputs.bundle_sha256','steps.version.outputs.name','steps.version.outputs.number','steps.version.outputs.tag',
           'needs.verify.outputs.sums_sha256','needs.verify.outputs.notes_sha256','steps.final.outputs.sums_sha256','steps.final.outputs.notes_sha256'}
-# Every check the release depends on, as the start of its own script line (a commented-out, negated or "|| true" line
-# does not count: comments, "!", "&&", "||" are refused in the scripts anyway).
-REL_REQUIRED=(('prepare','python3 -I tools/release_ci.py source '),('prepare','python3 -I tools/release_ci.py version '),
-    ('build','python -m pip install --require-hashes --no-deps --only-binary=:all: -r tools/release/requirements-platformio.txt'),
-    ('build','python -m pip check'),('publish','test "$(sha256sum SHA256SUMS | cut -d\' \' -f1)" = "$SUMS"'),
-    ('publish','test "$(sha256sum RELEASE_NOTES.md | cut -d\' \' -f1)" = "$NOTES_SHA"'),('publish','floor="$(awk \''),
-    ('publish','if [ "$floor" -ge "$NUMBER" ]; then'),('build','python -I tools/release_ci.py packages '),('build','bash test/run_host_tests.sh'),
+# Every check the release depends on, as its own exact script line (Codex r4: a prefix let "--help" or a wrapper pass).
+REL_REQUIRED=(('prepare','python3 -I tools/release_ci.py source --repo "$REPO" --ref "$REF" --event "$EVENT" --default-branch "$DEFAULT_BRANCH" --sha "$SHA" --head "$head"'),
+    ('prepare','python3 -I tools/release_ci.py version "$VERSION" --tags "$RUNNER_TEMP/tags.txt" --notes="$NOTES" >> "$GITHUB_OUTPUT"'),
+    ('build','python -m venv "$RUNNER_TEMP/pio-venv"'),
+    ('build','"$RUNNER_TEMP/pio-venv/bin/python" -m pip install --require-hashes --no-deps --only-binary=:all: --force-reinstall -r tools/release/requirements-platformio.txt'),
+    ('build','"$RUNNER_TEMP/pio-venv/bin/python" -m pip check'),('build','echo "$RUNNER_TEMP/pio-venv/bin" >> "$GITHUB_PATH"'),
+    ('build','python -I tools/release_ci.py packages --list "$RUNNER_TEMP/packages.txt"'),('build','bash test/run_host_tests.sh'),
     ('build','python tools/test_tx_poc_safety.py'),('build','git ls-files -z | xargs -0 python tools/check_privacy.py'),
-    ('build','python tools/test_orcon_cli.py'),('build','python -I tools/release_ci.py verify-build '),('build','python -I tools/check_elf_tx.py '),
+    ('build','python tools/test_orcon_cli.py'),
+    ('build','python -I tools/release_ci.py verify-build --build ".pio/build/$RELEASE_ENV" --version "$NUMBER" --commit "$SHA" --harness "$RUNNER_TEMP/harness/release_accept" --nm "$tc/xtensa-esp32-elf-nm" --out dist --esptool "$HOME/.platformio/packages/tool-esptoolpy/esptool.py"'),
+    ('build','python -I tools/check_elf_tx.py ".pio/build/$RELEASE_ENV/firmware.elf" "$RELEASE_ENV" "$tc"'),
     ('build','RELEASE_BUILD_DIR=".pio/build/$RELEASE_ENV" RELEASE_VERSION="$NUMBER" RELEASE_COMMIT="$SHA" python tools/test_release_ci.py'),
     ('build','python -I tools/release_ci.py manifest --dist dist'),('sign','python3 -I tools/release_ci.py manifest --dist dist'),
-    ('sign','python3 -I tools/release_ci.py package --dist dist'),('verify','python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept'),
-    ('publish','sha256sum -c SHA256SUMS'),('publish','gh api -X POST "repos/${REPO}/git/refs"'),
-    ('publish','gh release create "$TAG" --repo "$REPO" --verify-tag --draft'),('publish','gh release edit "$TAG" --repo "$REPO" --draft=false --latest'))
+    ('sign','python3 -I tools/release_ci.py package --dist dist --notes="$NOTES"'),
+    ('verify','python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --official --notes="$NOTES"'),
+    ('publish','test "$(sha256sum SHA256SUMS | cut -d\' \' -f1)" = "$SUMS"'),('publish','test "$(sha256sum RELEASE_NOTES.md | cut -d\' \' -f1)" = "$NOTES_SHA"'),
+    ('publish','sha256sum -c SHA256SUMS'),('publish','if [ "$floor" -ge "$NUMBER" ]; then'),
+    ('publish','gh api -X POST "repos/${REPO}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${SHA}" > /dev/null'),
+    ('publish','printf \'%s\' "$id" | grep -qxE \'[0-9]+\''),
+    ('publish','for f in "${files[@]}" SHA256SUMS; do cmp -- "$f" "$RUNNER_TEMP/check/$f"; done'),
+    ('publish','gh api -X PATCH "repos/${REPO}/releases/${id}" -F draft=false -f make_latest=true -F "body=@RELEASE_NOTES.md" > /dev/null'))
+# The only script lines that start with shell control syntax (a wrapper like "if false; then" around a check, or a block
+# that swallows a failure, is refused); and constructs that could redefine or disable a command.
+REL_CONTROL={'{','} > "$RUNNER_TEMP/tags.txt"','if [ "$floor" -ge "$NUMBER" ]; then','fi',
+             'for f in "${files[@]}" SHA256SUMS; do cmp -- "$f" "$RUNNER_TEMP/check/$f"; done'}
+REL_CTL_START=re.compile(r'(if|then|else|elif|fi|for|while|until|do|done|case|esac|select|function|[{}()])(\s|$|;|\()')
+REL_GH={'gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\'',
+        'gh api -X PATCH "repos/${REPO}/releases/${id}" -F draft=false -f make_latest=true -F "body=@RELEASE_NOTES.md" > /dev/null',
+        'gh api -X POST "repos/${REPO}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${SHA}" > /dev/null',
+        'gh release create "$TAG" --repo "$REPO" --verify-tag --draft --title "Orcon control-firmware $TAG" --notes-file RELEASE_NOTES.md -- "${files[@]}" SHA256SUMS',
+        'gh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/check"',
+        'id="$(gh api --paginate "repos/${REPO}/releases" --jq ".[] | select(.draft and .tag_name == \\"$TAG\\") | .id")"'}   # every GitHub CLI call, exactly as reviewed (Codex r4: an extra 'gh release edit')
+REL_BANNED=('--help','()')
+REL_BANNED_CMD=re.compile(r'(^|[;|]\s*)(alias|shopt|enable|set|unset|trap|eval|source|exec|builtin|command|\.)(\s|$)')
 REL_PERMS={'prepare':{'contents':'read'},'build':{'contents':'read'},'sign':{'contents':'read'},'verify':{'contents':'read'},'publish':{'contents':'write'}}
 REL_NEEDS={'prepare':None,'build':'prepare','sign':['prepare','build'],'verify':['prepare','build','sign'],'publish':['prepare','build','sign','verify']}
 def release_workflow_safe(text):
@@ -484,7 +511,9 @@ def release_workflow_safe(text):
                 assert '${{' not in st['run'],(name,'expression inside a script (use env)',st['run'][:60])
                 for line in st['run'].split('\n'):
                     l=line.strip()
-                    assert not l.startswith(('#','!')) and not any(t in l for t in ('||','&&','set +','exit 0','trap ')),(name,'a script construct that can hide a failure',l)
+                    assert not l.startswith(('#','!')) and not any(t in l for t in ('||','&&','exit 0')+REL_BANNED) and not REL_BANNED_CMD.search(l),(name,'a script construct that can hide a failure',l)
+                    assert not REL_CTL_START.match(l) or l in REL_CONTROL,(name,'shell control line outside the reviewed set',l)
+                    assert not re.search(r'(^|[^\w-])gh\s',l) or l in REL_GH,(name,'GitHub CLI call outside the reviewed set',l)
             for k,v in (st.get('env') or {}).items():
                 assert ('secrets' in str(v).lower())==(name=='sign' and k=='ORCON_OTA_SIGNING_KEY'),(name,'secret outside the signing step',k)
                 assert 'github.token' not in str(v) or (k=='GH_TOKEN' and name in ('prepare','publish')),(name,'token outside prepare/publish',k)
@@ -500,13 +529,12 @@ def release_workflow_safe(text):
         assert bad not in flat,('forbidden in the release workflow',bad)
     lines=lambda job:[l.strip() for st in jobs[job]['steps'] for l in st.get('run','').split('\n')]
     for job,need in REL_REQUIRED:
-        assert any(l.startswith(need) for l in lines(job)),(job,'required check missing',need)
+        assert need in lines(job),(job,'required check missing (as its own exact line)',need)
     assert d['defaults']=={'run':{'shell':'bash'}},('defaults: bash with the -eo pipefail template only',d['defaults'])
     assert all(st.get('shell') is None for j in jobs.values() for st in j['steps']),'no step changes the shell'
-    assert 'python -m pip check' in lines('build'),'pip check, exactly'
     # The publish order: verified inputs, the version floor, the tag, a draft, its files compared byte for byte, then public.
-    order=['sha256sum -c SHA256SUMS','floor="$(awk','gh api -X POST "repos/${REPO}/git/refs"','gh release create "$TAG"','gh release download "$TAG"',
-           'for f in "${files[@]}" SHA256SUMS; do cmp -- "$f" "$RUNNER_TEMP/check/$f"; done','gh release edit "$TAG"']
+    order=['sha256sum -c SHA256SUMS','floor="$(awk','gh api -X POST "repos/${REPO}/git/refs"','gh release create "$TAG"','id="$(gh api','gh release download "$TAG"',
+           'for f in "${files[@]}" SHA256SUMS; do cmp -- "$f" "$RUNNER_TEMP/check/$f"; done','gh api -X PATCH "repos/${REPO}/releases/${id}"']
     pub=lines('publish'); at=[next((i for i,l in enumerate(pub) if l.startswith(o)),-1) for o in order]
     assert -1 not in at and at==sorted(at),('publish steps missing or out of order',dict(zip(order,at)))
     assert any(st.get('run','').strip()=='bash test/run_host_tests.sh' and '-fsanitize=address' in str((st.get('env') or {}).get('CXXFLAGS'))
@@ -515,7 +543,7 @@ def release_workflow_safe(text):
     assert not any('uses' in st and st['uses'].startswith('actions/checkout@') for st in jobs['publish']['steps']),'publish runs no repository code'
     assert all('run' in st or st['uses'].split('@')[0] in ('actions/checkout','actions/upload-artifact','actions/download-artifact') for st in jobs['sign']['steps']),'signing job: no setup actions'
 WORKFLOWS={'heltec-v2-rx-only.yml':'fbf3af64a87be3822246c0adc17ba3cb5ec42c1ddb725c455153f8fd4ea7a563',   # file -> sha256 of the reviewed content
-           'release-control.yml':'4e2cf1c65952faec586a6ea62bbfb2a6b4a046b3d5654b50d93aecc77f26789c'}
+           'release-control.yml':'03ad689f4a9718484e13cbb85e8ff31fdd9246fadc1b07927b3b437c529bf8f8'}
 def workflows_reviewed(files):   # files: name -> bytes (None: not a regular file) of every *.yml/*.yaml entry
     assert sorted(files)==sorted(WORKFLOWS),('workflow files differ from the reviewed list',sorted(files))
     for n,data in files.items():
@@ -529,7 +557,9 @@ workflows_reviewed(wf_files)
 # GitHub runs what is committed: the same check on HEAD's tree (a committed change hidden by the working copy, or a
 # symlinked .github/workflows, is refused too). Only top-level entries count, as for GitHub.
 head=subprocess.run(['git','ls-tree','-z','HEAD','--','.github/workflows/'],capture_output=True)
-if head.returncode: print('NOT TESTED: the committed workflow tree (no git checkout with a HEAD)')
+if head.returncode:   # Codex r4: never pass silently; a source archive without git must say so explicitly
+    assert os.environ.get('ORCON_GUARD_NO_GIT')=='1',('cannot read HEAD\'s committed workflow tree',head.stderr[-200:])
+    print('NOT TESTED: the committed workflow tree (ORCON_GUARD_NO_GIT=1: no git checkout)')
 else:
     tree={}
     for entry in filter(None,head.stdout.split(b'\0')):
@@ -601,10 +631,19 @@ REL_MUTATIONS={
   'token-in-build': rel_mut('          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n','          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n          GH_TOKEN: ${{ github.token }}\n'),
   'other-expression': rel_mut('          VERSION: ${{ inputs.version }}\n','          VERSION: ${{ github.event.inputs.version }}\n'),
   'no-asan': rel_mut('          CXXFLAGS: -fsanitize=address,undefined -fno-sanitize-recover=all\n','          CXXFLAGS: -fsanitize=undefined -fno-sanitize-recover=all\n'),
-  'no-pip-check': rel_mut('          python -m pip check\n',''),
+  'no-pip-check': rel_mut('          "$RUNNER_TEMP/pio-venv/bin/python" -m pip check\n',''),
   'bash-template-dropped': rel_mut('    shell: bash\n','    shell: bash {0}\n'),
   'step-shell': rel_mut('      - name: Host tests\n        env:','      - name: Host tests\n        shell: sh\n        env:'),
-  'pip-check-help': rel_mut('          python -m pip check\n','          python -m pip check --help\n'),
+  'pip-check-help': rel_mut('          "$RUNNER_TEMP/pio-venv/bin/python" -m pip check\n','          "$RUNNER_TEMP/pio-venv/bin/python" -m pip check --help\n'),
+  'if-false-wrapper': rel_mut('          python3 -I tools/release_ci.py verify-package','          if false; then\n          python3 -I tools/release_ci.py verify-package').replace('--official --notes="$NOTES"\n','--official --notes="$NOTES"\n          fi\n',1),
+  'verify-help': rel_mut('--official --notes="$NOTES"\n','--official --notes="$NOTES" --help\n'),
+  'function-redefine': rel_mut('          chmod 0755 harness/release_accept\n','          python3() { :; }\n          chmod 0755 harness/release_accept\n'),
+  'bare-cr': rel_mut('      - name: Host tests\n','      - name: Host tests\n        # Host step configuration\r        if: false\n'),
+  'no-regeneration': rel_mut(' --out dist --esptool "$HOME/.platformio/packages/tool-esptoolpy/esptool.py"\n',' --out dist\n'),
+  'no-force-reinstall': rel_mut(' --force-reinstall -r tools/release',' -r tools/release'),
+  'set-plus-e-after-pipe': rel_mut('          python tools/test_orcon_cli.py\n','          true | set +e\n          python tools/test_orcon_cli.py\n'),
+  'source-script': rel_mut('          python tools/test_orcon_cli.py\n','          . ./evil.sh\n          python tools/test_orcon_cli.py\n'),
+  'promote-current-draft': rel_mut('          gh api -X PATCH "repos/${REPO}/releases/${id}" -F draft=false -f make_latest=true -F "body=@RELEASE_NOTES.md" > /dev/null\n','          gh release edit "$TAG" --repo "$REPO" --draft=false --latest\n'),
   'draft-not-compared': rel_mut('          for f in "${files[@]}" SHA256SUMS; do cmp -- "$f" "$RUNNER_TEMP/check/$f"; done\n',''),
   'no-version-floor': rel_mut('          if [ "$floor" -ge "$NUMBER" ]; then\n','          if [ "$floor" -gt "999999999" ]; then\n'),
   'publish-before-compare': rel_mut('          gh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/check"\n','          gh release edit "$TAG" --repo "$REPO" --draft=false --latest\n          gh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/check"\n'),

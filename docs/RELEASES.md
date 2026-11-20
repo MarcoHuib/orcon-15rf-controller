@@ -39,11 +39,11 @@ De workflow weigert een versie:
 | Job | Rechten | Wat |
 |---|---|---|
 | `prepare` | contents: read | Alleen `workflow_dispatch`, alleen `refs/heads/main` van deze repository, en de commit moet nog de kop van `main` zijn. Versie geldig, nieuw en hoger dan alle tags en releases. |
-| `build` | contents: read | Toolchain:<br>- PlatformIO 6.2.0 met hash-gepinde wheels (`tools/release/requirements-platformio.txt`), daarna `pip check`;<br>- na de build ook SCons van PlatformIO Core exact gelijk aan de lock;<br>- platform en bibliotheken gelijk aan `tools/release/platformio-packages.lock`.<br><br>Tests:<br>- alle host-suites, ook met AddressSanitizer + UndefinedBehaviorSanitizer;<br>- RF-veiligheidsguards en workflowpins;<br>- privacycontrole en CLI-tests.<br><br>Daarna de releasebuild met `FW_VERSION=<commit>` en `ORCON_RELEASE_VERSION=<nummer>`, en de controles daarop:<br>- het volledige ESP-image (segmenten, checksum, appended SHA-256, niets erachter), en de ELF-SHA-256 in het image gelijk aan de gecontroleerde ELF;
+| `build` | contents: read | Toolchain:<br>- PlatformIO 6.2.0 met hash-gepinde wheels (`tools/release/requirements-platformio.txt`) in een eigen venv (`--force-reinstall`), daarna `pip check`;<br>- na de build ook SCons van PlatformIO Core exact gelijk aan de lock;<br>- platform en bibliotheken gelijk aan `tools/release/platformio-packages.lock`.<br><br>Tests:<br>- alle host-suites, ook met AddressSanitizer + UndefinedBehaviorSanitizer;<br>- RF-veiligheidsguards en workflowpins;<br>- privacycontrole en CLI-tests.<br><br>Daarna de releasebuild met `FW_VERSION=<commit>` en `ORCON_RELEASE_VERSION=<nummer>`, en de controles daarop:<br>- het volledige ESP-image (segmenten, checksum, appended SHA-256, niets erachter), en het image byte voor byte gelijk aan wat de vastgepinde esptool van de gecontroleerde ELF maakt;
 - flashlayout;<br>- slotgrootte;<br>- precies één releasestempel;<br>- commitstempel;<br>- control-markers via de **eigen beleidscode van het apparaat** (`test/release_accept.cpp`);<br>- bootloader, partitietabel en `boot_app0` byte-gelijk aan de gepinde bestanden;<br>- rollback-hook en TX-bereikbaarheid in de ELF;<br>- de volledige pipeline-test op de echte build;<br>- factory-image. |
 | `sign` | contents: read, **environment `orcon-production-release`** | De enige job die de sleutel kan lezen, en alleen in één stap:<br>- controleert dat het artifact het geteste image is;<br>- maakt het v2-manifest opnieuw uit dat image;<br>- tekent.<br><br>De sleutel bestaat alleen tijdens die stap, als 0600-bestand in een 0700-map, en wordt altijd verwijderd. Een sleutel die niet bij `src/ota_pubkey.h` hoort, wordt geweigerd. |
 | `verify` | contents: read | Controleert:<br>- de handtekening (openssl, `src/ota_pubkey.h`);<br>- het apparaatbeleid op de bundel;<br>- dat een nieuwere controller de release als *ouder* weigert;<br>- de update-index zoals de controller die leest (*nieuwer* voor een oudere controller, *up-to-date* voor deze versie);<br>- `SHA256SUMS`. |
-| `publish` | **contents: write** | Draait geen repositorycode. Eerst:<br>- `SHA256SUMS` en de releasenotes tegen de digests die `verify` als job-output doorgaf;<br>- daarna `sha256sum -c`;<br>- **opnieuw de versievloer** over alle tags en releases (ook drafts): een herhaalde oude run publiceert nooit een oudere versie als *latest*.<br><br>Dan:<br>1. tag aanmaken via de API (mislukt als hij al bestaat);<br>2. **draft**-release;<br>3. de bestanden terug downloaden en **byte voor byte** vergelijken met de geverifieerde bestanden;<br>4. pas dan publiceren als *latest*. |
+| `publish` | **contents: write** | Draait geen repositorycode. Eerst:<br>- `SHA256SUMS` en de releasenotes tegen de digests die `verify` als job-output doorgaf;<br>- daarna `sha256sum -c`;<br>- **opnieuw de versievloer** over alle tags en releases (ook drafts): een herhaalde oude run publiceert nooit een oudere versie als *latest*.<br><br>Dan:<br>1. tag aanmaken via de API (mislukt als hij al bestaat);<br>2. **draft**-release;<br>3. de bestanden terug downloaden en **byte voor byte** vergelijken met de geverifieerde bestanden;<br>4. pas dan publiceren: het **release-ID** krijgt de geverifieerde releasetekst mee en wordt *latest*. |
 
 Het hele pakket is opnieuw gehasht tussen elke twee jobs (job-outputs). Er draait altijd hooguit één release tegelijk (`concurrency`, nooit halverwege afgebroken).
 
@@ -63,7 +63,7 @@ Het hele pakket is opnieuw gehasht tussen elke twee jobs (job-outputs). Er draai
 - elke verplichte controle als eigen scriptregel;
 - geen escapes in quoted YAML.
 
-Elke eigenschap heeft een mutatie die geweigerd moet worden (57 stuks), waaronder:
+Daarnaast staat elke verplichte controle als exacte eigen regel. Alle besturingsregels (`if`/`for`/`{`) en alle `gh`-aanroepen moeten exact gereviewd zijn. `--help`, functiedefinities, `alias`/`set`/`eval`/`source` en een kale CR zijn verboden. Een onleesbare HEAD-boom laat de controle falen. Elke eigenschap heeft een mutatie die geweigerd moet worden (66 stuks), waaronder:
 - PR- en tagtriggers;
 - secret in een andere job;
 - `secrets: inherit`;
@@ -128,6 +128,12 @@ Staat de sleutel in GitHub, dan geeft een lek daar (plus toegang tot je netwerk)
 Zonder secret faalt de job `sign` met `signing key missing`. Er wordt dan niets gepubliceerd.
 
 **Later (apart akkoord):** een aparte releasesleutel K_rel volgens [RELEASESLEUTEL.md](RELEASESLEUTEL.md), zodat de ontwikkel-Mac en GitHub niet dezelfde sleutel delen.
+
+## Bekende restpunten van het releaseproces (Codex r4, MINOR)
+
+- PlatformIO-pakketten (framework, esptool, SCons) worden van het PlatformIO-register gehaald en pas daarna tegen de lock gecontroleerd. Er zijn nog geen eigen gepinde archief-digests.
+- Tussen de laatste controle en het publiceren kan iemand met schrijfrechten de draft nog wijzigen. Alleen de eigenaar heeft die rechten. Overweeg *immutable releases* in de repository-instellingen.
+- De runner-image, de patchversie van Python 3.12 en `gh`/`g++`/OpenSSL op de runner zijn niet gepind.
 
 ## Herstel bij een mislukte release
 

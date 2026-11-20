@@ -246,10 +246,12 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         up = { ...up, phase: 'written', progress: { done: 1000, total: 1000 } }; await p.refresh();
         assert.match(p.$('upM').textContent, /herstart nu in een proefstart/); assert.ok(!/geslaagd/i.test(p.$('upM').textContent));
         otaDown = true; await p.refresh(); assert.match(p.$('upM').textContent, /herstart…/);
-        otaDown = false; ota = { ...ota, fw: NEW, running: 'app0', running_state: 'pending-verify', next: 'app1', next_state: 'valid' }; await p.refresh();
+        otaDown = false; ota = { ...ota, fw: NEW, running: 'app0', running_state: 'pending-verify', next: 'app1', next_state: 'valid', release: 1003000, release_name: '1.3.0' }; await p.refresh();
         assert.match(p.$('upM').textContent, /Proefstart/); assert.ok(!/geslaagd/i.test(p.$('upM').textContent));
         ok('progress, then restart and trial boot: never called successful before the controller confirms the image');
-        ota = { ...ota, running_state: 'valid' }; await p.refresh();
+        ota = { ...ota, running_state: 'valid', release: 1003001 }; await p.refresh();
+        assert.ok(!/geslaagd/i.test(p.$('upM').textContent));   // same commit, another release number: not this update (Codex r4)
+        ota = { ...ota, release: 1003000 }; await p.refresh();
         assert.match(p.$('upM').textContent, /Update geslaagd: v1\.3\.0 is bevestigd en actief \(app0\).*terugvaloptie in app1/);
         assert.match(p.$('fwKv').innerHTML, /2222222/);
         await p.refresh(); await p.refresh(); assert.equal(p.location.hash, '#firmware'); assert.match(p.$('upM').textContent, /Update geslaagd/);
@@ -267,7 +269,7 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         }, 'firmware');
         assert.match(p.$('upKv').innerHTML, /2 uur geleden/); assert.equal(p.$('upNotes').hidden, true);
         dlg.confirm = true; p.$('upInst').click(); await flush(); await p.refresh();
-        ota = { ...ota, fw: NEW, running: 'app0', running_state: 'pending-verify' }; await p.refresh(); assert.match(p.$('upM').textContent, /Proefstart/);
+        ota = { ...ota, fw: NEW, running: 'app0', running_state: 'pending-verify', release: 1003000 }; await p.refresh(); assert.match(p.$('upM').textContent, /Proefstart/);
         down = true; await p.refresh();
         down = false; ota = { ...ota, fw: OLD, running: 'app1', running_state: 'valid', next: 'app0', next_state: 'aborted' }; await p.refresh();
         assert.match(p.$('upM').textContent, /niet bevestigd: de controller is automatisch teruggekeerd naar de vorige versie \(1111111\)/);
@@ -277,19 +279,20 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
     }
     {   // one /api/ota poll times out during a healthy download: no rollback claim, the page keeps following the download (Codex r3)
         const OLD = '1'.repeat(40), NEW = '2'.repeat(40);
-        let miss = false, up;
+        let miss = false, up, ota_next = 'valid';
         const latest = { release: 1003000, name: '1.3.0', commit: NEW, size: 1000, notes: '' };
         up = { supported: true, phase: 'idle', job: 'check', error: '', checked: true, checked_age_s: 5, found: 'newer', latest, progress: { done: 0, total: 0 } };
         const p = await page({
             'GET /api/setup/state': () => [200, state({ ...CAPS_TX, settings_pages: true, update_check: true }, { fw: OLD, setup: { state: 'done', key: true }, profiles: PF([PI(2, 'Washok', '29:000101')], 2) })],
             'GET /api/state': () => [200, {}],
-            'GET /api/ota': () => { if (miss) throw new Error('timeout'); return [200, { fw: OLD, running: 'app1', running_state: 'valid', next: 'app0', next_state: 'valid', release: 1002003, release_name: '1.2.3', variant: 'control' }]; },
+            'GET /api/ota': () => { if (miss) throw new Error('timeout'); return [200, { fw: OLD, running: 'app1', running_state: 'valid', next: 'app0', next_state: ota_next, release: 1002003, release_name: '1.2.3', variant: 'control' }]; },
             'GET /api/update': () => [200, up],
             'POST /api/update/install': () => { up = { ...up, phase: 'downloading', job: 'install', progress: { done: 100, total: 1000 } }; return [202, up]; },
         }, 'firmware');
         assert.match(p.$('fwKv').innerHTML, /Control-firmware \(met zender\)/);
         dlg.confirm = true; p.$('upInst').click(); await flush();
         miss = true; await p.refresh(); miss = false;
+        ota_next = 'aborted'; miss = true; await p.refresh(); miss = false; await p.refresh();   // a stale abandoned slot from an earlier try (Codex r4)
         up = { ...up, progress: { done: 600, total: 1000 } }; await p.refresh(); await p.refresh();
         assert.match(p.$('upM').textContent, /Downloaden en controleren… 60%/); assert.ok(!/teruggekeerd|niets geïnstalleerd/.test(p.$('upM').textContent + p.$('err').textContent));
         ok('a missed status poll during the download is not reported as a rollback; the download is followed again; control build labelled as such');
@@ -303,7 +306,7 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
             'GET /api/setup/state': () => rebooted ? [200, { fw: NEW, auth: { enabled: true, logged_in: false, password_set: true }, setup: { state: 'done' } }]
                 : [200, state({ ...CAPS_TX, settings_pages: true, update_check: true }, { fw: OLD, setup: { state: 'done', key: true }, profiles: PF([PI(2, 'Washok', '29:000101')], 2) })],
             'GET /api/state': () => [200, {}],
-            'GET /api/ota': () => [200, rebooted ? { fw: NEW, running: 'app0', running_state: valid ? 'valid' : 'pending-verify', next: 'app1', next_state: 'valid' }
+            'GET /api/ota': () => [200, rebooted ? { fw: NEW, running: 'app0', running_state: valid ? 'valid' : 'pending-verify', next: 'app1', next_state: 'valid', release: 1003000 }
                                                : { fw: OLD, running: 'app1', running_state: 'valid', next: 'app0', next_state: 'valid', release: 1002003, release_name: '1.2.3' }],
             'GET /api/update': () => rebooted ? [401, { error: 'login-required' }] : [200, up],
             'POST /api/update/install': () => [202, { ...up, phase: 'downloading', job: 'install', progress: { done: 0, total: 1000 } }],

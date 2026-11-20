@@ -32,8 +32,8 @@ static bool head(const std::vector<uint8_t>& b, std::string& manifest, std::stri
     size_t nl = 0;
     while (nl < b.size() && nl < 1024 && b[nl] != '\n') ++nl;
     if (nl >= b.size() || b[nl] != '\n') return false;
-    JsonDocument d;
-    if (deserializeJson(d, (const char*)b.data(), nl) || !d.is<JsonObject>() || d.as<JsonObjectConst>().size() != 2 ||
+    JsonDocument d;   // the device's own strict grammar first (fw_update.cpp install(); Codex r4)
+    if (!fwup::flatObject((const char*)b.data(), nl) || deserializeJson(d, (const char*)b.data(), nl) || !d.is<JsonObject>() || d.as<JsonObjectConst>().size() != 2 ||
         !d["manifest"].is<const char*>() || !d["sig"].is<const char*>()) return false;
     manifest = d["manifest"].as<const char*>(); sig = d["sig"].as<const char*>(); bodyAt = nl + 1;
     return true;

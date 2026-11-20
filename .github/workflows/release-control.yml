@@ -100,11 +100,13 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
-      - name: PlatformIO, hash-pinned
+      - name: PlatformIO, hash-pinned, in its own environment
         run: |
-          python -m pip install --require-hashes --no-deps --only-binary=:all: -r tools/release/requirements-platformio.txt
-          python -m pip check
-          pio --version
+          python -m venv "$RUNNER_TEMP/pio-venv"
+          "$RUNNER_TEMP/pio-venv/bin/python" -m pip install --require-hashes --no-deps --only-binary=:all: --force-reinstall -r tools/release/requirements-platformio.txt
+          "$RUNNER_TEMP/pio-venv/bin/python" -m pip check
+          echo "$RUNNER_TEMP/pio-venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/pio-venv/bin/pio" --version
       - name: The pinned platform, framework, toolchain and libraries
         run: pio pkg install -e heltec_v2_sx1276 -e "$RELEASE_ENV"
       - name: Host tests
@@ -143,7 +145,7 @@ jobs:
           tc="$HOME/.platformio/packages/toolchain-xtensa-esp32/bin"
           mkdir -p "$RUNNER_TEMP/harness"
           g++ -std=c++17 -O1 -Wall -Wextra -Werror -I src -I ".pio/libdeps/$RELEASE_ENV/ArduinoJson/src" test/release_accept.cpp src/fw_update.cpp src/ota_policy.cpp -o "$RUNNER_TEMP/harness/release_accept"
-          python -I tools/release_ci.py verify-build --build ".pio/build/$RELEASE_ENV" --version "$NUMBER" --commit "$SHA" --harness "$RUNNER_TEMP/harness/release_accept" --nm "$tc/xtensa-esp32-elf-nm" --out dist
+          python -I tools/release_ci.py verify-build --build ".pio/build/$RELEASE_ENV" --version "$NUMBER" --commit "$SHA" --harness "$RUNNER_TEMP/harness/release_accept" --nm "$tc/xtensa-esp32-elf-nm" --out dist --esptool "$HOME/.platformio/packages/tool-esptoolpy/esptool.py"
           python -I tools/check_elf_tx.py ".pio/build/$RELEASE_ENV/firmware.elf" "$RELEASE_ENV" "$tc"
           RELEASE_BUILD_DIR=".pio/build/$RELEASE_ENV" RELEASE_VERSION="$NUMBER" RELEASE_COMMIT="$SHA" python tools/test_release_ci.py
           python -I tools/release_ci.py factory --dist dist --esptool "$HOME/.platformio/packages/tool-esptoolpy/esptool.py"
@@ -320,8 +322,10 @@ jobs:
           cd publish
           mapfile -t files < <(cut -d' ' -f3- SHA256SUMS)
           gh release create "$TAG" --repo "$REPO" --verify-tag --draft --title "Orcon control-firmware $TAG" --notes-file RELEASE_NOTES.md -- "${files[@]}" SHA256SUMS
+          id="$(gh api --paginate "repos/${REPO}/releases" --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id")"
+          printf '%s' "$id" | grep -qxE '[0-9]+'
           mkdir -p "$RUNNER_TEMP/check"
           gh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/check"
           cmp <(ls "$RUNNER_TEMP/check" | sort) <( (printf '%s\n' "${files[@]}"; echo SHA256SUMS) | sort)
           for f in "${files[@]}" SHA256SUMS; do cmp -- "$f" "$RUNNER_TEMP/check/$f"; done
-          gh release edit "$TAG" --repo "$REPO" --draft=false --latest
+          gh api -X PATCH "repos/${REPO}/releases/${id}" -F draft=false -f make_latest=true -F "body=@RELEASE_NOTES.md" > /dev/null

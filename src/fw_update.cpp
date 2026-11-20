@@ -121,8 +121,8 @@ int Head::line() {
     } else if (ieq(buf_, "Content-Encoding")) {
         if (!ieq(v, "identity")) encoded = true;
     } else if (ieq(buf_, "Location")) {
-        if (strlen(v) >= sizeof(location) || location[0]) { err_ = "bad-response"; return -1; }
-        strcpy(location, v);
+        if (strlen(v) >= sizeof(location) || hasLocation_) { err_ = "bad-response"; return -1; }   // even an empty first one
+        strcpy(location, v); hasLocation_ = true;
     }
     n_ = 0;
     return 0;
@@ -216,35 +216,49 @@ static bool textOk(const char* s, size_t n) {   // printable, well-formed UTF-8,
     }
     return true;
 }
-// Exactly one JSON object with unique top-level keys (no escapes in keys), followed only by whitespace. ArduinoJson
-// stops at the end of the first value and keeps one of two equal keys; the signed text must not have such twins.
-static bool oneObject(const char* s, size_t n) {
+bool flatObject(const char* s, size_t n) {
     size_t i = 0;
     auto ws = [&] { while (i < n && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) ++i; };
-    ws();
-    if (i >= n || s[i] != '{') return false;
-    const char* keys[8]; size_t lens[8], nk = 0;
-    int depth = 0; bool inStr = false, isKey = false; size_t kStart = 0;
-    for (; i < n; ++i) {
-        const char c = s[i];
-        if (inStr) {
-            if (c == '\\') { if (isKey) return false; ++i; continue; }
-            if (c == '"') {
-                inStr = false;
-                if (isKey) {
-                    if (nk == 8) return false;
-                    for (size_t j = 0; j < nk; ++j) if (lens[j] == i - kStart && !memcmp(keys[j], s + kStart, lens[j])) return false;
-                    keys[nk] = s + kStart; lens[nk++] = i - kStart; isKey = false;
-                }
+    auto str = [&](bool key, size_t& from, size_t& len) {   // a "..." string; keys: no escapes
+        if (i >= n || s[i] != '"') return false;
+        from = ++i;
+        while (i < n && s[i] != '"') {
+            const unsigned char c = (unsigned char)s[i];
+            if (c < 0x20) return false;
+            if (c == '\\') {
+                if (key || i + 1 >= n) return false;
+                const char e = s[i + 1];
+                if (e == 'u') { if (i + 5 >= n || !strncmp(s + i + 2, "0000", 4)) return false;
+                                for (int k = 2; k < 6; ++k) if (!isxdigit((unsigned char)s[i + k])) return false; i += 6; continue; }
+                if (!strchr("\"\\/bfnrt", e)) return false;
+                i += 2; continue;
             }
-            continue;
+            ++i;
         }
-        if (c == '"') { inStr = true; kStart = i + 1; size_t j = i; while (j > 0 && strchr(" \t\r\n", s[j - 1])) --j;
-                        isKey = depth == 1 && j > 0 && (s[j - 1] == '{' || s[j - 1] == ','); }
-        else if (c == '{' || c == '[') ++depth;
-        else if (c == '}' || c == ']') { if (--depth == 0) { ++i; break; } }
+        if (i >= n) return false;
+        len = i - from; ++i;
+        return true;
+    };
+    const char* keys[8]; size_t lens[8], nk = 0;
+    ws();
+    if (i >= n || s[i++] != '{') return false;
+    ws();
+    if (i < n && s[i] == '}') { ++i; ws(); return i == n; }
+    for (;;) {
+        size_t f, l;
+        if (!str(true, f, l) || nk == 8) return false;
+        for (size_t j = 0; j < nk; ++j) if (lens[j] == l && !memcmp(keys[j], s + f, l)) return false;
+        keys[nk] = s + f; lens[nk++] = l;
+        ws();
+        if (i >= n || s[i++] != ':') return false;
+        ws();
+        if (i < n && s[i] == '"') { if (!str(false, f, l)) return false; }
+        else { const size_t d = i; while (i < n && isdigit((unsigned char)s[i])) ++i; if (i == d || i - d > 10) return false; }
+        ws();
+        if (i < n && s[i] == ',') { ++i; ws(); continue; }
+        if (i < n && s[i] == '}') { ++i; break; }
+        return false;
     }
-    if (depth != 0 || inStr) return false;
     ws();
     return i == n;
 }
@@ -258,7 +272,7 @@ static bool copyString(JsonVariantConst v, char* out, size_t cap) {
 }
 const char* parseIndex(const char* json, size_t n, Offer& o) {
     o = Offer();
-    if (!json || !n || n > INDEX_MAX || !oneObject(json, n)) return "bad-index";
+    if (!json || !n || n > INDEX_MAX || !flatObject(json, n)) return "bad-index";
     JsonDocument d;
     if (deserializeJson(d, json, n) || !d.is<JsonObject>()) return "bad-index";
     JsonObjectConst obj = d.as<JsonObjectConst>();
@@ -298,6 +312,7 @@ const char* check(Transport& t, Verify verify, Clock now, const Limits& lim, con
     if (e) return !strcmp(e, "not-found") ? "no-release" : e;   // nothing published yet, or no index in the newest release
     e = readExact(t, (uint8_t*)io, len, now, deadline, lim.stallMs);
     t.stop();
+    if (!e && expired(now, deadline)) e = "timeout";   // late but complete: still nothing is offered (Codex r4)
     if (e) return e;
     io[len] = 0;
     if ((e = parseIndex(io, len, offer))) return e;
@@ -329,9 +344,10 @@ const char* install(Transport& t, Sink& sink, Clock now, const Limits& lim, cons
     }
     {
         JsonDocument d;
-        if (!oneObject((const char*)io, n) || deserializeJson(d, (const char*)io, n) || !d.is<JsonObject>() || d.as<JsonObjectConst>().size() != 2 ||
+        if (!flatObject((const char*)io, n) || deserializeJson(d, (const char*)io, n) || !d.is<JsonObject>() || d.as<JsonObjectConst>().size() != 2 ||
             !d["manifest"].is<const char*>() || !d["sig"].is<const char*>()) { t.stop(); return "bad-bundle"; }
-        if (strcmp(d["manifest"].as<const char*>(), offer.manifest) || strcmp(d["sig"].as<const char*>(), offer.sig)) {
+        if (d["manifest"].as<JsonString>().size() != strlen(offer.manifest) || d["sig"].as<JsonString>().size() != strlen(offer.sig) ||
+            strcmp(d["manifest"].as<const char*>(), offer.manifest) || strcmp(d["sig"].as<const char*>(), offer.sig)) {   // lengths: no NUL suffix
             t.stop(); return "bundle-mismatch";
         }
     }

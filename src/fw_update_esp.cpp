@@ -22,6 +22,7 @@
 #include <ArduinoJson.h>
 #include <esp_heap_caps.h>
 #include <new>
+#include <atomic>
 
 namespace updsvc {
 
@@ -43,11 +44,12 @@ struct Status {
 static portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
 static Status g_st;
 static fwup::Offer g_offer;               // the release of the last successful check (found != None)
-static volatile bool g_running = false;    // a worker task exists
-static volatile bool g_finished = false;   // the worker finished a job; tick() reports it
-static volatile bool g_install = false;    // the running job is an install (RF commands wait; a check does not block them)
-static volatile bool g_restart = false;    // an image was written: busy until the restart into its trial boot
-static volatile uint32_t g_writtenAt = 0;
+// Shared with the worker task: sequentially consistent atomics (Codex r4).
+static std::atomic<bool> g_running{false};    // a worker task exists
+static std::atomic<bool> g_finished{false};   // the worker finished a job; tick() reports it
+static std::atomic<bool> g_install{false};    // the running job is an install (RF commands wait; a check does not block them)
+static std::atomic<bool> g_restart{false};    // an image was written: busy until the restart into its trial boot
+static std::atomic<uint32_t> g_writtenAt{0};  // stored before g_restart
 static WebServer* g_s = nullptr;
 static uint32_t g_lastStart = 0;
 static bool g_started = false, g_restartSent = false;
@@ -72,10 +74,13 @@ struct TlsTransport : fwup::Transport {
     bool connect(const char* host, uint32_t ms) override {
         c.stop();
         if (!net::wifiConnected()) { err = "no-network"; return false; }
+        const uint32_t t0 = millis();
         IPAddress ip;
         if (!WiFi.hostByName(host, ip) || ip == IPAddress((uint32_t)0)) { err = "dns-failed"; return false; }
-        c.setHandshakeTimeout((ms + 999) / 1000);
-        c.setTimeout((ms + 999) / 1000);
+        const uint32_t used = millis() - t0;   // DNS has its own wait: what is left goes to TCP and TLS (Codex r4)
+        if (used + 1000 > ms) { err = "timeout"; return false; }
+        c.setHandshakeTimeout((ms - used) / 1000);
+        c.setTimeout((ms - used) / 1000);
         if (!c.connect(ip, 443, host, FWUP_ROOTS_PEM, nullptr, nullptr)) {
             char b[8];
             err = c.lastError(b, sizeof(b)) < -1 ? "tls-failed" : "connect-failed";   // -1: TCP connect or handshake timeout
@@ -289,7 +294,8 @@ void tick(uint32_t now) {
         }
     }
     if (g_restart) {   // stays busy until the restart: no RF command and no new job in between
-        if (!g_restartSent && now - g_writtenAt >= RESTART_AFTER_WRITE_MS) { g_restartSent = true; net::restartSoon(); }
+        (void)now;   // sampled after g_restart was seen: g_writtenAt is never in the "future" (Codex r4)
+        if (!g_restartSent && millis() - g_writtenAt.load() >= RESTART_AFTER_WRITE_MS) { g_restartSent = true; net::restartSoon(); }
         return;
     }
     if (g_running) return;
@@ -301,4 +307,9 @@ void tick(uint32_t now) {
 }
 
 }  // namespace updsvc
+#elif ORCON_SIGNED_OTA
+// Builds without the update check still have the manual signed upload: the same interlock (Codex r4).
+#include "fw_update_esp.h"
+#include "ota_signed.h"
+namespace updsvc { bool busy() { return ota::writerBusy(); } }
 #endif  // ORCON_UPDATE_CHECK

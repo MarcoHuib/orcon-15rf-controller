@@ -151,12 +151,26 @@ def check_esp_image(b):
     if hashlib.sha256(b[:pos + 1]).digest() != b[pos + 1:]: fail('firmware.bin: appended SHA-256 mismatch')
 
 
-def verify_build(build, version, commit, harness_bin, nm, out):
+def check_elf_image(build, esptool, python=sys.executable):
+    """firmware.bin is exactly what the pinned esptool makes of the checked firmware.elf with the release settings
+    (Codex r4: the ELF hash field alone does not bind the segments, addresses and entry point)."""
+    build = Path(build)
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / 'regen.bin'
+        r = subprocess.run([python, str(esptool), '--chip', 'esp32', 'elf2image', '--flash_mode', 'dio', '--flash_freq', '40m',
+                            '--flash_size', '8MB', '--elf-sha256-offset', '0xb0', '-o', str(out), str(build / 'firmware.elf')],
+                           capture_output=True, text=True)
+        if r.returncode or not out.is_file(): fail('elf2image failed: ' + (r.stdout + r.stderr)[-300:])
+        if out.read_bytes() != (build / 'firmware.bin').read_bytes(): fail('firmware.bin is not the image of the checked firmware.elf')
+
+
+def verify_build(build, version, commit, harness_bin, nm, out, esptool=None, python=sys.executable):
     build, out = Path(build), Path(out)
     fw = (build / 'firmware.bin').read_bytes()
     check_esp_image(fw)
     # esptool writes the ELF's SHA-256 into the app description (offset 0xB0): the image IS the checked ELF's.
     if fw[0xB0:0xD0] != hashlib.sha256((build / 'firmware.elf').read_bytes()).digest(): fail('firmware.bin was not made from the checked firmware.elf')
+    if esptool: check_elf_image(build, esptool, python)   # the workflow always passes it
     if fw[2:4] != FLASH_HDR: fail('firmware.bin flash header is not DIO / 8 MB / 40 MHz (the Heltec V2 layout)')
     if len(fw) > SLOT: fail(f'firmware.bin ({len(fw)} B) does not fit an OTA slot ({SLOT} B)')
     stamps = set(re.findall(rb'ORCON-RELEASE (\d+);', fw))
@@ -379,13 +393,15 @@ def notes_md(dist, notes='', run=''):
     b = next(dist.glob('*.orconfw')).name
     fac = [p.name for p in published(dist) if p.name.endswith('-factory-usb.bin')]
     lines = [f"Orcon 15RF-controller voor de Heltec WiFi LoRa 32 V2: control-firmware v{info['name']}.", '']
-    if clean_notes(notes): lines += [clean_notes(notes), '']
+    note = clean_notes(notes)
     lines += ['**Installeren (bestaande controller):** open de webinterface, *Systeem → Firmware*, en klik op *Update installeren* zodra de controller deze versie meldt. '
               f'Of download `{b}` en kies hem bij *Handmatig installeren*. De controller controleert handtekening, controlesom, type en versie, '
               'installeert in het andere geheugenslot en keert automatisch terug naar de vorige versie als de nieuwe niet binnen 5 minuten gezond opstart.', '']
     if fac:
         lines += [f'**Nieuwe controller (eerste installatie via USB):** `{fac[0]}` vanaf adres 0x0. Dit wist alle instellingen (WiFi, wachtwoord, profielen); '
                   'nooit gebruiken voor een controller die al in gebruik is.', '']
+    if note:   # the owner's text, never markup: it must not hide the instructions above (Codex r4)
+        lines += ['**Notities:** ' + ''.join(f'&#{ord(c)};' if c in '&<>"\'\\`*_[]#|~!' else c for c in note), '']
     lines += ['| | |', '|---|---|', f"| Versie | v{info['name']} (releasenummer {info['version']}) |", f"| Commit | `{info['commit']}` |",
               f"| Variant | `{ENV}` (control, met RF-zender) |", f"| Image | {info['firmware']['size']} B, SHA-256 `{info['firmware']['sha256']}` |", '',
               'Gebouwd, getest en ondertekend door de releaseworkflow' + (f' ({run})' if run else '') + '. Niet op hardware getest door de workflow: '
@@ -403,7 +419,7 @@ def main(argv=None):
     pk = s.add_parser('packages'); pk.add_argument('--list', required=True)
     fl = s.add_parser('flags'); fl.add_argument('--version', type=int, required=True); fl.add_argument('--commit', required=True)
     vb = s.add_parser('verify-build')
-    for k in ('build', 'commit', 'harness', 'nm', 'out'): vb.add_argument('--' + k, required=True)
+    for k in ('build', 'commit', 'harness', 'nm', 'out', 'esptool'): vb.add_argument('--' + k, required=True)
     vb.add_argument('--version', type=int, required=True)
     for name in ('manifest', 'sign', 'package', 'verify-package', 'factory', 'notes'):
         x = s.add_parser(name); x.add_argument('--dist', required=True)
@@ -423,7 +439,7 @@ def main(argv=None):
         elif a.cmd == 'packages': check_packages(Path(a.list).read_text()); print('PlatformIO packages match the lock')
         elif a.cmd == 'flags': print(build_flags(a.version, a.commit))
         elif a.cmd == 'verify-build':
-            i = verify_build(a.build, a.version, a.commit, a.harness, a.nm, a.out)
+            i = verify_build(a.build, a.version, a.commit, a.harness, a.nm, a.out, a.esptool)
             print(f"build OK: {ENV} v{i['name']} {a.commit[:7]} {i['firmware']['size']} B sha256 {i['firmware']['sha256']}")
         elif a.cmd == 'manifest': make_manifest(a.dist); print('manifest OK')
         elif a.cmd == 'sign':

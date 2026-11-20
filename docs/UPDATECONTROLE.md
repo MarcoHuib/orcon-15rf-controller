@@ -36,6 +36,16 @@ Een afgewezen of afgebroken image wordt onbootbaar gemaakt (eerste sector gewist
 
 Een proefstart die zichzelf niet kan bevestigen, valt na 300 s ook terug.
 
+Ook op images zonder updatecontrole (RX-only, RF-test) blokkeert een handmatige upload RF en sessies tot de herstart.
+
+Een geweigerde upload wordt meteen gesloten, nog vóór de inhoud: de webserver wacht onbeperkt op bytes. Restrisico: een eigenaar die zelf een upload halverwege laat hangen, houdt de webloop vast tot de verbinding sluit.
+
+Er wordt niet geschreven naar het slot dat de bootloader nog als opstartkeuze heeft (`boot-slot-mismatch`; alleen na een terugval van de bootloader).
+
+Een onbevestigde update die de eigendomsopslag niet kan lezen, keert na 300 s alleen terug als het andere slot een bevestigd image van het eigenaarsmodel is. Anders geldt OWNER-10: RST.
+
+Herstartplanning is wrap-veilig. De status toont de fout van de schrijver nooit terwijl de download die bezit. Gelukt betekent: commit, releasenummer, het andere slot én *valid*.
+
 ## Hoe het werkt
 
 | Stap | Wat | Waar |
@@ -135,7 +145,7 @@ Het grootste deel is de TLS-client: mbedTLS SSL/X.509 en WiFiClientSecure. Bootl
 
 | Wat | Soort | Waar |
 |---|---|---|
-| SemVer, URL's, allowlist, kop-limieten, mock-GitHub (redirects, DNS/TLS, 403/429/5xx, stilstand, afbreken, chunked, te groot), index (handtekening, manipulatie, variant, downgrade, slotgrootte), download (afgebroken, OTA-schrijffout, gemanipuleerd image, andere bundel, naloopbytes, vreemde redirect), geheugengrens | host, 147 checks | `test/test_fw_update.cpp` |
+| SemVer, URL's, allowlist, kop-limieten, mock-GitHub (redirects, DNS/TLS, 403/429/5xx, stilstand, afbreken, chunked, te groot), index (handtekening, manipulatie, variant, downgrade, slotgrootte), download (afgebroken, OTA-schrijffout, gemanipuleerd image, andere bundel, naloopbytes, vreemde redirect), geheugengrens | host, 169 checks | `test/test_fw_update.cpp` |
 | Routes: eerst de eigenaarssessie, gepinde TLS-roots, alleen de aangeboden versie (ook als een controle tegelijk afrondt), schrijver dicht na selectie | bronguard + mutaties | `tools/test_tx_poc_safety.py` |
 | Webinterface: controle, bevestiging, alleen het getoonde versienummer, voortgang, herstart, proefstart, bevestigd, rollback, fouten | host (node) | `test/test_setup_page.js` |
 | Geen RF, Siri, koppelen, uitlezen of herstart tijdens een update | host | `test/test_setup_web.cpp` (control) |

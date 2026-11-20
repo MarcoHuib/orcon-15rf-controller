@@ -207,6 +207,12 @@ int main() {
     CHECK(eq(headOf("HTTP/1.1 200 OK\r\nTransfer-Encoding : chunked\r\n\r\n"), "bad-response"), "space before the colon refused (Codex r3)");
     CHECK(eq(headOf("HTTP/1.1 200 OK\r\nContent Length: 5\r\n\r\n"), "bad-response"), "field name with a space refused");
     CHECK(eq(headOf("HTTP/1.1 200 OK\r\nX-Ok_1: a\r\n\r\n"), "done"), "token field name accepted");
+    CHECK(eq(headOf("HTTP/1.1 302 Found\r\nLocation:\r\nLocation: /b\r\n\r\n"), "bad-response"), "an empty first Location still counts (Codex r4)");
+    // The strict flat-object grammar the index and the bundle head must pass before ArduinoJson (Codex r4).
+    for (const char* good : {"{}", "{\"a\":1}", " {\"a\":\"x\\\"y\\u00e9\",\"b\":0}\n"}) CHECK(flatObject(good, strlen(good)), good);
+    for (const char* bad : {"{'a':1}", "{a:1}", "{\"a\":'x'}", "{\"a\":1,\"a\":2}", "{\"a\":1}x", "{\"a\":\"x\\u0000\"}", "{\"a\":-1}",
+                            "{\"a\":1,}", "{\"\\u0061\":1}", "{\"a\":{\"b\":1}}", "{\"a\":[1]}", "{\"a\":true}", "{\"a\":\"x\ty\"}", "[1]", "{\"a\":1"})
+        CHECK(!flatObject(bad, strlen(bad)), bad);
     CHECK(eq(headOf("HTTP/1.1 302 Found\r\nLocation: " + std::string(PATH_MAX_LEN + 20, 'a') + "\r\n\r\n"), "bad-response"), "overlong location refused");
 
     const std::vector<uint8_t> img = image(5000);
@@ -256,6 +262,12 @@ int main() {
           CHECK(eq(runCheck(m, o, f), "bad-index"), "duplicate key, trailing data, escaped key or invalid UTF-8 refused (Codex r3)");
       }
       Mock m; publish(m, man, sig, img, "v1.3.0", good + "\n"); Offer o; Found f; CHECK(!runCheck(m, o, f), "trailing whitespace is fine"); }
+    { Mock m; std::string q = indexJson(man, sig); q.replace(q.find("\"notes\""), 7, "notes");   // a bare key that ArduinoJson would take
+      publish(m, man, sig, img, "v1.3.0", q); Offer o; Found f; CHECK(eq(runCheck(m, o, f), "bad-index"), "bare key in the index refused"); }
+    { Mock m; publish(m, man, sig, img, "v1.3.0");   // complete but after the check's deadline: nothing offered (Codex r4)
+      for (auto& r : m.routes) if (r.first.find("/idx") != std::string::npos) r.second.slowMs = 3000;
+      Offer o; Found f; Limits lim; lim.checkMs = 8000;
+      CHECK(eq(check(m, fakeVerify, clockNow, lim, OWN, o, f, IO, sizeof(IO), U, H), "timeout") && f == Found::None, "late index read publishes no offer"); }
     { Mock m; publish(m, man, sig, img, "v1.3.0", indexJson(man, sig, "Ventilatie €")); Offer o; Found f;
       CHECK(!runCheck(m, o, f) && eq(o.notes, "Ventilatie €"), "UTF-8 notes kept"); }
     { Mock m; publish(m, man, sig, img, "v1.3.0", indexJson(man, sig) + std::string(INDEX_MAX, ' ')); Offer o; Found f;
@@ -316,6 +328,10 @@ int main() {
       publish(m, man, sig, img, "v1.3.0");
       for (auto& r : m.routes) if (r.first.find("/fw") != std::string::npos) r.second.bytes = ok(bundle(other, fakeSig(other), image(4999)));
       MockSink s; s.want = img; CHECK(eq(runInstall(m, good, s), "bundle-mismatch") && !s.begun && !s.activated, "bundle of another manifest refused"); }
+    { Mock m; publish(m, man, sig, img, "v1.3.0");   // a NUL suffix on the signature: never equal (Codex r4)
+      for (auto& r : m.routes) if (r.first.find("/fw") != std::string::npos)
+          r.second.bytes = ok("{\"manifest\":" + jsonStr(man) + ",\"sig\":\"" + sig + "\\u0000x\"}\n" + std::string(img.begin(), img.end()));
+      MockSink s; s.want = img; const char* e = runInstall(m, good, s); CHECK((eq(e, "bad-bundle") || eq(e, "bundle-mismatch")) && !s.begun, "NUL suffix in the bundle head refused"); }
     { Mock m; publish(m, man, sig, img, "v1.3.0");
       for (auto& r : m.routes) if (r.first.find("/fw") != std::string::npos) r.second.bytes = ok(bundle(man, sig, img) + "x");
       MockSink s; s.want = img; CHECK(eq(runInstall(m, good, s), "size-mismatch") && !s.begun, "trailing bytes refused"); }
