@@ -40,14 +40,7 @@ Er is **geen standaardwachtwoord**.
 
 **Nieuwe apparaten en het eigendomsmodel.** Het eerste wachtwoord stel je in met de installatiewizard via het setup-accesspoint. Een vergeten wachtwoord herstel je met de eigen herstelsleutel van de eigenaar, in de herstelmodus van het PRG-menu. Zie [`INSTALLATIE.md`](INSTALLATIE.md) en [`PROVISIONING.md`](PROVISIONING.md).
 
-Onderstaand pad met de OTA-sleutel werkt alleen nog op een gemigreerd apparaat (staat Legacy) dat nog geen eigenaarssleutel heeft. Daarna geeft het apparaat 403 `owner-key-required`.
-
-**Eerste wachtwoord, of wachtwoord vergeten (alleen Legacy)**
-1. Vraag op de Mac met `~/.orcon/ota-signing-key.pem` een herstelcode aan: `python3 tools/orcon.py auth-code`.
-   - De Heltec geeft de code alleen voor een verzoek dat met de OTA-sleutel is ondertekend.
-   - Het verzoek is gebonden aan een eenmalige nonce en aan dit board.
-2. Kies in de webinterface "Wachtwoord vergeten" (of het instelscherm) en vul de code en een nieuw wachtwoord in (8 tot 64 tekens).
-3. De code is 10 minuten geldig, werkt één keer en staat 5 foute pogingen toe.
+De firmware-signingsleutel zet of herstelt nooit een wachtwoord. Het oude herstel met `orcon.py auth-code` (`/api/auth/nonce`, `/api/auth/reset`, `/api/auth/setup`) is verwijderd. Een board zonder herstelsleutel registreert er een in de herstelmodus. Zie [`HERSTELSLEUTEL_MIGRATIE.md`](HERSTELSLEUTEL_MIGRATIE.md).
 
 **Opslag**
 - PBKDF2-HMAC-SHA256 met 10 000 rondes en een willekeurige salt, in NVS (`orconauth/cred`).
@@ -110,7 +103,7 @@ Gebruik twee ondertekende OTA's, zodat het RX-only-image het rollbackdoel blijft
    `python3 tools/orcon.py ota-install --worktree <worktree> --env heltec_v2_sx1276 --yes`
 2. **Control:**
    `python3 tools/orcon.py ota-install --worktree <worktree> --env heltec_v2_sx1276_control --yes --tx-ack "control firmware"`
-3. **Wachtwoord instellen:** `python3 tools/orcon.py auth-code`, daarna in de webinterface.
+3. **Herstelsleutel:** registreer hem in de herstelmodus (PRG-menu) als het board er nog geen heeft; zie [`HERSTELSLEUTEL_MIGRATIE.md`](HERSTELSLEUTEL_MIGRATIE.md).
 
 **Lokaal verpakken**
 - `tools/heltec_v2.sh package|verify` accepteert de control-env alleen met `ORCON_CONTROL_ACK="control firmware"`.

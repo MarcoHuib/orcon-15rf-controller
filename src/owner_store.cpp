@@ -92,7 +92,7 @@ bool generate(uint8_t d[32], uint8_t q[65]) {
 
 // ---- state and key in NVS ---------------------------------------------------------------------
 // The state is read with the raw NVS API: "namespace absent" (a new or reset device) must be told
-// apart from "unreadable", which reads as installed (fail closed: no wizard, no vendor recovery).
+// apart from "unreadable", which reads as installed (fail closed: no wizard).
 static uint8_t readState() {
     nvs_handle_t h;
     const esp_err_t e = nvs_open(NS, NVS_READONLY, &h);
@@ -162,10 +162,6 @@ static bool pubPresent() {
     return g != ESP_ERR_NVS_NOT_FOUND;
 }
 bool registerKey(const uint8_t q[65]) {
-    // From the first write on, the release-key path is closed in RAM as well: a write that persists
-    // but fails its read-back must never leave a Legacy device recoverable with the release key
-    // (Codex OWNER-07). If nothing persisted, the next boot reads Legacy again; the owner retries.
-    if (g_state == provision::State::Legacy) g_state = provision::State::Done;
     Preferences p;
     if (!p.begin(NS, false)) return false;
     bool ok = p.putBytes("pub", q, ownerkey::PUB_LEN) == ownerkey::PUB_LEN;
@@ -194,20 +190,17 @@ void begin() {
     // A password that cannot be read is never "no password" (Codex OWNER-02): with no state it
     // would otherwise read as a new device (wizard open). Fail closed: installed, no wizard.
     if (cs == authstore::Status::Unreadable && stored == 0) stored = 0xFF;
-    bool migrate = false;
-    g_state = provision::fromStored(stored, cs == authstore::Status::Ok, pubPresent(), migrate);
-    if (migrate && !writeState(provision::STORED_LEGACY))
-        Serial.println("[owner] migration not stored; will repeat at the next boot");
+    g_state = provision::fromStored(stored, cs == authstore::Status::Ok, pubPresent());   // reads only: NVS stays as it is
     const provision::SentinelView sv = provision::sentinelLoad(g_sentinel);
     g_state = provision::withSentinel(g_state, sv.read, sv.cur);
-    // Every owned device has its ownership in both sentinel sectors (a migrated board, a repair after damage).
+    // Every owned device has its ownership in both sentinel sectors (a board from older firmware, a repair after damage).
     if (g_state != provision::State::New && !provision::sentinelOwn(g_sentinel))
         Serial.println("[owner] ownership sentinel not written; will repeat at the next boot");
     const bool armed = g_arm.magic == ARM_MAGIC && g_arm.inv == uint8_t(~g_arm.mode) && g_arm.mode <= uint8_t(Mode::WifiReset);
     g_boot = armed ? Mode(g_arm.mode) : Mode::None;
     g_arm.magic = 0;                                                     // one boot only
     g_physical.arm(g_boot != Mode::None);
-    Serial.printf("[owner] state %s%s%s\n", provision::name(g_state), migrate ? " (migrated)" : g_state == provision::State::Locked ? " (NVS lost its owner: PRG factory reset required)" : "",
+    Serial.printf("[owner] state %s%s%s\n", provision::name(g_state), g_state == provision::State::Locked ? " (NVS lost its owner: PRG factory reset required)" : "",
                   g_boot == Mode::Recovery ? ", recovery mode" : g_boot == Mode::WifiReset ? ", WiFi reset mode" : "");
 }
 

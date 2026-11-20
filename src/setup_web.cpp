@@ -119,7 +119,6 @@ static bool fwPaired() { return orcon::pairState() == orcon::PairState::Paired; 
 // ---- web login (web_auth.h): sessions in RAM, the password record in NVS ----------------------
 static webauth::Sessions g_sessions;
 static webauth::Throttle g_throttle;
-static webauth::Recovery g_recovery;
 static webauth::Cred     g_cred;
 static bool              g_credSet = false;
 static bool              g_credUnreadable = false;   // a stored password that cannot be read: never "none" (fail closed)
@@ -674,7 +673,7 @@ static void handleSiri() {
     // A device in normal use only (Codex SIRI-02): never while installing, nor Locked, where the owner
     // cannot log in to revoke a key that survived.
     const provision::State st = ownerstore::state();
-    if (st != provision::State::Done && st != provision::State::Legacy) { siriSay(409, "Siri is nu niet beschikbaar. Open de webinterface."); return; }
+    if (st != provision::State::Done) { siriSay(409, "Siri is nu niet beschikbaar. Open de webinterface."); return; }
     const String auth = g_srv->header("Authorization");   // the WebServer always collects this header
     const char* given = auth.length() > 7 && !strncasecmp(auth.c_str(), "Bearer ", 7) ? auth.c_str() + 7 : "";
     char key[33];   // absent and unreadable alike: refused, and not told apart to a client without the key
@@ -1007,63 +1006,6 @@ static void handlePassword() {   // change, while logged in: the current passwor
     g_con.add(rfcon::INFO, millis(), "wachtwoord gewijzigd; andere sessies afgemeld");
     sessionReply(g_sessions.create(millis(), authstore::random));
 }
-// The release key may reset a password only on a migrated device that has no owner key yet.
-#if ORCON_OWNER_MODEL
-static bool vendorRecoveryOk() {
-    if (ownerstore::state() == provision::State::Legacy) return true;
-    fail(403, "owner-key-required");                 // per-device owner keys: the release key grants no access
-    return false;
-}
-#else
-static bool vendorRecoveryOk() { return true; }
-#endif
-static void handleSetup() {      // first password, or a forgotten one: needs the one-time code
-    static const char* const K[] = { "code", "password" };
-    JsonDocument d;
-    if (!sameOrigin(true) || !vendorRecoveryOk() || !parseBody(d, K, 2, 400)) return;   // Legacy only (Codex OWNER-03)
-    if (!webauth::passwordOk(str(d, "password"))) { fail(400, "password-weak"); return; }   // before a try is spent
-    if (!authstore::kdfReady()) { fail(503, "auth-unavailable"); return; }
-    if (kdfBusy()) return;
-    const webauth::Recovery::Check c = g_recovery.use(str(d, "code"), millis());
-    if (c != webauth::Recovery::Check::Ok) {
-        g_con.add(rfcon::WARN, millis(), "wachtwoord instellen: herstelcode geweigerd (%s)", webauth::checkName(c));
-        fail(c == webauth::Recovery::Check::Wrong ? 401 : 409, webauth::checkName(c));
-        return;
-    }
-    if (!setPassword(str(d, "password"))) return;
-    g_sessions.clear();
-    g_throttle.success();
-    g_con.add(rfcon::WARN, millis(), "wachtwoord ingesteld met herstelcode; alle sessies afgemeld");
-    sessionReply(g_sessions.create(millis(), authstore::random));
-}
-// CLI routes (tools/orcon.py auth-code): no browser, no Origin; JSON on our own host only.
-static bool cliOk() {
-    if (!hostOk() || !requestAllowed(g_srv->header("Content-Type").c_str(), g_srv->header("Origin").c_str(),
-                        g_srv->hostHeader().c_str())) { fail(403, "forbidden-request"); return false; }
-    return true;
-}
-static void handleAuthNonce() {
-    if (!cliOk() || !vendorRecoveryOk()) return;
-    const char* n = g_recovery.issueNonce(millis(), authstore::random);
-    char mac[18]; authstore::ownMac(mac);           // the CLI signs for exactly this board
-    Out o; o.add("{\"nonce\":\"%s\",\"mac\":\"%s\",\"ttl_s\":%lu}", n, mac, (unsigned long)(webauth::NONCE_TTL_MS / 1000)); reply(200, o);
-}
-static void handleAuthReset() {  // a request signed with the OTA key buys one 10-minute code
-    static const char* const K[] = { "manifest", "sig" };
-    JsonDocument d;
-    if (!cliOk() || !vendorRecoveryOk() || !parseBody(d, K, 2, 600)) return;
-    char mac[18]; authstore::ownMac(mac);
-    const char* text = str(d, "manifest");
-    if (const char* e = webauth::checkResetRequest(text, mac, g_recovery, millis())) { fail(403, e); return; }
-    if (!authstore::verifySignature(text, strlen(text), str(d, "sig"))) {
-        g_con.add(rfcon::WARN, millis(), "herstelverzoek geweigerd: ongeldige handtekening");
-        fail(403, "bad-signature");
-        return;
-    }
-    const char* code = g_recovery.issueCode(millis(), authstore::random);
-    g_con.add(rfcon::WARN, millis(), "herstelcode uitgegeven (eenmalig, 10 minuten geldig)");
-    Out o; o.add("{\"code\":\"%s\",\"ttl_s\":%lu}", code, (unsigned long)(webauth::CODE_TTL_MS / 1000)); reply(200, o);
-}
 #endif
 
 #if ORCON_OWNER_MODEL
@@ -1182,8 +1124,6 @@ static void handleProvKeyVerify() {                    // the owner proves the s
     if (e) { fail(400, e); return; }
     if (!ownerkey::samePub(q, g_pendQ)) { fail(409, "key-mismatch"); return; }    // a file from an earlier attempt
     const bool installing = ownerstore::state() == provision::State::Setup;
-    g_recovery.clear();                               // before any write: no release-key code outlives an owner key,
-                                                      // not even one whose registration fails half-way (Codex OWNER-03/07)
     if (!ownerstore::registerKey(q)) { fail(503, "key-write-failed"); return; }
     g_con.add(rfcon::WARN, millis(), "eigenaarssleutel %s geregistreerd%s", g_pendFp, installing ? "; installatie voltooid" : "");
     Out o; o.add("{\"ok\":true,\"fingerprint\":\"%s\",\"installed\":%s}", g_pendFp, installing ? "true" : "false");
@@ -1237,9 +1177,6 @@ void begin(WebServer& s) {
     s.on("/api/auth/login",    HTTP_POST, handleLogin);
     s.on("/api/auth/logout",   HTTP_POST, handleLogout);
     s.on("/api/auth/password", HTTP_POST, handlePassword);
-    s.on("/api/auth/setup",    HTTP_POST, handleSetup);
-    s.on("/api/auth/nonce",    HTTP_POST, handleAuthNonce);
-    s.on("/api/auth/reset",    HTTP_POST, handleAuthReset);
 #endif
 #if ORCON_OWNER_MODEL
     s.on("/api/provision/state",      HTTP_GET,  handleProvState);
@@ -1381,7 +1318,7 @@ void tick(uint32_t now) {
     g_read.tick(now);
     consoleTick(now);
 #if ORCON_WEB_AUTH
-    g_sessions.sweep(now); g_throttle.sweep(now); g_recovery.sweep(now);   // before a millis() wrap revives them
+    g_sessions.sweep(now); g_throttle.sweep(now);   // before a millis() wrap revives them
 #endif
 #if ORCON_TX_POC
     consumeTxResults(now); // settle completions before expiry or any follow-up

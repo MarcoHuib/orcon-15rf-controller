@@ -132,6 +132,8 @@ Staat de sleutel in GitHub, dan geeft een lek daar (plus toegang tot je netwerk)
 
 Zonder secret faalt de job `sign` met `signing key missing`. Er wordt dan niets gepubliceerd.
 
+**Definitief (branch `feature/remove-legacy-recovery`):** de firmware zonder Legacy-paden heeft geen herstel met deze sleutel meer. Een update op een board zonder herstelsleutel wordt niet bevestigd en valt terug. Migratievolgorde: [HERSTELSLEUTEL_MIGRATIE.md](HERSTELSLEUTEL_MIGRATIE.md).
+
 **Later (apart akkoord):** een aparte releasesleutel K_rel volgens [RELEASESLEUTEL.md](RELEASESLEUTEL.md), zodat de ontwikkel-Mac en GitHub niet dezelfde sleutel delen.
 
 ## Bekende restpunten van het releaseproces (Codex r4, MINOR)

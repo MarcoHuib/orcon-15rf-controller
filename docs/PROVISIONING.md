@@ -44,7 +44,7 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
 | New (afwezig, geen wachtwoord) | eerste start of na een fabrieksreset | alleen setup-AP |
 | Setup (1) | wachtwoord gezet, wizard bezig | alleen setup-AP; STA alleen tijdens de WiFi-test |
 | Done (2) | eigenaarssleutel geregistreerd | normaal; AP-fallback als het thuisnetwerk ontbreekt |
-| Legacy (3) | gemigreerd van firmware van vóór dit model | als Done; de oude ondertekende `auth-code` blijft tot er een eigenaarssleutel is |
+| (3, of een wachtwoord zonder staat) | gemigreerd van firmware van vóór dit model | leest als Done zonder sleutel: aanmelden werkt, een sleutel registreer je in de herstelmodus. Er is geen herstel met de signingsleutel ([`HERSTELSLEUTEL_MIGRATIE.md`](HERSTELSLEUTEL_MIGRATIE.md)). |
 | Locked | NVS is zijn eigenaar kwijt zonder voltooide fabrieksreset (Arduino-autoformat), terwijl de eigendomsmarkering buiten NVS zegt dat er een eigenaar is | niets gaat open: geen wizard, geen aanmelden, geen herstel. Alleen de PRG-fabrieksreset helpt |
 
 **Eigendomsmarkering buiten NVS (Codex OWNER-11)**
@@ -286,7 +286,7 @@ Een image van vóór dit model in de andere sleuf zou na een terugval het oude h
 - **De ingebouwde publieke OTA-sleutel:** wordt de releasesleutel. Hij tekent nog steeds firmware, maar geeft geen wachtwoordherstel meer zodra er een eigenaarssleutel is.
 - **A/B en rollback:** ongewijzigd. Let op de volgorde, zodat de rollbacksleuf het nieuwe model krijgt.
 
-**Stappen (elke installatie apart, alleen met toestemming)**
+**Stappen (elke installatie apart, alleen met toestemming)** — historisch, uitgevoerd in november 2026. `auth-code` en de staat Legacy bestaan niet meer; zie [`HERSTELSLEUTEL_MIGRATIE.md`](HERSTELSLEUTEL_MIGRATIE.md).
 0. Zet eerst een eigen wachtwoord, nog met de huidige firmware: `orcon.py auth-code` en de webinterface. Het apparaat heeft nu een tijdelijk testwachtwoord.
 1. OTA het nieuwe RX-only-image naar app0. De huidige firmware accepteert dat zonder aanmelden, zoals nu. Het nieuwe image start als Legacy, met WiFi, en bevestigt zichzelf. Rollbackdoel blijft a5260ad control.
 2. OTA het nieuwe control-image naar app1. `orcon.py` vraagt nu het webwachtwoord. Daarna bevatten beide sleuven het nieuwe model.
@@ -361,7 +361,7 @@ Een LAN-IP of `.local` krijgt geen publiek certificaat.
 
 **Kosten van TLS op het apparaat.** `esp_https_server` met mbedTLS vraagt ongeveer 40–50 KB heap per verbinding. De laagste vrije heap is nu ongeveer 160 KB. Eén verbinding is waarschijnlijk haalbaar (NOT TESTED). Zonder vertrouwd certificaat lost het echter niets op.
 
-**Geen Mac meer nodig.** Het eerste wachtwoord, het herstel en de updates lopen via de telefoon. De Mac blijft alleen het ontwikkelaarspad: `ota-install`, en `auth-code` voor Legacy.
+**Geen Mac meer nodig.** Het eerste wachtwoord, het herstel en de updates lopen via de telefoon. De Mac blijft alleen het ontwikkelaarspad: `ota-install`.
 
 ## 10. Testbewijs (lokaal, host)
 

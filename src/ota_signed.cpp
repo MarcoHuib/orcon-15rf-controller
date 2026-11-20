@@ -19,6 +19,9 @@
 #include "setup_web.h"
 #include "rf_console.h"
 #include "tx_poc_caps.h"
+#if ORCON_OWNER_MODEL
+#include "owner_store.h"
+#endif
 #include <Arduino.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
@@ -478,15 +481,35 @@ void begin(WebServer& s) {
     s.on("/api/diag",       HTTP_GET,  handleDiag);
 }
 
+// This firmware has no password reset with the firmware signing key. An older image may still have it for a
+// board without an owner key: an update on such a board is never confirmed, so the previous image (and its
+// recovery) returns until the owner registers a key (docs/HERSTELSLEUTEL_MIGRATIE.md). Read once per boot.
+static bool ownerKeyRegistered() {
+#if ORCON_OWNER_MODEL
+    static int known = 0;                                   // 0 not read, 1 yes, -1 no
+    if (!known) {
+        uint8_t q[65];
+        known = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q) ? 1 : -1;
+        if (known < 0) note(rfcon::ERR, "geen herstelsleutel geregistreerd: deze firmware wordt niet bevestigd en de vorige keert terug. "
+                                       "Registreer eerst een herstelsleutel in de herstelmodus (PRG-menu).");
+    }
+    return known > 0;
+#else
+    return true;                                            // no ownership model: no owner key to require
+#endif
+}
+
 void tick(uint32_t now) {
     heartbeat();
     static uint32_t lastCrumb = 0;
     if (now - lastCrumb >= 5000) { lastCrumb = now; g_crumb.lastUptimeS = now / 1000; }
     if (g_nonce[0] && now - g_nonceMs >= NONCE_TTL_MS) g_nonce[0] = 0;   // a 49.7-day millis() wrap must not revive it
     if (!g_pending) return;
-    // Healthy = this image runs, joined the network (so a later OTA can still reach it) and
-    // the receiver is up. Only then is it confirmed; otherwise the previous image returns.
-    const bool healthy = !g_hold && now >= CONFIRM_AFTER_MS && net::wifiConnected() && radio::rxDiagnostics().rxState == 0;
+    // Healthy = this image runs, joined the network (so a later OTA can still reach it), the
+    // receiver is up and the owner has a recovery key. Only then is it confirmed; otherwise the
+    // previous image returns.
+    const bool healthy = !g_hold && now >= CONFIRM_AFTER_MS && net::wifiConnected() && radio::rxDiagnostics().rxState == 0 &&
+                         ownerKeyRegistered();
     if (healthy && esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
         g_pending = false; note(rfcon::INFO, "nieuwe firmware bevestigd (gezond na %lu s)", (unsigned long)(now / 1000));
         return;

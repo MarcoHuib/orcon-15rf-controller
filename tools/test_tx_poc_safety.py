@@ -169,7 +169,7 @@ def tx_paths_safe(web,net,radio,runtime,main):
     in_order(fn(web,'static void handleSiri() {'),
              [r'if \(net::fromSetupAp\(\) \|\| !net::fromHomeNet\(\) \|\| !hostOk\(\)\) '+say,
               r'const provision::State st = ownerstore::state\(\);',
-              r'if \(st != provision::State::Done && st != provision::State::Legacy\) '+say,
+              r'if \(st != provision::State::Done\) '+say,
               r'const String auth = g_srv->header\("Authorization"\);',
               r'const char\* given = auth\.length\(\) > 7 && !strncasecmp\(auth\.c_str\(\), "Bearer ", 7\) \? auth\.c_str\(\) \+ 7 : "";',
               r'if \(authstore::siriKey\(key\) != authstore::Status::Ok \|\| !webauth::equal\(given, key\)\) '+say,
@@ -205,10 +205,10 @@ for name,old,new in [('no-profile-gate','if(!profile){e="profile-required";retur
                      ('siri-no-key','if (authstore::siriKey(key) != authstore::Status::Ok || !webauth::equal(given, key)) {','if (false) {'),
                      ('siri-any-subnet','net::fromSetupAp() || !net::fromHomeNet() || !hostOk()','net::fromSetupAp() || !hostOk()'),
                      ('siri-key-in-url','g_srv->header("Authorization")','g_srv->arg("k")'),
-                     ('siri-locked-ok','if (st != provision::State::Done && st != provision::State::Legacy)','if (false)'),
+                     ('siri-locked-ok','if (st != provision::State::Done)','if (false)'),
                      ('siri-key-or-to-and','!= authstore::Status::Ok || !webauth::equal(given, key)','!= authstore::Status::Ok && !webauth::equal(given, key)'),
                      ('send-guard-ignored','    if (!guard(d, K, 3)) return;','    guard(d, K, 3);'),
-                     ('siri-state-weakened','st != provision::State::Done && st != provision::State::Legacy','st == provision::State::New'),
+                     ('siri-state-weakened','st != provision::State::Done)','st == provision::State::New)'),
                      ('siri-key-in-url-spaced','g_srv->header("Authorization")','g_srv->arg( "k" )'),
                      ('siri-no-return','siriSay(401, "De Siri-sleutel klopt niet. Kijk in de webinterface bij Systeem, Integraties.");\n        return;','siriSay(401, "De Siri-sleutel klopt niet. Kijk in de webinterface bij Systeem, Integraties.");'),
                      ('third-admit-caller-spaced','static void handleRemoteState() { if (!authorize(false, true)) return; remoteBody(200); }','static void handleRemoteState() { const char* e; uint32_t w; ctlAdmit (1, 0, e, w); }')]:
@@ -273,7 +273,7 @@ invalid=[('rf-alone',['ORCON_TX_RF_ENABLE=1'],'RF TX requires'),
          ('control-without-pair',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_CONTROL=1'],'ORCON_TX_CONTROL is'),
          ('control-dryrun',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_WEB_CONTROL=1','ORCON_TX_PAIR=1','ORCON_TX_CONTROL=1'],'ORCON_TX_PAIR requires'),
          ('control-without-login',base+['RX_ONLY=1','ORCON_TX_POC=1','ORCON_TX_RF_ENABLE=1','ORCON_WEB_CONTROL=1','ORCON_TX_PAIR=1','ORCON_TX_CONTROL=1','ORCON_WEB_AUTH=0'],'requires the web login'),
-         ('login-without-signed-ota',['ORCON_WEB_AUTH=1'],'ORCON_WEB_AUTH needs ORCON_SIGNED_OTA')]
+         ('login-without-signed-ota',['ORCON_WEB_AUTH=1'],'ORCON_WEB_AUTH exists only on the signed Heltec V2 builds')]
 for name,defs,diagnostic in invalid:
     result=run([a.compiler,'-std=c++11','-I','src','-x','c++','-fsyntax-only','-']+['-D'+x for x in defs],input='#include "config.h"\n')
     assert result.returncode!=0 and diagnostic in result.stderr,(name,result.returncode,result.stderr)
@@ -366,6 +366,38 @@ for name,old,new in (('status-without-login','if (!setupweb::authorize(false)) r
     except AssertionError: print('PASS update guard rejects mutation',name)
     else: raise AssertionError('update guard accepted mutation '+name)
 print('PASS update check: owner session first, pinned TLS roots, no insecure TLS, signed-OTA writer only')
+# The firmware signing key never sets or resets a password (docs/HERSTELSLEUTEL_MIGRATIE.md): no release-key recovery
+# route, request, code or state comes back, the CLI has no auth-code, and an OTA trial boot on a board without an owner key
+# is never confirmed (the previous image, with whatever recovery it has, returns until the owner registers a key).
+LEGACY_RECOVERY=('/api/auth/setup','/api/auth/nonce','/api/auth/reset','orcon-auth-reset','vendorRecoveryOk','State::Legacy',
+                 'STORED_LEGACY','checkResetRequest','issueCode','webauth::Recovery','auth-code','herstelcode')
+def legacy_recovery_safe(files,ota):
+    for path,text in files.items():
+        for bad in LEGACY_RECOVERY: assert bad not in text,(path,bad,'release-key password recovery must stay removed')
+    h=re.sub(r'\s+',' ',fn(ota,'void tick(uint32_t now) {'))
+    assert re.search(r'const bool healthy = !g_hold && now >= CONFIRM_AFTER_MS && net::wifiConnected\(\) && radio::rxDiagnostics\(\)\.rxState == 0 && ownerKeyRegistered\(\);',h),'a trial boot needs an owner key'
+    assert h.count('esp_ota_mark_app_valid_cancel_rollback()')==1 and ota.count('esp_ota_mark_app_valid_cancel_rollback(')==1,'tick is the only confirmation'
+    k=re.sub(r'\s+',' ',fn(ota,'static bool ownerKeyRegistered() {'))
+    assert 'known = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q) ? 1 : -1;' in k and 'return known > 0;' in k,'the key is read, not assumed'
+LR_FILES={str(x):x.read_text() for x in sorted(Path('src').glob('*.[ch]*'))+[Path('src/setup_page.html'),Path('tools/orcon.py')] if x.name!='setup_page.h'}
+legacy_recovery_safe(LR_FILES,ota_src)
+for name,where,old,new in (('reset-route-back','src/setup_web.cpp','    s.on("/api/auth/login",    HTTP_POST, handleLogin);','    s.on("/api/auth/reset",    HTTP_POST, handleLogin);\n    s.on("/api/auth/login",    HTTP_POST, handleLogin);'),
+                           ('legacy-state-back','src/provision.h','enum class State : uint8_t { New, Setup, Done, Locked };','enum class State : uint8_t { New, Setup, Done, Legacy, Locked };\nconstexpr State OLD = State::Legacy;'),
+                           ('cli-auth-code-back','tools/orcon.py',"sub.add_parser('keygen')","sub.add_parser('keygen'); sub.add_parser('auth-code')"),
+                           ('page-code-form-back','src/setup_page.html','<p class="note" id="aHintOwn"></p>','<p class="note" id="aHintOwn"></p><p>Vraag een herstelcode aan</p>'),
+                           ('signed-reset-request-back','src/web_auth.cpp','bool cookieSid(','const char* checkResetRequest(const char*, const char*);\nbool cookieSid(')):
+    files=dict(LR_FILES); m=files[where].replace(old,new,1); assert m!=files[where],name; files[where]=m
+    try: legacy_recovery_safe(files,ota_src)
+    except AssertionError: print('PASS legacy-recovery guard rejects mutation',name)
+    else: raise AssertionError('legacy-recovery guard accepted mutation '+name)
+for name,old,new in (('trial-without-key','radio::rxDiagnostics().rxState == 0 &&\n                         ownerKeyRegistered();','radio::rxDiagnostics().rxState == 0;'),
+                     ('key-assumed','known = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q) ? 1 : -1;','known = 1;'),
+                     ('second-confirm','void rollbackNow() {','static void confirmEarly() { esp_ota_mark_app_valid_cancel_rollback(); }\nvoid rollbackNow() {')):
+    m=ota_src.replace(old,new,1); assert m!=ota_src,name
+    try: legacy_recovery_safe(LR_FILES,m)
+    except AssertionError: print('PASS legacy-recovery guard rejects mutation',name)
+    else: raise AssertionError('legacy-recovery guard accepted mutation '+name)
+print('PASS no password recovery with the firmware signing key; a trial boot without an owner key is never confirmed')
 # Workflows: none runs today (builds, tests and signing are local), but Actions are not banned for good. Every
 # workflow file is pinned by content, because text checks on YAML can be bypassed (blank lines, if: false,
 # continue-on-error, a second job, ...). The old RX-only workflow is pinned as an inert stub (manual start only,
