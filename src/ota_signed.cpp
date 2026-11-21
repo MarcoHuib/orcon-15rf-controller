@@ -209,12 +209,25 @@ static bool ownerConsent() {
 // next update target, so bytes written there could boot before every check passed (Codex r4). Refuse until the
 // running image is the boot choice again (USB recovery, docs/AB_OVERGANG.md).
 static bool bootMismatch() { return esp_ota_get_boot_partition() != esp_ota_get_running_partition(); }
+// A readable, on-curve owner key this image can use, read now (no cache). Without it an update would never be confirmed,
+// and writing it would still erase the other slot, which may hold the last image with the old recovery (Codex legacy r7).
+static bool ownerKeyUsable() {
+#if ORCON_OWNER_MODEL
+    uint8_t q[65];
+    // Also the recovery's own crypto self-test: a key this image could not use would be no way back (Codex legacy r2).
+    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q) && ownerstore::cryptoReady();
+    return ok;
+#else
+    return true;                                            // no ownership model: no owner key to require
+#endif
+}
 static const char* manualBlocked() {
     if (g_dl) return "update-busy";
     if (g_selected || net::restartQueued()) return "restart-pending";
     if (bootMismatch()) return "boot-slot-mismatch";
     if (g_st == St::Writing) return "update-busy";
     if (g_pending || g_stateOpen) return "confirm-running-image-first";
+    if (!ownerKeyUsable()) return "owner-key-first";
 #if !ORCON_TX_POC || ORCON_WEB_CONTROL
     if (setupweb::busy()) return "session-busy";
 #endif
@@ -309,6 +322,9 @@ static const char* startWrite() {   // Ready -> Writing
     if (g_st != St::Ready) return "not-ready";
     // The shared entry of both paths: the SDK's own check in esp_ota_begin() skips a state it cannot read (Codex legacy r6).
     if (g_pending || g_stateOpen) { g_st = St::Failed; return g_err = "confirm-running-image-first"; }
+    // The owner key is read by both callers' admission on the loop task, just before this (manualBlocked at the upload's
+    // start, claimDownload before the worker exists); NVS and the self-test are not read from the worker. The key cannot
+    // go away meanwhile: the PRG menu (recovery, factory reset) refuses while updsvc::busy() (Codex legacy r7).
     if (esp_ota_begin(g_part, OTA_WITH_SEQUENTIAL_WRITES, &g_h) != ESP_OK) { g_st = St::Failed; return g_err = "ota-begin-failed"; }
     mbedtls_sha256_init(&g_sha); mbedtls_sha256_starts_ret(&g_sha, 0);
     g_rx = 0; g_st = St::Writing;
@@ -400,6 +416,7 @@ const char* claimDownload() {   // loop task, before the worker task exists
     if (bootMismatch()) return "boot-slot-mismatch";
     if (g_dl || g_st == St::Writing) return "update-busy";
     if (g_pending || g_stateOpen) return "confirm-running-image-first";
+    if (!ownerKeyUsable()) return "owner-key-first";
     g_nonce[0] = 0; g_st = St::Idle; g_err = "none";   // a manual begin that was never uploaded is dropped
     g_dl = true;
     return nullptr;
@@ -514,10 +531,7 @@ void begin(WebServer& s) {
 // recovery) returns until the owner registers a key (docs/HERSTELSLEUTEL_MIGRATIE.md). Read again before every
 // confirmation attempt: a passing read error does not force a rollback, a key that became unreadable is noticed.
 static bool ownerKeyRegistered() {
-#if ORCON_OWNER_MODEL
-    uint8_t q[65];
-    // Also the recovery's own crypto self-test: a key this image could not use would be no way back (Codex legacy r2).
-    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q) && ownerstore::cryptoReady();
+    const bool ok = ownerKeyUsable();
     static bool told = false;
     if (!ok && !told) {
         told = true;
@@ -525,9 +539,6 @@ static bool ownerKeyRegistered() {
                          "Registreer eerst een herstelsleutel in de herstelmodus (PRG-menu).");
     }
     return ok;
-#else
-    return true;                                            // no ownership model: no owner key to require
-#endif
 }
 
 void tick(uint32_t now) {

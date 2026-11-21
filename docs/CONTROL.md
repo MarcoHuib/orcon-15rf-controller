@@ -100,7 +100,7 @@ De firmware-signingsleutel zet of herstelt nooit een wachtwoord. Het oude herste
 Gebruik twee ondertekende OTA's, zodat het RX-only-image het rollbackdoel blijft. OTA schrijft altijd naar de sleuf die niet draait.
 
 **Eerst, vóór elke OTA:**
-- **Herstelsleutel.** Heeft het board nog geen herstelsleutel, registreer hem dan in de herstelmodus (PRG-menu) en bewijs één geslaagd herstel met het sleutelbestand. Zonder sleutel bevestigt een nieuw image zich niet, en na 300 s keert de vorige firmware terug. Zie [`HERSTELSLEUTEL_MIGRATIE.md`](HERSTELSLEUTEL_MIGRATIE.md), stap 2 t/m 5.
+- **Herstelsleutel.** Heeft het board nog geen herstelsleutel, registreer hem dan in de herstelmodus (PRG-menu) en bewijs één geslaagd herstel met het sleutelbestand. Zonder sleutel weigert deze firmware een update (`owner-key-first`). Een oudere firmware schrijft hem wel, maar dan bevestigt het nieuwe image zich niet en keert na 300 s de vorige firmware terug. Zie [`HERSTELSLEUTEL_MIGRATIE.md`](HERSTELSLEUTEL_MIGRATIE.md), stap 2 t/m 5.
 - **Controle vooraf** bij de eerste update vanaf b75fad3 of 2edb423: `curl -s http://orcon15rf.local/api/ota` moet `"running"` gelijk aan `"boot"` en `"running_state":"valid"` tonen. Anders niet installeren (zie [`HERSTELSLEUTEL_MIGRATIE.md`](HERSTELSLEUTEL_MIGRATIE.md), stap 7).
 
 Daarna:

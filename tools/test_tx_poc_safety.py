@@ -406,8 +406,15 @@ def legacy_recovery_safe(files,ota):
     assert 'case otap::Trial::TryConfirm: if (ownerKeyRegistered() && esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {' in h,'a trial boot needs an owner key'
     assert re.search(r'case otap::Trial::Rollback: [^{}]*?rollbackNow\(\); return; case otap::Trial::Wait: return; \}',h),'the deadline rolls back'
     assert ota.count('esp_ota_mark_app_valid_cancel_rollback(')==1,'tick is the only confirmation'
-    k=fn(ota,'static bool ownerKeyRegistered() {')
-    assert '\n    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q) && ownerstore::cryptoReady();\n' in k and 'return ok;' in k,'the key is read before every attempt, not assumed or cached, and usable by this image'
+    k=fn(ota,'static bool ownerKeyUsable() {')
+    assert k.startswith('\n#if ORCON_OWNER_MODEL\n    uint8_t q[65];\n') and '\n    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q) && ownerstore::cryptoReady();\n    return ok;\n#else' in k,'the key is read before every attempt, not assumed or cached, and usable by this image'
+    assert fn(ota,'static bool ownerKeyRegistered() {').startswith('\n    const bool ok = ownerKeyUsable();\n') and fn(ota,'static bool ownerKeyRegistered() {').rstrip().endswith('return ok;'),'the trial reads the same check'
+    # No image is written without that key: writing erases the other slot, which may hold the last image with the old
+    # recovery, and the trial would not confirm it anyway (Codex legacy r7). Both writer paths pass an admission with it.
+    for f in ('static const char* manualBlocked() {','const char* claimDownload() {'): assert 'if (g_pending || g_stateOpen) return "confirm-running-image-first";\n    if (!ownerKeyUsable()) return "owner-key-first";\n' in fn(ota,f),(f,'no write without a usable owner key')
+    assert ota.count('startWrite()')==3 and '        if (const char* e = manualBlocked()) { g_st = St::Failed; g_err = e; dropClient(); return; }\n#if ORCON_OWNER_MODEL\n        if (!setupweb::uploadAuthorized())' in fn(ota,'static void handleUploadData() {'),'the upload passes the admission before startWrite'
+    assert 'if (!g_dl) return "not-ready";' in fn(ota,'    const char* begin(const char* manifest, const char* sig) override {') and re.sub(r'\s+','',ota).count('g_dl=true')==1 and fn(ota,'const char* claimDownload() {').index('owner-key-first') < fn(ota,'const char* claimDownload() {').index('g_dl = true;'),'the one-click writer only runs after claimDownload'
+    assert 'if (const char* e = ota::claimDownload()) { delete c; return e; }' in files['src/fw_update_esp.cpp'],'the one-click install claims the writer first'
     assert 'extern "C" bool verifyRollbackLater() { return true; }' in ota,'the core never confirms a new image at startup'
     rs=fn(ota,'static otap::RunState runningState() {')
     assert 'esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;' in rs and 'const bool ok = esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK;' in rs and 'return otap::runState(ok, uint32_t(st));' in rs,'the state follows otap::runState (host-tested; Codex legacy r6)'
@@ -424,14 +431,23 @@ def legacy_recovery_safe(files,ota):
     assert 'if (g_pending || g_stateOpen) { g_st = St::Failed; return g_err = "confirm-running-image-first"; }' in fn(ota,'static const char* startWrite() {').split('    if (esp_ota_begin(')[0],'the shared write entry checks it too, before the SDK (Codex legacy r6)'
     # The main loop runs the trial in every signed build: one call at loop level, inside exactly #if ORCON_SIGNED_OTA,
     # and that switch is on for the Heltec V2 SX1276 builds (Codex legacy r5/r6).
-    main=files['src/main.cpp']; lp=main.index('void loop() {'); call=main.find('\n    ota::tick(millis());')
-    assert main.count('ota::tick(')==1 and lp < call < lp+len('void loop() {')+len(fn(main,'void loop() {')) and active_conds(main,call)==['#if ORCON_SIGNED_OTA'],'the main loop runs the trial'
-    assert '#if defined(BOARD_HELTEC_V2) && defined(RADIO_SX1276)\n#define ORCON_SIGNED_OTA 1\n#else\n#define ORCON_SIGNED_OTA 0\n#endif' in files['src/config.h']
+    # A standalone statement at loop level after net::loop(), with no return or goto before it (Codex legacy r7).
+    main=files['src/main.cpp']; lp=main.index('void loop() {')+len('void loop() {'); call=main.find('\n    net::loop();\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());')
+    pre=re.sub(r'"(?:\\.|[^"\\])*"','""',re.sub(r'//[^\n]*','',main[lp:call]))
+    assert main.count('ota::tick(')==1 and lp < call < lp+len(fn(main,'void loop() {')) and active_conds(main,main.index('\n    ota::tick(millis());'))==['#if ORCON_SIGNED_OTA'],'the main loop runs the trial'
+    assert pre.count('{')==pre.count('}') and not re.search(r'\b(return|goto)\b',pre),'the trial call is reached in every loop pass'
+    cfg=files['src/config.h']
+    assert '#if defined(BOARD_HELTEC_V2) && defined(RADIO_SX1276)\n#define ORCON_SIGNED_OTA 1\n#else\n#define ORCON_SIGNED_OTA 0\n#endif' in cfg and re.findall(r'#\s*(define|undef)\s+ORCON_SIGNED_OTA\b',cfg)==['define','define'],'only the board switch sets it'
     for path,text in files.items(): assert not re.search(r'#\s*(define|undef)\s+ORCON_SIGNED_OTA\b',text) or path.endswith('config.h'),(path,'ORCON_SIGNED_OTA is set in config.h only')
     nb=re.sub(r'\s+',' ',re.sub(r'//[^\n]*','',fn(files['src/net.cpp'],'void begin() {')))
     assert 'if (millis() - lastRead >= 1000) { lastRead = millis(); settled = !ownerstore::unsettledBoot(); }' in nb and 'if (ota::trialNow() && ota::previousIsOwnerModel()) {' in nb and nb.count('ota::rollbackNow();')==1,'the fail-closed boot returns only from a trial read now, to an owner-model image (Codex r4, legacy r6)'
     assert fn(ota,'static bool ownerConsent() {').startswith('\n#if ORCON_OWNER_MODEL\n    return setupweb::authorize(true);\n#else'),'manual install: the owner session and CSRF token (Codex legacy r3)'
     for h in ('static void handleNonce() {','static void handleBegin() {'): assert fn(ota,h).lstrip().startswith('if (!ownerConsent()) return;'),(h,'asks the owner first')
+    # The helpers themselves: a session AND its CSRF token, on every ownership-model build (Codex legacy r7).
+    web=files['src/setup_web.cpp']; az=fn(web,'bool authorize(bool mutation, bool allowAp) {'); ua=fn(web,'bool uploadAuthorized() {')
+    assert az.startswith('\n#if ORCON_WEB_AUTH\n    if (mutation) { if (!sameOrigin(allowAp)) return false; }\n') and '\n    if (!s) { fail(401, "login-required"); return false; }\n    if (mutation && !webauth::equal(g_srv->header("X-Orcon-Token").c_str(), s->csrf)) { fail(403, "bad-token"); return false; }\n    return true;\n#else' in az,'owner consent: same origin, session and CSRF token'
+    assert ua.startswith('\n#if ORCON_WEB_AUTH\n    if (!hostOk()) return false;\n') and '\n    webauth::Session* s = currentSession();\n    return s && webauth::equal(g_srv->header("X-Orcon-Token").c_str(), s->csrf);\n#else' in ua,'the upload: session and CSRF token'
+    assert '#if ORCON_WEB_AUTH && (!ORCON_TX_POC || ORCON_WEB_CONTROL)\n#define ORCON_OWNER_MODEL 1\n' in cfg,'the ownership model always has the login'
     assert '#if ORCON_OWNER_MODEL\n        if (!setupweb::uploadAuthorized()) { g_st = St::Failed; g_err = "login-required"; dropClient(); return; }\n#endif\n        if (startWrite()) return;' in fn(ota,'static void handleUploadData() {'),'the upload checks the session before it writes'
     assert re.search(r'#if ORCON_OWNER_MODEL\n(?:\s*//[^\n]*\n)*\s*s\.on\("/api/ota/nonce",[^\n]*\n\s*s\.on\("/api/ota/begin",[^\n]*\n\s*s\.on\("/api/ota/upload",[^\n]*\n#endif',ota) and ota.count('s.on("/api/ota/begin"')==1,'no network writer without the owner session (Codex legacy r2)'
 LR_FILES={str(x):x.read_text() for x in sorted(Path('src').glob('*.[ch]*'))+[Path('src/setup_page.html'),Path('tools/orcon.py')] if x.name!='setup_page.h'}
@@ -459,6 +475,14 @@ for name,where,old,new in (('reset-route-back','src/setup_web.cpp','    s.on("/a
                            ('signed-ota-off','src/config.h','#define ORCON_SIGNED_OTA 1','#define ORCON_SIGNED_OTA 0'),
                            ('signed-ota-undef','src/main.cpp','void loop() {','#undef ORCON_SIGNED_OTA\n#define ORCON_SIGNED_OTA 0\nvoid loop() {'),
                            ('back-without-trial','src/net.cpp','if (ota::trialNow() && ota::previousIsOwnerModel()) {','if (ota::previousIsOwnerModel()) {'),
+                           ('if-false-before-tick','src/main.cpp','\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());','\n    if (false)\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());'),
+                           ('tick-in-false-block','src/main.cpp','    net::loop();\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());               // confirm a freshly installed image, or roll back\n#endif\n','    if (false) {\n    net::loop();\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());               // confirm a freshly installed image, or roll back\n#endif\n    }\n'),
+                           ('return-before-tick','src/main.cpp','    // 3) web / OLED\n','    return;\n    // 3) web / OLED\n'),
+                           ('signed-ota-redefined','src/config.h','#else\n#define ORCON_SIGNED_OTA 0\n#endif','#else\n#define ORCON_SIGNED_OTA 0\n#endif\n#undef ORCON_SIGNED_OTA\n#define ORCON_SIGNED_OTA 0'),
+                           ('upload-session-only','src/setup_web.cpp','    return s && webauth::equal(g_srv->header("X-Orcon-Token").c_str(), s->csrf);','    return s != nullptr;'),
+                           ('consent-without-csrf','src/setup_web.cpp','    if (mutation && !webauth::equal(g_srv->header("X-Orcon-Token").c_str(), s->csrf)) { fail(403, "bad-token"); return false; }\n',''),
+                           ('owner-model-without-login','src/config.h','#if ORCON_WEB_AUTH && (!ORCON_TX_POC || ORCON_WEB_CONTROL)\n#define ORCON_OWNER_MODEL 1','#if (!ORCON_TX_POC || ORCON_WEB_CONTROL)\n#define ORCON_OWNER_MODEL 1'),
+                           ('one-click-unclaimed','src/fw_update_esp.cpp','if (const char* e = ota::claimDownload()) { delete c; return e; }','(void)0;'),
                            ('settled-read-once','src/net.cpp','            if (millis() - lastRead >= 1000) { lastRead = millis(); settled = !ownerstore::unsettledBoot(); }\n','')):
     files=dict(LR_FILES); m=files[where].replace(old,new,1); assert m!=files[where],name; files[where]=m
     try: legacy_recovery_safe(files,ota_src)
@@ -485,6 +509,13 @@ for name,old,new in (('trial-without-key','if (ownerKeyRegistered() && esp_ota_m
                      ('consent-without-session','    return setupweb::authorize(true);\n#else','    return hostOk();\n#else'),
                      ('nonce-without-consent','static void handleNonce() {\n    if (!ownerConsent()) return;','static void handleNonce() {'),
                      ('upload-without-session','        if (!setupweb::uploadAuthorized()) {','        if (false) {'),
+                     ('manual-without-key','    if (!ownerKeyUsable()) return "owner-key-first";\n#if !ORCON_TX_POC','#if !ORCON_TX_POC'),
+                     ('download-without-key','    if (!ownerKeyUsable()) return "owner-key-first";\n    g_nonce[0] = 0;','    g_nonce[0] = 0;'),
+                     ('key-check-disabled','static bool ownerKeyUsable() {\n#if ORCON_OWNER_MODEL','static bool ownerKeyUsable() {\n#if 0'),
+                     ('trial-key-assumed','    const bool ok = ownerKeyUsable();','    const bool ok = true;'),
+                     ('upload-unblocked','        if (const char* e = manualBlocked()) { g_st = St::Failed; g_err = e; dropClient(); return; }\n',''),
+                     ('sink-without-claim','        if (!g_dl) return "not-ready";\n',''),
+                     ('second-claim','    g_dl = true;\n    return nullptr;','    g_dl = true;\n    return nullptr;\n}\nstatic void claimAgain() {\n    g_dl = true;'),
                      ('fallback-model-only','return otap::ownerRecovery(s) && s.signedOta','return s.ownerModel && s.signedOta')):
     m=ota_src.replace(old,new,1); assert m!=ota_src,name
     try: legacy_recovery_safe(LR_FILES,m)

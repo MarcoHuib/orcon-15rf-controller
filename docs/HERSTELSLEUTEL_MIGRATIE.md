@@ -66,13 +66,23 @@
 
 Zonder sleutel wordt de proefstart nooit bevestigd. De sleutel wordt vóór elke bevestigingspoging opnieuw gelezen, hooguit één keer per seconde. Een kortstondige leesfout dwingt dus geen rollback af, en een sleutel die onleesbaar wordt, wordt opgemerkt. De beslissing zit in `otap::trialStep` (hostgetest). De deadline gaat altijd voor, ook als elke lus trager is dan een seconde (Codex ronde 3). Na 300 s keert de vorige firmware terug, met de herstelmogelijkheid die die firmware heeft. Het board kan dus nooit via een update in een toestand komen waarin het oude herstel weg is en het nieuwe nog niet bestaat. De console meldt: "geen herstelsleutel geregistreerd: deze firmware wordt niet bevestigd…".
 
+**Geen update zonder sleutel** (Codex ronde 7). Deze firmware schrijft ook zelf geen update zonder bruikbare sleutel. Nonce, begin, upload en de knop Update installeren antwoorden dan `owner-key-first`, en er wordt niets gewist. Schrijven zou het andere slot wissen, en daar kan het laatste image met het oude herstel staan: bijvoorbeeld b75fad3 naast een RX-only-image dat via USB is hersteld. Een oudere firmware (b75fad3, 2edb423) schrijft wel; daarvoor geldt de proefstartpoort hierboven.
+
 **Uitzondering: handwerk.** Is bij een proefstart ook de eigendomsopslag onleesbaar, en is het andere slot geen geverifieerd eigenaarsmodel-image in de toestand VALID (bijvoorbeeld een via USB geïnstalleerd image), dan stopt de start in de fail-closed modus vóór de timer en de watchdog. Het OLED vraagt dan om RST; die herstart doet de rollback.
 
 **Uitzondering: een update geschreven door b75fad3 of 2edb423** (Codex ronde 4, MAJOR). Die oude updaters controleren niet of de bootloader het geselecteerde slot draait. Draait het board het terugvalslot terwijl otadata het andere slot nog als `VALID` kiest, dan schrijft de oude updater in dat geselecteerde slot. Valt de stroom uit nadat het image compleet is, maar vóór de status `NEW`, dan start het nieuwe image zonder proefstart en dus zonder sleutelpoort. Daarom geldt voor de eerste update vanaf b75fad3 de verplichte controle vooraf in stap 7: `running` gelijk aan `boot`, en `running_state` `valid`. Bovendien is de sleutel er dan al (stap 2 t/m 5), dus ook in dat geval blijft er een herstel. De updater van deze firmware weigert die situatie zelf (`boot-slot-mismatch`).
 
 Een installatie via USB heeft geen proefstart. Op een board zonder sleutel geldt dan "done zonder sleutel" (zie hierboven): je kunt aanmelden en een sleutel registreren.
 
-**Voorwaarde voor USB: een leesbaar otadata-record** (Codex ronde 6). De firmware rekent alleen een image met de status `VALID` of `UNDEFINED` als vast. `UNDEFINED` is het record dat `boot_app0.bin` schrijft. De USB-routes van dit project schrijven dat record of eisen het vooraf: `heltec_v2.sh recover` en het fabrieksimage schrijven het, `heltec_v2.sh flash` weigert zonder. Ontbreekt het record (otadata gewist zonder `boot_app0.bin`), of blijft het onleesbaar, dan blijft de status onbekend. Er start dan geen update, en het PRG-menu (herstelmodus, WiFi wissen, fabrieksreset) blijft dicht. Aanmelden werkt wel. De console meldt na 300 s "OTA-status niet leesbaar: updates blijven dicht". Herstart eerst. Helpt dat niet, dan herstel je via USB met `heltec_v2.sh recover` (apart akkoord). Die route schrijft het record opnieuw uit de gepinde `boot_app0.bin`.
+**Voorwaarde voor USB: een leesbaar otadata-record** (Codex ronde 6). De firmware rekent alleen een image met de status `VALID` of `UNDEFINED` als vast. `UNDEFINED` is het record dat `boot_app0.bin` schrijft. De USB-routes van dit project schrijven dat record of eisen het vooraf: `heltec_v2.sh recover` en het fabrieksimage schrijven het, `heltec_v2.sh flash` weigert zonder. Ontbreekt het record (otadata gewist zonder `boot_app0.bin`), of blijft het onleesbaar, dan blijft de status onbekend. Er start dan geen update, en het PRG-menu (herstelmodus, WiFi wissen, fabrieksreset) blijft dicht. Aanmelden werkt wel. De console meldt na 300 s "OTA-status niet leesbaar: updates blijven dicht". Herstart eerst. Helpt dat niet, dan is er het USB-herstel, elke stap met apart akkoord (Codex ronde 7):
+1. `LOCAL_ENV=heltec_v2_sx1276 tools/heltec_v2.sh recover check <commit>` leest alleen en schrijft niets; het openen van de poort herstart de ESP32 wel. Voorwaarden:
+   - een geverifieerd lokaal RX-only-pakket van `<commit>`;
+   - bootloader en partitietabel van het board byte-gelijk aan het pakket;
+   - otadata leesbaar;
+   - beide slots elk leeg of een bekend image: een lokaal pakket, de rollback-commit of een regel in `~/.orcon/installed.txt`.
+2. Alleen na `RECOVERY CHECK OK`: `LOCAL_ENV=heltec_v2_sx1276 tools/heltec_v2.sh recover write <commit>`. Dat schrijft app0 en daarna het record uit de gepinde `boot_app0.bin`, elk met readback. NVS, bootloader, partitietabel en app1 blijven onaangeroerd.
+
+Weigert de controle (een onbekend of half geschreven image, een afwijkende bootloader, otadata onleesbaar), dan is er niets geschreven en werkt aanmelden nog. Er is dan **geen geverifieerde route die NVS bewaart**; improviseer niet met esptool. Wat overblijft is het fabrieksimage uit de release (`…-factory-usb.bin`, vanaf adres 0x0). Dat wist NVS (WiFi, wachtwoord, profielen, sleutel), daarna start de installatiewizard. De PRG-fabrieksreset is in deze toestand niet beschikbaar, want het PRG-menu blijft dicht.
 
 **Tests:**
 - `test_provision` (173): de oude waarden 0 + wachtwoord en 3 lezen als Done, zonder schrijven.
@@ -80,6 +90,7 @@ Een installatie via USB heeft geen proefstart. Op een board zonder sleutel geldt
 - `test_setup_web` (11 varianten): de drie routes geven 404; een volledige migratie: aanmelden, geen sleutel buiten de herstelmodus, `no-owner-key` vóór de sleutel, sleutel registreren, wachtwoord ongewijzigd, herstel met het sleutelbestand.
 - `test_web_auth` (59) en `test_setup_page.js` (159): geen codeformulier en geen `auth-code`-tekst. In de herstelmodus op een board zonder sleutel staat eerst de uitleg over de fabrieksreset. Het formulier blijft zichtbaar, want een leesfout kan tijdelijk zijn. Zonder wachtwoordrecord blijft het herstelformulier in de herstelmodus bereikbaar.
 - `test_orcon_cli` (55): `auth-code` bestaat niet meer.
+- `test_ab_transition` (8): zonder sleutel wordt een update geweigerd vóór er iets gewist wordt; b75fad3 blijft in app1 (Codex ronde 7).
 - Veiligheidsguard: geen van de oude namen of routes in `src/` en `orcon.py`. Verder:
   - de policyregels en de plekken waar de nieuwe marker mag staan;
   - de proefstartbeslissing en de poort in `tick()`;
@@ -89,10 +100,12 @@ Een installatie via USB heeft geen proefstart. Op een board zonder sleutel geldt
   - de classificatie van rollbackdoelen;
   - de herhaalde leespoging van de proefstartstatus, zonder klok die een onbekende status openzet;
   - de statuscontrole ook in `startWrite()`, de gedeelde schrijfingang van beide installatieroutes;
-  - de aanroep van `ota::tick` in de hoofdlus, precies binnen `#if ORCON_SIGNED_OTA` (ook een `#if 0` eromheen wordt geweigerd);
+  - geen schrijfactie zonder bruikbare sleutel: de controle in beide toegangen (`manualBlocked`, `claimDownload`), en elke weg naar `startWrite()` loopt daarlangs (Codex ronde 7);
+  - de aanroep van `ota::tick` in de hoofdlus: precies binnen `#if ORCON_SIGNED_OTA`, als losse opdracht op lusniveau direct na `net::loop()`, zonder `return` of `goto` ervoor. `ORCON_SIGNED_OTA` wordt alleen door de boardschakelaar in `config.h` gezet. Een `#if 0` eromheen, een `if (false)` ervoor en een tweede definitie worden geweigerd;
+  - de hulpfuncties zelf: `authorize` en `uploadAuthorized` eisen sessie én CSRF-token, en het eigendomsmodel bestaat alleen met login (Codex ronde 7);
   - in de fail-closed start: de status elke seconde opnieuw, en automatisch terug alleen bij een proefstart die op dat moment als proefstart gelezen wordt.
 
-  Er zijn 46 gerichte mutaties, die allemaal worden geweigerd.
+  Er zijn 61 gerichte mutaties, die allemaal worden geweigerd.
 
 ## Migratievolgorde voor jouw Heltec
 
