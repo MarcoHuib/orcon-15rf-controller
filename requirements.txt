@@ -1,0 +1,10 @@
+# Python packages used by this repository's tooling, pinned to the exact versions in use (also read by dependency
+# scanners such as Aikido). Installing from here is not the checked route:
+#   - USB flashing uses the local .flashtools/ environment, whose versions tools/heltec_v2.sh asserts;
+#   - firmware builds use PlatformIO Core 6.2.0 (docs/LOCAL_USB_RELEASE.md).
+# The C/C++ libraries (ArduinoJson, RadioLib, U8g2) and the ESP32 platform are pinned in platformio.ini. conan.lock lists
+# them for scanners too, with mbedTLS and lwIP from ESP-IDF 4.4.7 (Arduino-ESP32 2.0.16); Conan does not build anything here.
+esptool==4.8.1
+intelhex==2.3.0
+platformio==6.2.0
+pyserial==3.5
