@@ -1,0 +1,31 @@
+name: Rust protocol
+
+on:
+  push:
+    paths:
+      - 'rust/**'
+      - '.github/workflows/rust-protocol.yml'
+  pull_request:
+    paths:
+      - 'rust/**'
+      - '.github/workflows/rust-protocol.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  protocol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check formatting
+        run: cargo fmt --manifest-path rust/orcon-protocol/Cargo.toml -- --check
+      - name: Lint
+        run: cargo clippy --manifest-path rust/orcon-protocol/Cargo.toml --all-targets -- -D warnings
+      - name: Run protocol tests
+        run: cargo test --manifest-path rust/orcon-protocol/Cargo.toml
