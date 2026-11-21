@@ -59,7 +59,8 @@ elif pkg-config --exists libcrypto 2>/dev/null; then
 else
     echo "owner_key: NOT TESTED (no OpenSSL headers/libcrypto found)"
 fi
-WEB="-Wall -Wextra -Werror -DARDUINOJSON_ENABLE_ARDUINO_STRING=1 -I test/shim_web -I src -I $AJ test/test_setup_web.cpp src/setup_web.cpp src/setup_flow.cpp src/remote_profiles.cpp src/rf_console.cpp src/web_auth.cpp src/owner_key.cpp src/provision.cpp $ORCON"
+# GCC 13 flags bounded snprintf calls in orcon.cpp/orcon_log.cpp (display strings, no overflow): kept as warnings, not errors.
+WEB="-Wall -Wextra -Werror -Wno-error=format-truncation -DARDUINOJSON_ENABLE_ARDUINO_STRING=1 -I test/shim_web -I src -I $AJ test/test_setup_web.cpp src/setup_web.cpp src/setup_flow.cpp src/remote_profiles.cpp src/rf_console.cpp src/web_auth.cpp src/owner_key.cpp src/provision.cpp $ORCON"
 if [ -d "$AJ" ]; then
     run setup_web_rx -DRADIO_SX1276=1 -DRX_ONLY=1 $WEB
     run setup_web_rx_v2 -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 $WEB          # RX-only rollback image: web login

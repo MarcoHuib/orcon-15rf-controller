@@ -1266,7 +1266,8 @@ int main() {
         rx(offer); rx(fr(MsgType::W, UNIT, REM, 0x1FC9, {0x00, 0x31, 0xD9, 0x01, 0x02, 0x03}));
         rx(fr(MsgType::I, REM, UNIT, 0x1FC9, {0x00})); rx(press(0x04));
         Frame big = fr(MsgType::I, REM, REM2, 0x10E0, {}); big.len = 64; big.has_addr[2] = true; big.addr[2] = REM;
-        for (uint8_t i = 0; i < 64; ++i) big.payload[i] = i; rx(big); loopTick();
+        for (uint8_t i = 0; i < 64; ++i) big.payload[i] = i;
+        rx(big); loopTick();
         CHECK(call("GET", "/api/setup/capture") == 200 && J["total"].as<unsigned>() == before + 4, "capture: only 1FC9/10E0 frames counted");
         JsonArray fs = J["frames"].as<JsonArray>(); const size_t n = fs.size();
         CHECK(n >= 4 && fs[n - 4]["type"] == "I" && fs[n - 4]["cmd"] == "1FC9" && fs[n - 4]["len"] == 30 &&
