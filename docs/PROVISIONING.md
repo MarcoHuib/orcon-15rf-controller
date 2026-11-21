@@ -44,7 +44,7 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
 | New (afwezig, geen wachtwoord) | eerste start of na een fabrieksreset | alleen setup-AP |
 | Setup (1) | wachtwoord gezet, wizard bezig | alleen setup-AP; STA alleen tijdens de WiFi-test |
 | Done (2) | eigenaarssleutel geregistreerd | normaal; AP-fallback als het thuisnetwerk ontbreekt |
-| Legacy (3) | gemigreerd van firmware van vóór dit model | als Done; de oude ondertekende `auth-code` blijft tot er een eigenaarssleutel is |
+| (3, of een wachtwoord zonder staat) | gemigreerd van firmware van vóór dit model | leest als Done zonder sleutel: aanmelden werkt, een sleutel registreer je in de herstelmodus. Er is geen herstel met de signingsleutel ([`HERSTELSLEUTEL_MIGRATIE.md`](HERSTELSLEUTEL_MIGRATIE.md)). |
 | Locked | NVS is zijn eigenaar kwijt zonder voltooide fabrieksreset (Arduino-autoformat), terwijl de eigendomsmarkering buiten NVS zegt dat er een eigenaar is | niets gaat open: geen wizard, geen aanmelden, geen herstel. Alleen de PRG-fabrieksreset helpt |
 
 **Eigendomsmarkering buiten NVS (Codex OWNER-11)**
@@ -70,11 +70,11 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
 - Een onleesbare NVS telt als Done zonder sleutel: geen wizard en geen herstel via de releasesleutel.
 - Een onbekende waarde telt ook als Done.
 - Een opgeslagen wachtwoord dat niet te lezen is, telt als "gezet", nooit als "geen". Stap 1 gaat dan niet opnieuw open (Codex OWNER-02); aanmelden meldt "niet beschikbaar".
-- Na de registratie van een eigenaarssleutel vervallen openstaande herstelcodes van de releasesleutel. Zo'n code wordt daarna ook geweigerd (Codex OWNER-03).
+- Historisch (firmware van vóór `HERSTELSLEUTEL_MIGRATIE.md`): na de registratie van een eigenaarssleutel vervielen openstaande herstelcodes van de releasesleutel (Codex OWNER-03). De huidige firmware heeft geen herstelcodes meer.
 - **Dubbelzinnige schrijfacties** (wel opgeslagen, maar het teruglezen mislukt) worden voorzichtig behandeld (Codex OWNER-06/07):
   - Na een mislukte opslag neemt het RAM over wat er werkelijk in de opslag staat.
   - Stap 1 opent alleen als de opslag op dat moment bevestigt dat er nog geen wachtwoord is.
-  - Herstelcodes van de releasesleutel vervallen al vóór de eerste schrijfactie van een registratie, en het herstelpad sluit dan ook in RAM.
+  - Historisch: herstelcodes van de releasesleutel vervielen al vóór de eerste schrijfactie van een registratie. De huidige firmware heeft ze niet meer.
   - Bij het opstarten betekent een opgeslagen (of onleesbare) eigenaarssleutel altijd Done, wat de staat ook zegt.
   - Een wachtwoordwijziging of -herstel waarvan het opslaan dubbelzinnig mislukt, meldt alle sessies af. Is de opslag daarna onleesbaar, dan werkt ook het oude wachtwoord niet meer tot hij weer leesbaar is; er blijft niets gecachet (Codex OWNER-08).
   - Een leesfout bij het controleren van het rollbackimage tijdens een fabrieksreset betekent nooit "geen image". De marker blijft staan en de reset probeert het bij de volgende start opnieuw (Codex OWNER-09).
@@ -196,7 +196,7 @@ Dit document beschrijft hoe een nieuwe Heltec V2 zonder computer wordt ingericht
 | Wist | niets | thuis-WiFi, ook de kopie in de WiFi-driver (`nvs.net80211`) | alles hieronder |
 | Behoudt | alles | wachtwoord, sleutel, profielen, koppeling, eigen ID, firmware | firmware, bootloader, partitietabel, OTA/rollback, releasesleutel |
 | Daarna | setup-AP, 15 minuten, één boot | setup-AP; aanmelden en de WiFi-test | staat New: de wizard opnieuw |
-| Gebruik | vergeten wachtwoord met het sleutelbestand; een nieuwe sleutel (aangemeld); een Legacy-apparaat een sleutel geven | verhuizen, nieuwe router | verkopen, overdragen, alles opnieuw |
+| Gebruik | vergeten wachtwoord met het sleutelbestand; een nieuwe sleutel (aangemeld); een apparaat zonder sleutel er een geven | verhuizen, nieuwe router | verkopen, overdragen, alles opnieuw |
 
 **Herstelmodus**
 - Dit is een RTC-vlag voor één boot. Een stroomonderbreking annuleert hem.
@@ -248,6 +248,7 @@ Bij een stroomonderbreking gaat de reset bij de volgende start verder. Zonder ma
 - De sessie van de eigenaar is verplicht.
 - Alle bestaande controles blijven: grootte, hash, commit, varianten en markers, `esp_ota_end`, proefstart en rollback.
 - Nieuw is de marker `ORCON-OWNER-MODEL v1`. Firmware van vóór dit model kan niet meer via OTA terugkomen, want het herstelpad daarvan vertrouwt de releasesleutel.
+- Daarnaast `ORCON-OWNER-KEY v1`: alleen builds met het eigendomsmodel bevatten hem. Een image zonder wordt geweigerd (`image-without-owner-key`; [HERSTELSLEUTEL_MIGRATIE.md](HERSTELSLEUTEL_MIGRATIE.md)).
 
 `tools/orcon.py`:
 - `ota-install` vraagt op apparaten met dit model het webwachtwoord.
@@ -286,7 +287,7 @@ Een image van vóór dit model in de andere sleuf zou na een terugval het oude h
 - **De ingebouwde publieke OTA-sleutel:** wordt de releasesleutel. Hij tekent nog steeds firmware, maar geeft geen wachtwoordherstel meer zodra er een eigenaarssleutel is.
 - **A/B en rollback:** ongewijzigd. Let op de volgorde, zodat de rollbacksleuf het nieuwe model krijgt.
 
-**Stappen (elke installatie apart, alleen met toestemming)**
+**Stappen (elke installatie apart, alleen met toestemming)** — historisch, uitgevoerd in november 2026. `auth-code` en de staat Legacy bestaan niet meer; zie [`HERSTELSLEUTEL_MIGRATIE.md`](HERSTELSLEUTEL_MIGRATIE.md).
 0. Zet eerst een eigen wachtwoord, nog met de huidige firmware: `orcon.py auth-code` en de webinterface. Het apparaat heeft nu een tijdelijk testwachtwoord.
 1. OTA het nieuwe RX-only-image naar app0. De huidige firmware accepteert dat zonder aanmelden, zoals nu. Het nieuwe image start als Legacy, met WiFi, en bevestigt zichzelf. Rollbackdoel blijft a5260ad control.
 2. OTA het nieuwe control-image naar app1. `orcon.py` vraagt nu het webwachtwoord. Daarna bevatten beide sleuven het nieuwe model.
@@ -361,7 +362,7 @@ Een LAN-IP of `.local` krijgt geen publiek certificaat.
 
 **Kosten van TLS op het apparaat.** `esp_https_server` met mbedTLS vraagt ongeveer 40–50 KB heap per verbinding. De laagste vrije heap is nu ongeveer 160 KB. Eén verbinding is waarschijnlijk haalbaar (NOT TESTED). Zonder vertrouwd certificaat lost het echter niets op.
 
-**Geen Mac meer nodig.** Het eerste wachtwoord, het herstel en de updates lopen via de telefoon. De Mac blijft alleen het ontwikkelaarspad: `ota-install`, en `auth-code` voor Legacy.
+**Geen Mac meer nodig.** Het eerste wachtwoord, het herstel en de updates lopen via de telefoon. De Mac blijft alleen het ontwikkelaarspad: `ota-install`.
 
 ## 10. Testbewijs (lokaal, host)
 

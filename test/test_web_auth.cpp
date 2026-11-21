@@ -1,5 +1,5 @@
-// Web login logic: password policy, credential check, sessions, throttle, recovery code and
-// the signed recovery request. The KDF and RNG are deterministic stand-ins (the device uses
+// Web login logic: password policy, credential check, sessions and throttle (no recovery code:
+// the firmware signing key never resets a password). The KDF and RNG are deterministic stand-ins (the device uses
 // mbedTLS PBKDF2-HMAC-SHA256 with a known-answer self-test and the hardware RNG).
 #include "web_auth.h"
 #include <cstdio>
@@ -100,59 +100,6 @@ int main() {
     CHECK(!sw.find(old.id, uint32_t(T + 0x100000001ull)) && sw.active(T + IDLE_MS) == 0);
     const Session live = sw.create(T, rng);
     sw.sweep(T + IDLE_MS - 1); CHECK(sw.find(live.id, T + IDLE_MS - 1));   // a used session is kept
-    Recovery rs;
-    std::string rn = rs.issueNonce(T, rng);
-    rs.sweep(T + NONCE_TTL_MS);
-    CHECK(!rs.takeNonce(rn.c_str(), uint32_t(T + 0x100000001ull)));        // 2^32 + 1 ms later: still dead
-    std::string rc = rs.issueCode(T, rng);
-    rs.sweep(T + CODE_TTL_MS);
-    CHECK(rs.use(rc.c_str(), uint32_t(T + 0x100000001ull)) == Recovery::Check::None);
-    rn = rs.issueNonce(T, rng); rc = rs.issueCode(T, rng);
-    rs.sweep(T + 1000);                                                  // fresh material survives a sweep
-    CHECK(rs.takeNonce(rn.c_str(), T + 2000) && rs.use(rc.c_str(), T + 2000) == Recovery::Check::Ok);
-    rn = rs.issueNonce(T, rng); rc = rs.issueCode(T, rng); rs.clear();   // Codex OWNER-03: cleared at owner-key enrolment
-    CHECK(!rs.takeNonce(rn.c_str(), T + 1) && rs.use(rc.c_str(), T + 1) == Recovery::Check::None);
-    // Recovery: one-time nonce with TTL, one-time code with 5 tries and 10 minutes.
-    Recovery r;
-    std::string n1 = r.issueNonce(T, rng);
-    CHECK(n1.size() == 32 && r.takeNonce(n1.c_str(), T + 1) && !r.takeNonce(n1.c_str(), T + 2));
-    n1 = r.issueNonce(T, rng); CHECK(!r.takeNonce(n1.c_str(), T + NONCE_TTL_MS));
-    n1 = r.issueNonce(T, rng); CHECK(!r.takeNonce("ffffffffffffffffffffffffffffffff", T) && !r.takeNonce(n1.c_str(), T));
-    CHECK(r.use("ABCD-EFGH", T) == Recovery::Check::None);
-    std::string code = r.issueCode(T, rng);
-    CHECK(code.size() == 9 && code[4] == '-');
-    for (char ch : code) CHECK(ch == '-' || strchr("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", ch));
-    std::string lower = code; for (char& ch : lower) ch = char(tolower(ch));
-    std::string bare = code.substr(0, 4) + " " + code.substr(5);
-    CHECK(r.use("WRONG-CODE", T + 1) == Recovery::Check::Wrong);
-    CHECK(r.use((code + "X").c_str(), T + 1) == Recovery::Check::Wrong);
-    CHECK(r.use(lower.c_str(), T + 2) == Recovery::Check::Ok);           // case and dash do not matter
-    CHECK(r.use(code.c_str(), T + 3) == Recovery::Check::None);         // one use
-    code = r.issueCode(T, rng);
-    CHECK(r.use(bare.c_str(), T) != Recovery::Check::Ok);
-    code = r.issueCode(T, rng);
-    for (int i = 0; i < 4; ++i) CHECK(r.use("AAAA-AAAA", T) == Recovery::Check::Wrong);
-    CHECK(r.use("AAAA-AAAA", T) == Recovery::Check::Exhausted && r.use(code.c_str(), T) == Recovery::Check::None);
-    code = r.issueCode(T, rng); CHECK(r.use(code.c_str(), T + CODE_TTL_MS) == Recovery::Check::Expired);
-    CHECK(!strcmp(checkName(Recovery::Check::Exhausted), "code-exhausted"));
-    // The signed recovery request: exact fields, this board, a fresh nonce (taken once).
-    const char* MAC = "02:00:00:00:00:0a";
-    auto req = [&](const std::string& nonce, const char* kind = "orcon-auth-reset", const char* mac = "02:00:00:00:00:0a", const char* extra = "") {
-        return std::string("{\"v\":1,\"kind\":\"") + kind + "\",\"mac\":\"" + mac + "\",\"nonce\":\"" + nonce + "\"" + extra + "}";
-    };
-    std::string n = r.issueNonce(T, rng);
-    CHECK(checkResetRequest(req(n).c_str(), MAC, r, T + 1) == nullptr);
-    CHECK(!strcmp(checkResetRequest(req(n).c_str(), MAC, r, T + 2), "nonce-mismatch"));   // replay
-    n = r.issueNonce(T, rng); CHECK(!strcmp(checkResetRequest(req(n, "orcon-ota").c_str(), MAC, r, T), "bad-request"));
-    n = r.issueNonce(T, rng); CHECK(!strcmp(checkResetRequest(req(n, "orcon-auth-reset", "02:00:00:00:00:09").c_str(), MAC, r, T), "wrong-board"));
-    n = r.issueNonce(T, rng); CHECK(checkResetRequest(req(n, "orcon-auth-reset", "02:00:00:00:00:0A").c_str(), MAC, r, T) == nullptr);
-    n = r.issueNonce(T, rng); CHECK(!strcmp(checkResetRequest(req(n, "orcon-auth-reset", MAC, ",\"x\":1").c_str(), MAC, r, T), "bad-request"));
-    n = r.issueNonce(T, rng);
-    CHECK(!strcmp(checkResetRequest(("{\"v\":2,\"kind\":\"orcon-auth-reset\",\"mac\":\"02:00:00:00:00:0a\",\"nonce\":\"" + n + "\"}").c_str(), MAC, r, T), "bad-request"));
-    CHECK(!strcmp(checkResetRequest("{\"v\":1}", MAC, r, T), "bad-request") && !strcmp(checkResetRequest("nope", MAC, r, T), "bad-request"));
-    // An OTA manifest is never a recovery request (different fields), whatever its signature.
-    CHECK(!strcmp(checkResetRequest("{\"v\":1,\"mac\":\"02:00:00:00:00:0a\",\"env\":\"x\",\"variant\":\"rx-only\",\"allow_tx\":false,"
-                                    "\"commit\":\"0\",\"size\":1,\"sha256\":\"0\",\"nonce\":\"0\"}", MAC, r, T), "bad-request"));
     // Cookie header parsing.
     char sid[33];
     const std::string h = "0123456789abcdef0123456789abcdef";

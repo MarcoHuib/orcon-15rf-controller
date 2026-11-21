@@ -96,20 +96,19 @@ static bool clearReset(SimFlash& f) { return sentinelWrite(f, false, false); }
 static bool forceReset(SimFlash& f) { return sentinelForce(f, true, true); }
 
 int main() {
-    // ---- stored state and migration
-    bool mig = true;
-    CHECK(fromStored(0, false, false, mig) == State::New && !mig);
-    CHECK(fromStored(0, true, false, mig) == State::Legacy && mig);              // password from pre-owner firmware
-    CHECK(fromStored(STORED_SETUP, false, false, mig) == State::Setup && !mig);  // step 1 interrupted before the password
-    CHECK(fromStored(STORED_SETUP, true, false, mig) == State::Setup && !mig);
-    CHECK(fromStored(STORED_DONE, true, false, mig) == State::Done && !mig);
-    CHECK(fromStored(STORED_LEGACY, true, false, mig) == State::Legacy && !mig);
-    CHECK(fromStored(7, false, false, mig) == State::Done && fromStored(255, true, false, mig) == State::Done);   // unknown: fail closed
+    // ---- stored state (read only: nothing is migrated or rewritten)
+    CHECK(fromStored(0, false, false) == State::New);
+    CHECK(fromStored(0, true, false) == State::Done);                    // a password from pre-owner firmware: no wizard, no key yet
+    CHECK(fromStored(STORED_SETUP, false, false) == State::Setup);       // step 1 interrupted before the password
+    CHECK(fromStored(STORED_SETUP, true, false) == State::Setup);
+    CHECK(fromStored(STORED_DONE, true, false) == State::Done);
+    CHECK(fromStored(3, true, false) == State::Done);                    // the old "migrated" value: Done without a key, never a release-key reset
+    CHECK(fromStored(7, false, false) == State::Done && fromStored(255, true, false) == State::Done);   // unknown: fail closed
     // Codex OWNER-07: a stored owner key always means Done (an interrupted registration, a partial erase)
-    CHECK(fromStored(STORED_LEGACY, true, true, mig) == State::Done && !mig);
-    CHECK(fromStored(STORED_SETUP, true, true, mig) == State::Done && !mig);
-    CHECK(fromStored(0, true, true, mig) == State::Done && !mig && fromStored(0, false, true, mig) == State::Done && !mig);
-    CHECK(!strcmp(name(State::New), "new") && !strcmp(name(State::Legacy), "legacy") && installing(State::Setup) && !installing(State::Done));
+    CHECK(fromStored(3, true, true) == State::Done && fromStored(STORED_SETUP, true, true) == State::Done);
+    CHECK(fromStored(0, true, true) == State::Done && fromStored(0, false, true) == State::Done);
+    CHECK(!strcmp(name(State::New), "new") && !strcmp(name(State::Done), "done") && !strcmp(name(State::Locked), "locked") &&
+          installing(State::Setup) && !installing(State::Done));
 
     // ---- route policy
     const Route ALL[] = {Route::State, Route::Password, Route::WifiTest, Route::Key, Route::KeyFile, Route::KeyVerify, Route::Recover};
@@ -141,11 +140,10 @@ int main() {
     c.loggedIn = false;
     CHECK(is(allow(Route::Recover, c), nullptr) && is(allow(Route::Key, c), "login-required"));   // recovery needs no login, a new key does
     CHECK(is(allow(Route::Password, c), "not-installing"));
-    // Legacy: a key can be registered in the recovery mode; there is none to recover with yet.
-    c.state = State::Legacy; c.loggedIn = true;
-    CHECK(is(allow(Route::Key, c), nullptr) && is(allow(Route::Recover, c), "no-owner-key"));
-    c.physical = false;
-    CHECK(is(allow(Route::Key, c), "physical-mode-required"));
+    // A board from pre-owner firmware reads Done without a key: it registers one in the recovery mode (the
+    // recover route then answers no-owner-key itself: setup_web.cpp), never outside it.
+    c.loggedIn = true; c.physical = false;
+    CHECK(is(allow(Route::Key, c), "physical-mode-required") && is(allow(Route::Recover, c), "physical-mode-required"));
 
     // ---- factory reset
     {   // the normal case: requested by the gesture, completed at the next boot
@@ -171,11 +169,10 @@ int main() {
         CHECK(!resume(f) && f.ns.size() == 6);
         f.unreadable = false; CHECK(resume(f) && f.wiped());               // readable again: the reset completes
     }
-    {   // cut after the first erase: no password, but the owner state stays: never a Legacy-looking state
+    {   // cut after the first erase: no password, but the owner state stays (never "a password without a state")
         Flash f; request(f); f.reboot(); f.budget = 1; resume(f);
         CHECK(!f.ns.count("orconauth") && f.ns.count("orconown"));
-        bool mig = false;
-        CHECK(fromStored(STORED_DONE, false, false, mig) == State::Done && !mig);  // installed without a password: locked
+        CHECK(fromStored(STORED_DONE, false, false) == State::Done);       // installed without a password: locked
     }
     {   // the recovery mode timer: 15 minutes, then latched off (a millis() wrap never revives it)
         PhysicalTimer p; CHECK(p.left(0) == 0);
@@ -292,7 +289,7 @@ int main() {
         CHECK(withSentinel(State::New, SentinelRead::Ok, o) == State::Locked);
         CHECK(withSentinel(State::New, SentinelRead::Unreadable, u) == State::Locked);
         CHECK(withSentinel(State::New, SentinelRead::Absent, u) == State::New && withSentinel(State::New, SentinelRead::Ok, u) == State::New);
-        CHECK(withSentinel(State::Done, SentinelRead::Unreadable, u) == State::Done && withSentinel(State::Legacy, SentinelRead::Ok, u) == State::Legacy);
+        CHECK(withSentinel(State::Done, SentinelRead::Unreadable, u) == State::Done && withSentinel(State::Setup, SentinelRead::Ok, u) == State::Setup);
         // Locked: nothing but the read-only state on the setup AP.
         Ctx k; k.viaAp = true; k.state = State::Locked; k.physical = true; k.loggedIn = true;
         bool lockedOk = !strcmp(name(State::Locked), "locked") && !installing(State::Locked) && is(allow(Route::State, k), nullptr);
