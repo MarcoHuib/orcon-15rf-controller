@@ -72,9 +72,11 @@ Zonder sleutel wordt de proefstart nooit bevestigd. De sleutel wordt vóór elke
 
 Een installatie via USB heeft geen proefstart. Op een board zonder sleutel geldt dan "done zonder sleutel" (zie hierboven): je kunt aanmelden en een sleutel registreren.
 
+**Voorwaarde voor USB: een leesbaar otadata-record** (Codex ronde 6). De firmware rekent alleen een image met de status `VALID` of `UNDEFINED` als vast. `UNDEFINED` is het record dat `boot_app0.bin` schrijft. De USB-routes van dit project schrijven dat record of eisen het vooraf: `heltec_v2.sh recover` en het fabrieksimage schrijven het, `heltec_v2.sh flash` weigert zonder. Ontbreekt het record (otadata gewist zonder `boot_app0.bin`), of blijft het onleesbaar, dan blijft de status onbekend. Er start dan geen update, en het PRG-menu (herstelmodus, WiFi wissen, fabrieksreset) blijft dicht. Aanmelden werkt wel. De console meldt na 300 s "OTA-status niet leesbaar: updates blijven dicht". Herstart eerst. Helpt dat niet, dan herstel je via USB met `heltec_v2.sh recover` (apart akkoord). Die route schrijft het record opnieuw uit de gepinde `boot_app0.bin`.
+
 **Tests:**
 - `test_provision` (173): de oude waarden 0 + wachtwoord en 3 lezen als Done, zonder schrijven.
-- `test_ota_policy` (100): een image met het oude herstel wordt geweigerd, ook als de marker over een chunkgrens valt, maar blijft een eigenaarsmodel-image. Een image zonder de marker `ORCON-OWNER-KEY v1` wordt geweigerd, bij elke chunkgrootte. Ook de proefstartbeslissing is getest: wachten, één poging per seconde, en rollback bij de deadline, ook bij trage lussen met een openstaande poging. Als rollbackdoel telt alleen een image met eigenaarsherstel: deze firmware, of b75fad3/2edb423. Een build met alleen de oude marker telt niet (`otap::ownerRecovery`, Codex ronde 4).
+- `test_ota_policy` (104): een image met het oude herstel wordt geweigerd, ook als de marker over een chunkgrens valt, maar blijft een eigenaarsmodel-image. Een image zonder de marker `ORCON-OWNER-KEY v1` wordt geweigerd, bij elke chunkgrootte. Ook de proefstartbeslissing is getest: wachten, één poging per seconde, en rollback bij de deadline, ook bij trage lussen met een openstaande poging. Als rollbackdoel telt alleen een image met eigenaarsherstel: deze firmware, of b75fad3/2edb423. Een build met alleen de oude marker telt niet (`otap::ownerRecovery`, Codex ronde 4). De OTA-status (`otap::runState`): alleen een geslaagde lezing met `VALID` of `UNDEFINED` is vast, `PENDING_VERIFY` is een proefstart, en al het andere blijft onbekend, ook een mislukte lezing (Codex ronde 6).
 - `test_setup_web` (11 varianten): de drie routes geven 404; een volledige migratie: aanmelden, geen sleutel buiten de herstelmodus, `no-owner-key` vóór de sleutel, sleutel registreren, wachtwoord ongewijzigd, herstel met het sleutelbestand.
 - `test_web_auth` (59) en `test_setup_page.js` (159): geen codeformulier en geen `auth-code`-tekst. In de herstelmodus op een board zonder sleutel staat eerst de uitleg over de fabrieksreset. Het formulier blijft zichtbaar, want een leesfout kan tijdelijk zijn. Zonder wachtwoordrecord blijft het herstelformulier in de herstelmodus bereikbaar.
 - `test_orcon_cli` (55): `auth-code` bestaat niet meer.
@@ -85,9 +87,12 @@ Een installatie via USB heeft geen proefstart. Op een board zonder sleutel geldt
   - herstel alleen in de Herstelmodus;
   - de sessiecontrole van nonce, begin en upload;
   - de classificatie van rollbackdoelen;
-  - de herhaalde leespoging van de proefstartstatus en de aanroep van `ota::tick` in de hoofdlus.
-  
-  Er zijn 35 gerichte mutaties, die allemaal worden geweigerd.
+  - de herhaalde leespoging van de proefstartstatus, zonder klok die een onbekende status openzet;
+  - de statuscontrole ook in `startWrite()`, de gedeelde schrijfingang van beide installatieroutes;
+  - de aanroep van `ota::tick` in de hoofdlus, precies binnen `#if ORCON_SIGNED_OTA` (ook een `#if 0` eromheen wordt geweigerd);
+  - in de fail-closed start: de status elke seconde opnieuw, en automatisch terug alleen bij een proefstart die op dat moment als proefstart gelezen wordt.
+
+  Er zijn 46 gerichte mutaties, die allemaal worden geweigerd.
 
 ## Migratievolgorde voor jouw Heltec
 
@@ -121,7 +126,8 @@ Beide images hebben het eigendomsmodel. Uit de broncode van beide commits volgt 
 - De nieuwe firmware van stap 7 kan je niet buitensluiten: zonder sleutel bevestigt hij zich niet.
 
 **Restpunten (Codex, niet opgelost):**
-- Kan de firmware bij het starten de OTA-status niet lezen, dan leest `tick()` hem binnen het proefstartvenster (300 s) elke seconde opnieuw, en start er geen update (`readTrialState`, `g_stateOpen`; Codex ronde 3–5). Een leesfout die het hele venster duurt, lijkt op een USB-installatie zonder otadata-regel (ESP-IDF 4.4 geeft voor beide `ESP_ERR_NOT_FOUND`). Het image blijft dan wel in otadata onbevestigd, dus elke herstart (RST, stroom, watchdog) rolt terug. Gevolg voor een USB-installatie: de eerste 5 minuten na het opstarten start er geen update.
+- Kan de firmware de OTA-status niet lezen, dan leest `tick()` hem elke seconde opnieuw, zonder tijdslimiet. Zolang de status onbekend is, start er geen update (`readTrialState`, `g_stateOpen`, ook in `startWrite()`; Codex ronde 3–6). Een onbekende status gaat dus nooit vanzelf open. Een echte proefstart met mislukte lezingen kan daardoor niet over zijn eigen rollback-image heen schrijven. Gevolg: een leesfout die blijft, of otadata zonder record, houdt updates en het PRG-menu dicht tot een herstart of het USB-herstel (zie "Voorwaarde voor USB" hierboven). Wordt de proefstart pas na 300 s herkend, dan volgt meteen de rollback.
+- Een proefstart waarvan elke lezing mislukt, wordt nooit door de firmware zelf teruggedraaid of bevestigd. Het image blijft in otadata onbevestigd, dus elke herstart (RST, stroom, watchdog) rolt terug.
 - Er is geen hosttest van de hele startvolgorde (opstarthaak → proefstart → `tick`) en van de OTA-routes met een ontbrekende sessie of CSRF-token. De guard pint die code wel vast, met mutaties.
 
 **Restpunt.** Raakt NVS precies de namespace `orconown` kwijt terwijl `orconauth` blijft, dan leest een **oud** image (b75fad3, 2edb423, PR #16) het board weer als *legacy*. Dat kan alleen door ingrijpen via USB of door schade aan het flashgeheugen; geen enkele route doet het. Na stap 8 staat er geen oud image meer op het board.

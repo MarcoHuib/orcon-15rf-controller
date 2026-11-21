@@ -71,15 +71,21 @@ static RTC_NOINIT_ATTR Crumb g_crumb;
 static uint32_t g_prevUptimeS = 0;
 static bool g_prevKnown = false;
 static std::atomic<bool> g_pending{false};      // also read by the loop watchdog on core 0 (Codex r6)
-// The trial state is not read yet, within the trial window. IDF 4.4 reports an otadata read error and a slot without an
-// otadata record (a USB install) both as ESP_ERR_NOT_FOUND: until one read succeeds, tick() reads again once a second
-// and no update starts. Latched closed after the window, so a USB install updates normally (Codex legacy r3-r5).
+// The trial state is unknown (otap::runState): not read yet, unreadable, or no settled value. No update starts and
+// tick() reads it again once a second, at every uptime: an unknown state never opens the writer by itself, because a
+// real trial whose reads fail would then overwrite its own rollback image (Codex legacy r3-r6). A USB install reads
+// UNDEFINED from boot_app0.bin, which every USB route of this project writes.
 static std::atomic<bool> g_stateOpen{true};
+static_assert(ESP_OTA_IMG_PENDING_VERIFY == 1 && ESP_OTA_IMG_VALID == 2 && ESP_OTA_IMG_UNDEFINED == 0xFFFFFFFFu, "otap::runState values");
+static otap::RunState runningState() {
+    esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
+    const bool ok = esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK;
+    return otap::runState(ok, uint32_t(st));
+}
 static void readTrialState() {
-    esp_ota_img_states_t st;
-    const esp_err_t e = esp_ota_get_state_partition(esp_ota_get_running_partition(), &st);
-    g_pending = e == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;
-    g_stateOpen = e != ESP_OK;
+    const otap::RunState r = runningState();
+    g_pending = r == otap::RunState::Trial;
+    g_stateOpen = r == otap::RunState::Unknown;
 }
 static bool g_hold = false;   // rollback test: this trial boot refuses to confirm itself (RAM only)
 #define ORCON_STR2(x) #x
@@ -301,6 +307,8 @@ static void abortWrite(const char* e) {
 static const char* startWrite() {   // Ready -> Writing
     if (g_selected) { g_st = St::Failed; return g_err = "restart-pending"; }
     if (g_st != St::Ready) return "not-ready";
+    // The shared entry of both paths: the SDK's own check in esp_ota_begin() skips a state it cannot read (Codex legacy r6).
+    if (g_pending || g_stateOpen) { g_st = St::Failed; return g_err = "confirm-running-image-first"; }
     if (esp_ota_begin(g_part, OTA_WITH_SEQUENTIAL_WRITES, &g_h) != ESP_OK) { g_st = St::Failed; return g_err = "ota-begin-failed"; }
     mbedtls_sha256_init(&g_sha); mbedtls_sha256_starts_ret(&g_sha, 0);
     g_rx = 0; g_st = St::Writing;
@@ -384,6 +392,7 @@ static void handleUploadDone() {
 
 // ---- the one-click update (fw_update_esp.cpp): the same checks and writer as begin + upload, v2 releases only ----
 bool pendingVerify() { return g_pending || g_stateOpen; }
+bool trialNow() { return runningState() == otap::RunState::Trial; }
 bool writerBusy() { return g_dl || g_st == St::Writing || g_selected; }
 uint32_t updateSlotSize() { const esp_partition_t* p = esp_ota_get_next_update_partition(nullptr); return p ? p->size : 0; }
 const char* claimDownload() {   // loop task, before the worker task exists
@@ -527,10 +536,14 @@ void tick(uint32_t now) {
     if (now - lastCrumb >= 5000) { lastCrumb = now; g_crumb.lastUptimeS = now / 1000; }
     if (g_nonce[0] && now - g_nonceMs >= NONCE_TTL_MS) g_nonce[0] = 0;   // a 49.7-day millis() wrap must not revive it
     static uint32_t lastRead = 0;
-    if (g_stateOpen && now >= ROLLBACK_AFTER_MS) g_stateOpen = false;   // never read: a USB install, or a lasting read error
-    else if (g_stateOpen && now - lastRead >= 1000) {
+    static bool toldUnknown = false;
+    if (g_stateOpen && now - lastRead >= 1000) {   // unknown: read again; only a settled read opens the writer
         lastRead = now; readTrialState();
         if (g_pending) note(rfcon::WARN, "proefstart alsnog herkend (OTA-status bij het opstarten niet leesbaar)");
+        else if (g_stateOpen && now >= ROLLBACK_AFTER_MS && !toldUnknown) {
+            toldUnknown = true;
+            note(rfcon::ERR, "OTA-status niet leesbaar: updates blijven dicht. Herstart; blijft het zo, herstel via USB (docs/HERSTELSLEUTEL_MIGRATIE.md)");
+        }
     }
     if (!g_pending) return;
     // Healthy = this image runs, joined the network (so a later OTA can still reach it) and the receiver is up. It is

@@ -86,4 +86,11 @@ inline bool ownerRecovery(const Scanner& s) { return s.ownerModel && (s.ownerKey
 enum class Trial : uint8_t { Wait, TryConfirm, Rollback };
 Trial trialStep(uint32_t now, bool healthy, uint32_t& lastTry, uint32_t confirmAfter, uint32_t rollbackAfter);
 
+// The running image's OTA state, from esp_ota_get_state_partition (IDF values: PENDING_VERIFY 1, VALID 2, UNDEFINED
+// 0xFFFFFFFF, the record boot_app0.bin writes for a USB install). Only a read that says VALID or UNDEFINED is settled;
+// PENDING_VERIFY is a trial. Anything else stays unknown at every uptime, a read error and a missing record included
+// (IDF 4.4 reports both as ESP_ERR_NOT_FOUND): no update starts and the state is read again (Codex legacy r6).
+enum class RunState : uint8_t { Unknown, Trial, Settled };
+RunState runState(bool readOk, uint32_t state);
+
 }  // namespace otap

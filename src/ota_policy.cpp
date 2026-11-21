@@ -146,6 +146,12 @@ Trial trialStep(uint32_t now, bool healthy, uint32_t& lastTry, uint32_t confirmA
     return Trial::Wait;
 }
 
+RunState runState(bool readOk, uint32_t st) {
+    if (!readOk) return RunState::Unknown;
+    if (st == 1) return RunState::Trial;
+    return st == 2 || st == 0xFFFFFFFFu ? RunState::Settled : RunState::Unknown;   // NEW, INVALID, ABORTED: unknown
+}
+
 const char* checkImage(const Manifest& m, const Scanner& s, uint32_t received, const uint8_t sha256[32]) {
     if (received != m.size) return "size-mismatch";
     uint8_t diff = 0;

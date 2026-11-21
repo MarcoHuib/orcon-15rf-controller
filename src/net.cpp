@@ -1084,16 +1084,22 @@ void begin() {
         // Every restart obeys the OTA settlement rule (Codex OWNER-10): during an unconfirmed update a restart
         // makes the bootloader return to the previous image first, which may predate the ownership model. So
         // then this loop neither restarts by itself nor accepts the reset; the user decides with RST.
-        const bool settled = !ownerstore::unsettledBoot();
-        // An unconfirmed update that cannot read this storage still returns to the previous image after the usual
-        // 300 s, but only when that image is a confirmed one of the ownership model itself (Codex r4). Otherwise the
-        // OWNER-10 rule stands: no automatic return to a possibly pre-owner image; the user decides with RST.
-        const bool backOk = !settled && ota::previousIsOwnerModel();
+        // Read again once a second: a passing read error neither latches this loop nor decides the return (Codex legacy r6).
+        bool settled = !ownerstore::unsettledBoot();
+        uint32_t lastRead = millis(), lastBack = 0;
         const uint32_t until = millis() + 60000;
         while (!settled || int32_t(millis() - until) < 0 || g_gesture.phase() != gesture::Phase::Idle) {   // never cut a menu short
-            if (backOk && millis() >= 300000 && g_gesture.phase() == gesture::Phase::Idle) {
-                Serial.println("[ota] unconfirmed update cannot read the ownership storage: back to the previous image");
-                ota::rollbackNow();
+            if (millis() - lastRead >= 1000) { lastRead = millis(); settled = !ownerstore::unsettledBoot(); }
+            // An unconfirmed update that cannot read this storage still returns to the previous image after the usual
+            // 300 s, but only while it reads as a trial right now and that image is a confirmed one of the ownership model
+            // itself (Codex r4). Otherwise the OWNER-10 rule stands: no automatic return to a possibly pre-owner image, and
+            // an unknown state is no trial; the user decides with RST. The slot scan is repeated at most every 10 s.
+            if (!settled && millis() >= 300000 && g_gesture.phase() == gesture::Phase::Idle && (!lastBack || millis() - lastBack >= 10000)) {
+                lastBack = millis();
+                if (ota::trialNow() && ota::previousIsOwnerModel()) {
+                    Serial.println("[ota] unconfirmed update cannot read the ownership storage: back to the previous image");
+                    ota::rollbackNow();
+                }
             }
             const gesture::Action a = g_gesture.poll(digitalRead(PIN_PRG_BTN), millis());
             if (a == gesture::Action::FactoryReset && !settled) notice("Update onbevestigd:", "reset kan niet,", "RST = vorige versie", 8000);

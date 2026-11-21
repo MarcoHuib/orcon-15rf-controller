@@ -164,6 +164,13 @@ int main() {
       CHECK(rolled && tries == 2, "trial: slow passes with due attempts still roll back at the first pass past 300 s");
       last = 0;
       CHECK(trialStep(4000000000u, false, last, C, R) == Trial::Rollback, "trial: never confirmed: rollback whatever the clock"); }
+    // ---- the running image's OTA state (Codex legacy r6): only a positive VALID/UNDEFINED read opens the writer ----
+    CHECK(runState(true, 2) == RunState::Settled && runState(true, 0xFFFFFFFFu) == RunState::Settled, "state: VALID and UNDEFINED (boot_app0) are settled");
+    CHECK(runState(true, 1) == RunState::Trial, "state: PENDING_VERIFY is a trial");
+    CHECK(runState(true, 0) == RunState::Unknown && runState(true, 3) == RunState::Unknown && runState(true, 4) == RunState::Unknown &&
+          runState(true, 7) == RunState::Unknown, "state: NEW, INVALID, ABORTED and any other value stay unknown");
+    CHECK(runState(false, 2) == RunState::Unknown && runState(false, 1) == RunState::Unknown && runState(false, 0xFFFFFFFFu) == RunState::Unknown,
+          "state: a failed read is unknown, whatever the output holds");
     // ---- the removed Legacy recovery: an image with the release-key password reset is never written again ----
     { const auto withReset = image({COMMIT, "SX1276 direct RX (TX disabled)", "RX-ONLY TEST FIRMWARE", SIGNED_OTA_MARKER, "orcon-auth-reset"});
       Manifest x; parseManifest(manifest("rx-only", "heltec_v2_sx1276", false, (unsigned)withReset.size()).c_str(), x);

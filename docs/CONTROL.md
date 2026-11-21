@@ -99,11 +99,16 @@ De firmware-signingsleutel zet of herstelt nooit een wachtwoord. Het oude herste
 
 Gebruik twee ondertekende OTA's, zodat het RX-only-image het rollbackdoel blijft. OTA schrijft altijd naar de sleuf die niet draait.
 
+**Eerst, vóór elke OTA:**
+- **Herstelsleutel.** Heeft het board nog geen herstelsleutel, registreer hem dan in de herstelmodus (PRG-menu) en bewijs één geslaagd herstel met het sleutelbestand. Zonder sleutel bevestigt een nieuw image zich niet, en na 300 s keert de vorige firmware terug. Zie [`HERSTELSLEUTEL_MIGRATIE.md`](HERSTELSLEUTEL_MIGRATIE.md), stap 2 t/m 5.
+- **Controle vooraf** bij de eerste update vanaf b75fad3 of 2edb423: `curl -s http://orcon15rf.local/api/ota` moet `"running"` gelijk aan `"boot"` en `"running_state":"valid"` tonen. Anders niet installeren (zie [`HERSTELSLEUTEL_MIGRATIE.md`](HERSTELSLEUTEL_MIGRATIE.md), stap 7).
+
+Daarna:
+
 1. **RX-only met login:**
    `python3 tools/orcon.py ota-install --worktree <worktree> --env heltec_v2_sx1276 --yes`
 2. **Control:**
    `python3 tools/orcon.py ota-install --worktree <worktree> --env heltec_v2_sx1276_control --yes --tx-ack "control firmware"`
-3. **Herstelsleutel:** registreer hem in de herstelmodus (PRG-menu) als het board er nog geen heeft; zie [`HERSTELSLEUTEL_MIGRATIE.md`](HERSTELSLEUTEL_MIGRATIE.md).
 
 **Lokaal verpakken**
 - `tools/heltec_v2.sh package|verify` accepteert de control-env alleen met `ORCON_CONTROL_ACK="control firmware"`.

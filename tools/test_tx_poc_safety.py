@@ -309,8 +309,6 @@ def selected_safe(ota):
     assert 'if (c.fd() >= 0) shutdown(c.fd(), SHUT_RDWR);' in fn(ota,'static void dropClient() {'),'the live socket itself is shut down, not a copy of the client (Codex r6)'
     lw=re.sub(r'\s+',' ',re.sub(r'//[^\n]*','',fn(ota,'static void loopWatch(void*) {')))
     assert 'const uint32_t beat = g_beat.load(); const uint32_t still = millis() - beat; if (still <= limit) continue; const uint32_t beat2 = g_beat.load(); const uint32_t still2 = millis() - beat2; if (beat2 == beat && still2 > limit) {' in lw,'the watchdog reads the heartbeat before the clock, twice, and restarts only without a beat in between (Codex r6/r7)'
-    nb=fn(Path('src/net.cpp').read_text(),'void begin() {')
-    assert 'const bool backOk = !settled && ota::previousIsOwnerModel();' in nb and 'ota::rollbackNow();' in nb,'an unconfirmed update in the fail-closed boot returns only to an owner-model image (Codex r4)'
 selected_safe(ota_src)
 for name,old,new in (('begin-after-select','    if (g_selected || net::restartQueued()) return "restart-pending";','    if (net::restartQueued()) return "restart-pending";'),
                      ('upload-during-rf','    if (setupweb::busy()) return "session-busy";\n',''),
@@ -371,6 +369,14 @@ print('PASS update check: owner session first, pinned TLS roots, no insecure TLS
 # is never confirmed (the previous image, with whatever recovery it has, returns until the owner registers a key).
 LEGACY_RECOVERY=('/api/auth/setup','/api/auth/nonce','/api/auth/reset','orcon-auth-reset','vendorRecoveryOk','State::Legacy',
                  'STORED_LEGACY','checkResetRequest','issueCode','webauth::Recovery','auth-code','herstelcode')
+def active_conds(text,pos):                             # the preprocessor conditions in force at pos
+    st=[]
+    for l in text[:pos].split('\n'):
+        s=l.strip()
+        if re.match(r'#\s*if',s): st.append(s)
+        elif re.match(r'#\s*el',s): st[-1]=s
+        elif re.match(r'#\s*endif',s): st.pop()
+    return st
 def legacy_recovery_safe(files,ota):
     for path,text in files.items():
         for bad in LEGACY_RECOVERY: assert bad not in text,(path,bad,'release-key password recovery must stay removed')
@@ -403,14 +409,27 @@ def legacy_recovery_safe(files,ota):
     k=fn(ota,'static bool ownerKeyRegistered() {')
     assert '\n    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q) && ownerstore::cryptoReady();\n' in k and 'return ok;' in k,'the key is read before every attempt, not assumed or cached, and usable by this image'
     assert 'extern "C" bool verifyRollbackLater() { return true; }' in ota,'the core never confirms a new image at startup'
+    rs=fn(ota,'static otap::RunState runningState() {')
+    assert 'esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;' in rs and 'const bool ok = esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK;' in rs and 'return otap::runState(ok, uint32_t(st));' in rs,'the state follows otap::runState (host-tested; Codex legacy r6)'
     rt=fn(ota,'static void readTrialState() {')
-    assert 'g_pending = e == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;' in rt and 'g_stateOpen = e != ESP_OK;' in rt and ota.count('g_pending = ')==2,'the trial state comes from the OTA data'
+    assert 'g_pending = r == otap::RunState::Trial;' in rt and 'g_stateOpen = r == otap::RunState::Unknown;' in rt and ota.count('g_pending = ')==2,'the trial state comes from the OTA data'
     assert 'readTrialState();' in fn(ota,'void begin(WebServer& s) {') and 'static std::atomic<bool> g_stateOpen{true};' in ota,'unknown until read (fail closed)'
-    assert 'if (g_stateOpen && now >= ROLLBACK_AFTER_MS) g_stateOpen = false; else if (g_stateOpen && now - lastRead >= 1000) { lastRead = now; readTrialState();' in re.sub(r'\s+',' ',re.sub(r'//[^\n]*','',fn(ota,'void tick(uint32_t now) {'))),'an unreadable trial state is read again within the window (Codex legacy r3-r5)'
+    # Only readTrialState sets it, so nothing opens an unknown state by the clock (Codex legacy r6).
+    assert re.sub(r'\s+','',ota).count('g_stateOpen=')==1 and not re.search(r'g_stateOpen\s*\.',ota),'no other write to the unknown state'
+    assert 'if (g_stateOpen && now - lastRead >= 1000) { lastRead = now; readTrialState();' in re.sub(r'\s+',' ',re.sub(r'//[^\n]*','',fn(ota,'void tick(uint32_t now) {'))),'an unknown trial state is read again, at every uptime (Codex legacy r3-r6)'
+    assert 'bool trialNow() { return runningState() == otap::RunState::Trial; }' in ota,'the fail-closed boot reads the state itself'
     assert h.index('readTrialState();') < h.index('if (!g_pending) return;'),'read again before the trial decision'
     for f in ('static const char* manualBlocked() {','const char* claimDownload() {'): assert 'if (g_pending || g_stateOpen) return "confirm-running-image-first";' in fn(ota,f),(f,'no update while the trial state is unknown')
     assert 'bool pendingVerify() { return g_pending || g_stateOpen; }' in ota,'the one-click install waits too'
-    assert '    ota::tick(millis());' in files['src/main.cpp'],'the main loop runs the trial (Codex legacy r5)'
+    assert 'if (g_pending || g_stateOpen) { g_st = St::Failed; return g_err = "confirm-running-image-first"; }' in fn(ota,'static const char* startWrite() {').split('    if (esp_ota_begin(')[0],'the shared write entry checks it too, before the SDK (Codex legacy r6)'
+    # The main loop runs the trial in every signed build: one call at loop level, inside exactly #if ORCON_SIGNED_OTA,
+    # and that switch is on for the Heltec V2 SX1276 builds (Codex legacy r5/r6).
+    main=files['src/main.cpp']; lp=main.index('void loop() {'); call=main.find('\n    ota::tick(millis());')
+    assert main.count('ota::tick(')==1 and lp < call < lp+len('void loop() {')+len(fn(main,'void loop() {')) and active_conds(main,call)==['#if ORCON_SIGNED_OTA'],'the main loop runs the trial'
+    assert '#if defined(BOARD_HELTEC_V2) && defined(RADIO_SX1276)\n#define ORCON_SIGNED_OTA 1\n#else\n#define ORCON_SIGNED_OTA 0\n#endif' in files['src/config.h']
+    for path,text in files.items(): assert not re.search(r'#\s*(define|undef)\s+ORCON_SIGNED_OTA\b',text) or path.endswith('config.h'),(path,'ORCON_SIGNED_OTA is set in config.h only')
+    nb=re.sub(r'\s+',' ',re.sub(r'//[^\n]*','',fn(files['src/net.cpp'],'void begin() {')))
+    assert 'if (millis() - lastRead >= 1000) { lastRead = millis(); settled = !ownerstore::unsettledBoot(); }' in nb and 'if (ota::trialNow() && ota::previousIsOwnerModel()) {' in nb and nb.count('ota::rollbackNow();')==1,'the fail-closed boot returns only from a trial read now, to an owner-model image (Codex r4, legacy r6)'
     assert fn(ota,'static bool ownerConsent() {').startswith('\n#if ORCON_OWNER_MODEL\n    return setupweb::authorize(true);\n#else'),'manual install: the owner session and CSRF token (Codex legacy r3)'
     for h in ('static void handleNonce() {','static void handleBegin() {'): assert fn(ota,h).lstrip().startswith('if (!ownerConsent()) return;'),(h,'asks the owner first')
     assert '#if ORCON_OWNER_MODEL\n        if (!setupweb::uploadAuthorized()) { g_st = St::Failed; g_err = "login-required"; dropClient(); return; }\n#endif\n        if (startWrite()) return;' in fn(ota,'static void handleUploadData() {'),'the upload checks the session before it writes'
@@ -434,7 +453,13 @@ for name,where,old,new in (('reset-route-back','src/setup_web.cpp','    s.on("/a
                            ('gate-on-physical','src/setup_web.cpp','c.physical = ownerstore::recoveryActive();','c.physical = ownerstore::physicalActive();'),
                            ('classifier-model-only','src/ota_policy.h','return s.ownerModel && (s.ownerKey || s.releaseKeyReset);','return s.ownerModel;'),
                            ('reset-keeps-model-only','src/owner_store.cpp','if (otap::ownerRecovery(s)) return true;','if (s.ownerModel) return true;'),
-                           ('tick-not-called','src/main.cpp','    ota::tick(millis());','    (void)0;')):
+                           ('tick-not-called','src/main.cpp','    ota::tick(millis());','    (void)0;'),
+                           ('tick-disabled-block','src/main.cpp','#if ORCON_SIGNED_OTA\n    ota::tick(millis());','#if 0\n    ota::tick(millis());'),
+                           ('tick-wrapped-out','src/main.cpp','\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());               // confirm a freshly installed image, or roll back\n#endif\n','\n#if 0\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());               // confirm a freshly installed image, or roll back\n#endif\n#endif\n'),
+                           ('signed-ota-off','src/config.h','#define ORCON_SIGNED_OTA 1','#define ORCON_SIGNED_OTA 0'),
+                           ('signed-ota-undef','src/main.cpp','void loop() {','#undef ORCON_SIGNED_OTA\n#define ORCON_SIGNED_OTA 0\nvoid loop() {'),
+                           ('back-without-trial','src/net.cpp','if (ota::trialNow() && ota::previousIsOwnerModel()) {','if (ota::previousIsOwnerModel()) {'),
+                           ('settled-read-once','src/net.cpp','            if (millis() - lastRead >= 1000) { lastRead = millis(); settled = !ownerstore::unsettledBoot(); }\n','')):
     files=dict(LR_FILES); m=files[where].replace(old,new,1); assert m!=files[where],name; files[where]=m
     try: legacy_recovery_safe(files,ota_src)
     except AssertionError: print('PASS legacy-recovery guard rejects mutation',name)
@@ -444,7 +469,12 @@ for name,old,new in (('trial-without-key','if (ownerKeyRegistered() && esp_ota_m
                      ('key-read-once','    const bool ok = ownerstore::state() == provision::State::Done','    static const bool ok = ownerstore::state() == provision::State::Done'),
                      ('key-without-crypto',' && ownerstore::ownerKey(q) && ownerstore::cryptoReady();',' && ownerstore::ownerKey(q);'),
                      ('core-confirms-at-boot','extern "C" bool verifyRollbackLater() { return true; }','extern "C" bool verifyRollbackLater() { return false; }'),
-                     ('trial-state-ignored','g_pending = e == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;','g_pending = false; (void)st;'),
+                     ('trial-state-ignored','g_pending = r == otap::RunState::Trial;','g_pending = false;'),
+                     ('unknown-latched-open','    if (g_stateOpen && now - lastRead >= 1000) {','    if (g_stateOpen && now >= ROLLBACK_AFTER_MS) g_stateOpen = false;\n    if (g_stateOpen && now - lastRead >= 1000) {'),
+                     ('unknown-opened-by-store','    if (g_stateOpen && now - lastRead >= 1000) {','    if (now >= ROLLBACK_AFTER_MS) g_stateOpen.store(false);\n    if (g_stateOpen && now - lastRead >= 1000) {'),
+                     ('sdk-gate-only','    if (g_pending || g_stateOpen) { g_st = St::Failed; return g_err = "confirm-running-image-first"; }\n',''),
+                     ('state-without-policy','return otap::runState(ok, uint32_t(st));','return ok ? otap::RunState::Settled : otap::RunState::Unknown;'),
+                     ('trial-now-cached','bool trialNow() { return runningState() == otap::RunState::Trial; }','bool trialNow() { return g_pending; }'),
                      ('unknown-never-retried','        lastRead = now; readTrialState();','        lastRead = now;'),
                      ('unknown-starts-open','static std::atomic<bool> g_stateOpen{true};','static std::atomic<bool> g_stateOpen{false};'),
                      ('writer-while-unknown','bool pendingVerify() { return g_pending || g_stateOpen; }','bool pendingVerify() { return g_pending; }'),
