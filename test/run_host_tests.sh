@@ -9,6 +9,11 @@ OUT="${HOST_TEST_OUTPUT_DIR:-$(mktemp -d)}"
 mkdir -p "$OUT"
 CXX="${CXX:-g++}"
 read -r -a FLAGS <<<"-std=c++17 -O1 -g ${CXXFLAGS:-}"
+# GCC + sanitizers: -Wmaybe-uninitialized trips over ArduinoJson's own CollectionIterator::nextId_ (copied, never read).
+# A warning there; the plain run keeps it an error. Apple clang has no such option.
+if [[ "${CXXFLAGS:-}" == *-fsanitize=* && "$("$CXX" --version 2>&1)" == *"Free Software Foundation"* ]]; then
+    FLAGS+=(-Wno-error=maybe-uninitialized)
+fi
 run() {
     local name=$1; shift
     "$CXX" "${FLAGS[@]}" "$@" -o "$OUT/$name"
