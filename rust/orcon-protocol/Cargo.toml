@@ -1,0 +1,12 @@
+[package]
+name = "orcon-protocol"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pure Rust, no_std RAMSES-II codec for the Orcon 15RF controller"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
