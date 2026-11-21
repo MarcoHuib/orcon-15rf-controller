@@ -1,0 +1,13 @@
+{
+    "version": "0.5",
+    "requires": [
+        "u8g2/2.36.18",
+        "radiolib/7.8.1",
+        "mbedtls/2.28.7",
+        "lwip/2.1.2",
+        "arduinojson/7.4.3"
+    ],
+    "build_requires": [],
+    "python_requires": [],
+    "config_requires": []
+}
