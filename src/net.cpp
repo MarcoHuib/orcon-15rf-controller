@@ -13,6 +13,7 @@
 #include "rf_console.h"
 #include <esp_system.h>
 #include "ota_signed.h"
+#include "fw_update_esp.h"
 #include "remote_profiles.h"
 #if ORCON_OWNER_MODEL
 #include "owner_store.h"
@@ -79,7 +80,9 @@ static void restartIn(uint32_t ms);
 #endif
 static bool     g_dirty     = true;
 static uint32_t g_lastPub   = 0;
-static uint32_t g_rebootAt  = 0;
+static uint32_t g_rebootAt  = 0;      // when (millis) the scheduled restart is due, if g_rebootArmed
+static std::atomic<bool> g_rebootArmed{false};   // also read by the loop watchdog on core 0 (Codex r6)
+static void scheduleReboot(uint32_t ms) { g_rebootAt = millis() + ms; g_rebootArmed = true; }   // wrap-safe (Codex r4)
 static char     g_ip[24]    = "0.0.0.0";   // the current address: the OLED and the Host check (DNS rebinding) use it
 static wifiwatch::Watch g_watch;          // the home network in normal operation (wifi_watch.h)
 static std::atomic<uint8_t> g_staReason{0};   // the network's last disconnect reason (written by the WiFi event task)
@@ -377,7 +380,7 @@ static void handleUpdateDone() {
     bool ok = !Update.hasError();
     server.sendHeader("Connection", "close");
     server.send(200, "application/json", ok ? "{\"ok\":1}" : "{\"ok\":0}");
-    if (ok) g_rebootAt = millis() + 1500;   // reboot into the new firmware
+    if (ok) scheduleReboot(1500);           // reboot into the new firmware
 }
 #endif
 
@@ -444,6 +447,7 @@ static void handleScan() {
 
 // POST /api/wifi {ssid,pass} -> save + reboot
 static void handleWifiSave() {
+    if (updsvc::busy()) { server.send(409, "application/json", "{\"error\":\"update-busy\"}"); return; }   // its reboot would cut an install (all builds)
     JsonDocument d;
     if (deserializeJson(d, server.arg("plain"))) {
         server.send(400, "application/json", "{\"err\":\"bad json\"}"); return;
@@ -455,7 +459,7 @@ static void handleWifiSave() {
     }
     saveWifi(ssid.c_str(), pass.c_str());
     server.send(200, "application/json", "{\"ok\":1}");
-    g_rebootAt = millis() + 1200;
+    scheduleReboot(1200);
 }
 
 // ---------------------------------------------------------------------------
@@ -601,6 +605,7 @@ static void prgPoll(uint32_t now) {
     // Every menu action restarts the board. During an OTA trial boot that would roll the update
     // back first, so all three wait until the new image has confirmed itself (at most 5 minutes).
     if (ownerstore::unsettledBoot()) { notice("Even wachten:", "update nog niet", "bevestigd (5 min)", 6000); return; }
+    if (updsvc::busy()) { notice("Even wachten:", "update bezig,", "daarna herstart", 6000); return; }   // never cut an install (Codex r5)
     switch (a) {
         case Action::Recovery:
             setupweb::note(rfcon::WARN, "PRG-menu: herstelmodus (setup-accesspoint, 15 minuten)");
@@ -855,7 +860,7 @@ static void staWatch(uint32_t now) {
 }
 
 #if ORCON_OWNER_MODEL
-static void restartIn(uint32_t ms) { g_rebootAt = millis() + ms; }
+static void restartIn(uint32_t ms) { scheduleReboot(ms); }
 static void wifiEvent(arduino_event_id_t e, arduino_event_info_t info) {
     if (e == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) g_wtReason.store(info.wifi_sta_disconnected.reason, std::memory_order_relaxed);
 }
@@ -1080,8 +1085,16 @@ void begin() {
         // makes the bootloader return to the previous image first, which may predate the ownership model. So
         // then this loop neither restarts by itself nor accepts the reset; the user decides with RST.
         const bool settled = !ownerstore::unsettledBoot();
+        // An unconfirmed update that cannot read this storage still returns to the previous image after the usual
+        // 300 s, but only when that image is a confirmed one of the ownership model itself (Codex r4). Otherwise the
+        // OWNER-10 rule stands: no automatic return to a possibly pre-owner image; the user decides with RST.
+        const bool backOk = !settled && ota::previousIsOwnerModel();
         const uint32_t until = millis() + 60000;
         while (!settled || int32_t(millis() - until) < 0 || g_gesture.phase() != gesture::Phase::Idle) {   // never cut a menu short
+            if (backOk && millis() >= 300000 && g_gesture.phase() == gesture::Phase::Idle) {
+                Serial.println("[ota] unconfirmed update cannot read the ownership storage: back to the previous image");
+                ota::rollbackNow();
+            }
             const gesture::Action a = g_gesture.poll(digitalRead(PIN_PRG_BTN), millis());
             if (a == gesture::Action::FactoryReset && !settled) notice("Update onbevestigd:", "reset kan niet,", "RST = vorige versie", 8000);
             else if (a == gesture::Action::FactoryReset) {
@@ -1177,6 +1190,9 @@ void begin() {
 #if ORCON_SIGNED_OTA
     ota::begin(server);                 // signed OTA + /api/diag (every Heltec V2 SX1276 build)
 #endif
+#if ORCON_UPDATE_CHECK
+    updsvc::begin(server);              // official-release update check + one-click install (control image)
+#endif
     server.begin();
 
     oledDraw();
@@ -1200,7 +1216,8 @@ void wifiDiag(char* out, size_t n) {
              g_watchRestarted ? "true" : "false", restartBlock() ? restartBlock() : "none");
 }
 bool        maskIds()      { return g_maskIds; }
-void        restartSoon()  { g_rebootAt = millis() + 1200; }
+void        restartSoon()  { scheduleReboot(1200); }
+bool        restartQueued() { return g_rebootArmed; }
 // Only SSID + password: profiles, OLED and IDs stay. An empty SSID makes wifiConnect() start the setup AP.
 void        forgetWifi()   {
 #if ORCON_OWNER_MODEL
@@ -1238,7 +1255,7 @@ void loop() {
 #if defined(BOARD_HELTEC_V2)
     prgPoll(millis());   // OLED wake button; a plain GPIO read, no RF/WiFi impact
 #endif
-    if (g_rebootAt && millis() > g_rebootAt) ESP.restart();
+    if (g_rebootArmed && int32_t(millis() - g_rebootAt) >= 0) ESP.restart();
     if (orcon::idsDirty()) {                  // pairing learned a fan -> persist it
         const orcon::Ids& id = orcon::ids();
         saveIds(id.us.cls, id.us.serial, id.fan.cls, id.fan.serial);

@@ -1,78 +1,192 @@
-# Releases en GitHub-integratie (voorstel)
+# Officiële releases (GitHub Actions) en updates
 
-Dit is een voorstel. Er is nog niets gepubliceerd. Publiceren gebeurt alleen na een expliciet besluit, per release.
+> Stand 2026-11-19, branch `feature/github-releases-control-ota`. Gebouwd en lokaal getest. **Nog niet live**: de workflow kan pas draaien zodra hij op `main` staat (GitHub start `workflow_dispatch` alleen voor workflows op de standaardbranch). Daarnaast ontbreekt nog het secret met de ondertekeningssleutel; zie [Sleutel](#sleutel-wat-nog-ontbreekt). Er is nog geen enkele release gepubliceerd.
 
-## Randvoorwaarden
+Alleen de **control-firmware** (`heltec_v2_sx1276_control`) wordt gepubliceerd. De RX-only-, RF-test- en dry-run-images blijven lokale diagnose- of herstelbuilds en worden door de workflow geweigerd.
 
-- **Nu geen GitHub Actions.** Bouwen, testen en ondertekenen gebeurt lokaal. Dat sluit ook GitHub Pages met "deploy from a branch" uit, want dat draait intern de Actions-workflow `pages-build-deployment`.
-- **Besluit (2026-11-19, nog niet gebouwd).** Officiële releases komen straks uit GitHub Actions: een GitHub Release met versienummer, de firmware automatisch gebouwd en getest, ondertekend, en het ondertekende `.orconfw`-pakket gepubliceerd. De Heltec meldt dat er een update is en installeert pas na toestemming van de aangemelde eigenaar. De private OTA-signingsleutel staat nooit in de repository en is nooit beschikbaar voor gewone push-, PR- of testworkflows: alleen de gecontroleerde ondertekeningsjob van een officiële release leest hem, als secret van een beveiligde GitHub Environment. Tot dan geldt het lokale proces in dit document.
-- **Workflows nu.** De enige workflow (`.github/workflows/heltec-v2-rx-only.yml`) is uitgeschakeld: hij reageert alleen op `workflow_dispatch` en stopt dan meteen met een foutmelding, zonder iets te bouwen, te testen of te uploaden. Een push, tag of release start dus niets. `tools/test_tx_poc_safety.py` pint elk workflowbestand op inhoud (`WORKFLOWS`) en faalt bij een gewijzigde of nieuwe workflow. Die controle draait lokaal, vóór elke push, op de werkmap én op de gecommitte boom (HEAD); GitHub raadpleegt hem niet. Een handmatige start gebruikt het workflowbestand van de gekozen branch of tag: vóór de merge van PR #15 heeft `main` nog de oude workflow, daarna geen enkele ref meer (stand 2026-11-19: alleen `main` en de PR-branch, geen tags). Een toekomstige release-workflow wordt bewust toegevoegd: eerst eigen beveiligingscontroles en een review, dan opname in die lijst; voor de sleutel geldt het besluit hierboven. Nu staat de sleutel alleen lokaal en heeft de repository geen secrets, variabelen of environments. Controleer dit opnieuw vóór elke publicatie.
-- **Reproduceerbaar.** De bouw is vastgepind: platform `espressif32@6.7.0` en de lib-versies in `platformio.ini`. Het lokale bewijspakket werkt zoals in [`LOCAL_USB_RELEASE.md`](LOCAL_USB_RELEASE.md).
+## Zo maak je een release
 
-## Wat een release bevat (per versie N)
+1. Zorg dat `main` de code bevat die je wilt uitbrengen.
+2. GitHub → **Actions** → *Release control firmware (Heltec V2)* → **Run workflow**. Kies branch `main` en vul in:
+   - **versie**, bijvoorbeeld `1.0.0`;
+   - eventueel **korte releasenotes**: maximaal 400 bytes, zichtbaar op de controller.
+3. De workflow controleert en bouwt (zie hieronder). Bij de job *Sign (protected environment)* vraagt GitHub om **goedkeuring** (*Review deployments* → *Approve*). Dat is de enige extra klik. Zonder goedkeuring wordt er niets ondertekend of gepubliceerd.
+4. Na de goedkeuring tekent de workflow, verifieert het pakket opnieuw met de regels van het apparaat en publiceert de GitHub Release.
+5. Je controller meldt de nieuwe versie bij de volgende dagelijkse controle, of meteen na **Systeem → Firmware → Controleer op updates**. Installeren doe je zelf met **Update installeren** ([UPDATECONTROLE.md](UPDATECONTROLE.md)). Nooit automatisch.
 
-| Bestand | Voor wie | Inhoud |
+## Versienummers
+
+SemVer `MAJOR.MINOR.PATCH`, elk deel 0..999, zonder voorloopnullen en zonder achtervoegsel (`-rc1`). Het releasenummer in het getekende manifest is `MAJOR*1000000 + MINOR*1000 + PATCH`:
+
+| SemVer | releasenummer |
+|---|---|
+| `1.0.0` | 1000000 |
+| `1.2.3` | 1002003 |
+| `2.0.0` | 2000000 |
+
+Daardoor is de getalvolgorde gelijk aan de SemVer-volgorde. Het hoogste nummer is 999.999.999, ruim binnen uint32. `0.0.0` (0) is gereserveerd voor ontwikkelbuilds. De apparaatcode (`fw_update.cpp`) en de pipeline (`release_ci.py`) gebruiken dezelfde regel, en de tests vergelijken ze op dezelfde invoer.
+
+**Downgradebescherming.** Een controller installeert nooit een release met een lager nummer dan zijn eigen `ORCON_RELEASE_VERSION` (`older-release`). De updatecontrole biedt alleen een *hoger* nummer aan.
+
+De huidige controller (b75fad3) is een ontwikkelbuild met nummer 0. Hij accepteert dus elke release, en `v1.0.0` is een geldige eerste release.
+
+De workflow weigert een versie:
+- als de tag of release al bestaat;
+- als ze niet hoger is dan elke gepubliceerde versie.
+
+## Wat de workflow doet (`.github/workflows/release-control.yml`)
+
+| Job | Rechten | Wat |
 |---|---|---|
-| `orcon-controller-heltec-v2-factory.bin` | eerste installatie, eenmalig via USB | Eén bestand vanaf adres 0x0 (`esptool merge_bin`):<br>- vastgepinde bootloader (0x1000);<br>- partitietabel (0x8000);<br>- `boot_app0.bin` (0xe000);<br>- het control-image (0x10000). |
-| `orcon-control-N-<commit>.orconfw` | updates via de webpagina | v2-releasemanifest met handtekening, plus het control-image |
-| `orcon-rx-only-N-<commit>.orconfw` | wie liever alleen ontvangt | v2-bundel met het RX-only-image |
-| `SHA256SUMS` | controle | hashes van alle bestanden |
-| releasenotes | iedereen | commit, versie, testbewijs, NOT TESTED-lijst, migratie-aanwijzingen |
+| `prepare` | contents: read | Alleen `workflow_dispatch`, alleen `refs/heads/main` van deze repository, en de commit moet nog de kop van `main` zijn. Versie geldig, nieuw en hoger dan alle tags en releases. |
+| `build` | contents: read | Toolchain:<br>- PlatformIO 6.2.0 met hash-gepinde wheels (`tools/release/requirements-platformio.txt`) in een eigen venv (`--force-reinstall`), daarna `pip check`;<br>- na de build ook SCons van PlatformIO Core exact gelijk aan de lock;<br>- platform en bibliotheken gelijk aan `tools/release/platformio-packages.lock`.<br><br>Tests:<br>- alle host-suites, ook met AddressSanitizer + UndefinedBehaviorSanitizer;<br>- RF-veiligheidsguards en workflowpins;<br>- privacycontrole en CLI-tests.<br><br>Daarna de releasebuild met `FW_VERSION=<commit>` en `ORCON_RELEASE_VERSION=<nummer>`, en de controles daarop:<br>- het volledige ESP-image (segmenten, checksum, appended SHA-256, niets erachter), en het image byte voor byte gelijk aan wat de vastgepinde esptool van de gecontroleerde ELF maakt;
+- flashlayout;<br>- slotgrootte;<br>- precies één releasestempel;<br>- commitstempel;<br>- control-markers via de **eigen beleidscode van het apparaat** (`test/release_accept.cpp`);<br>- bootloader, partitietabel en `boot_app0` byte-gelijk aan de gepinde bestanden;<br>- rollback-hook en TX-bereikbaarheid in de ELF;<br>- de volledige pipeline-test op de echte build;<br>- factory-image. |
+| `sign` | contents: read, **environment `orcon-production-release`** | De enige job die de sleutel kan lezen, en alleen in één stap:<br>- controleert dat het artifact het geteste image is;<br>- maakt het v2-manifest opnieuw uit dat image;<br>- tekent.<br><br>De sleutel bestaat alleen tijdens die stap, als 0600-bestand in een 0700-map, en wordt altijd verwijderd. Een sleutel die niet bij `src/ota_pubkey.h` hoort, wordt geweigerd. |
+| `verify` | contents: read | Controleert:<br>- de handtekening (openssl, `src/ota_pubkey.h`);<br>- het apparaatbeleid op de bundel;<br>- dat een nieuwere controller de release als *ouder* weigert;<br>- de update-index zoals de controller die leest (*nieuwer* voor een oudere controller, *up-to-date* voor deze versie);<br>- `SHA256SUMS`. |
+| `publish` | **contents: write** | Draait geen repositorycode. Eerst:<br>- `SHA256SUMS` en de releasenotes tegen de digests die `verify` als job-output doorgaf;<br>- daarna `sha256sum -c`;<br>- **opnieuw de versievloer** over alle tags en releases (ook drafts): een herhaalde oude run publiceert nooit een oudere versie als *latest*.<br><br>Dan:<br>1. tag aanmaken via de API (mislukt als hij al bestaat);<br>2. **draft**-release;<br>3. de bestanden terug downloaden en **byte voor byte** vergelijken met de geverifieerde bestanden;<br>4. pas dan publiceren: het **release-ID** krijgt de geverifieerde releasetekst mee en wordt *latest*. |
 
-**Controle op het apparaat.** De bundels maak je met `tools/orcon.py release --worktree <wt> --env <env> --version N --yes [--tx-ack "control firmware"]`. Het apparaat accepteert een bundel alleen als:
-- de releasesleutel klopt;
-- de versie niet lager is dan de eigen versie;
-- de aangemelde eigenaar hem installeert.
+Het hele pakket is opnieuw gehasht tussen elke twee jobs (job-outputs). Er draait altijd hooguit één release tegelijk (`concurrency`, nooit halverwege afgebroken).
 
-**Versie in het image.** Het image moet als release N gebouwd zijn: `-DORCON_RELEASE_VERSION=N`, naast `-DFW_VERSION="<commit>"` in `PLATFORMIO_BUILD_FLAGS`. `orcon.py release` controleert dat aan het stempel `ORCON-RELEASE N;` in het image.
+**Wat de workflow nooit doet:**
+- draaien bij push, pull request, tag, release of schema;
+- secrets aan andere jobs geven;
+- caches gebruiken;
+- actions van derden gebruiken (alleen `actions/checkout`, `setup-python`, `upload-artifact`, `download-artifact`, vastgepind op commit-SHA);
+- `${{ }}` in scripts zetten (invoer gaat via `env`);
+- hardware aanraken.
 
-**Nog te doen.** De bewijsbouw (`tools/test_local.ps1` en de bash-variant) geeft nu alleen `FW_VERSION` door. Een releasebouw moet daar `ORCON_RELEASE_VERSION` aan toevoegen.
+`tools/test_tx_poc_safety.py` pint het bestand (SHA-256) en controleert al deze eigenschappen op de geparste YAML:
+- exact gepinde action-commits;
+- een allowlist van alle `${{ }}`-expressies;
+- het woord *secrets* precies één keer;
+- geen `||`, `&&`, `!`, `set +e`, commentaarregels of `exit 0` in scripts;
+- elke verplichte controle als eigen scriptregel;
+- geen escapes in quoted YAML.
 
-## Eerste installatie zonder terminal
+Daarnaast staat elke verplichte controle als exacte eigen regel. Alle besturingsregels (`if`/`for`/`{`) en alle `gh`-aanroepen moeten exact gereviewd zijn. `--help`, functiedefinities, `alias`/`set`/`eval`/`source` en een kale CR zijn verboden. Een onleesbare HEAD-boom laat de controle falen. Daarnaast gelden:
+- alleen ASCII in het bestand;
+- geen secrets of token in `with:`;
+- git-replacement-objecten uitgeschakeld.
 
-**Aanbevolen.** De officiële webflasher van Espressif: <https://espressif.github.io/esptool-js/>.
-- Werkt in Chrome en Edge via WebSerial.
-- Gebruiker: Connect → kies `…-factory.bin` op 0x0 → Program.
-- Geen eigen hosting nodig.
+Elke eigenschap heeft een mutatie die geweigerd moet worden (71 stuks), waaronder:
+- PR- en tagtriggers;
+- secret in een andere job;
+- `secrets: inherit`;
+- een andere branch;
+- `|| true`, een uitgecommentarieerde of omgekeerde controle;
+- een andere action-commit;
+- `secrets[...]`, `toJSON(secrets)` of een ge-escapete expressie;
+- een dry-run-, RF-test- of RX-only-image;
+- overgeslagen controles;
+- write-rechten;
+- niet-gepinde actions;
+- cache;
+- hardware.
 
-**Later, optioneel.** Een eigen pagina met ESP Web Tools (één knop, met een manifest).
-- Zolang er geen Actions draaien, moet die buiten GitHub Pages gehost worden: Pages draait Actions. Met de release-workflow uit het besluit kan dat opnieuw worden afgewogen.
-- Een externe statische host is een nieuwe afhankelijkheid en vraagt een apart besluit.
+## Bestanden in een release
 
-## Updates
+| Bestand | Voor | Inhoud |
+|---|---|---|
+| `orcon-control-vX.Y.Z-<commit7>.orconfw` | updates (Systeem → Firmware) | regel 1 `{"manifest","sig"}` (v2-releasemanifest, ECDSA P-256), daarna het control-image |
+| `orcon-update.json` | de updatecontrole van de controller | hetzelfde getekende manifest + handtekening + korte notes (≤ 2048 B) |
+| `orcon-control-vX.Y.Z-<commit7>-factory-usb.bin` | **alleen een nieuwe controller**, eenmalig via USB vanaf 0x0 | bootloader, partitietabel, boot_app0 en het control-image. **Wist alle instellingen**: WiFi, wachtwoord, herstelsleutel, profielen. Nooit gebruiken voor een controller in gebruik, en nooit automatisch. |
+| `BUILD_INFO.json` | controle | commit, versie, image-grootte, SHA-256 van alle onderdelen |
+| `SHA256SUMS` | controle | hashes van alle bovenstaande bestanden |
 
-**Nu: handmatig.** De eigenaar downloadt `.orconfw` en installeert die via Systeem → Firmware.
+## GitHub-instellingen
 
-**Mogelijk later.** Een updatecontrole op het apparaat tegen de GitHub-releases-API.
-- Nadelen: HTTPS met een CA-bundel (tientallen KB flash); het apparaat neemt contact op met GitHub (privacy); en een nieuwe afhankelijkheid.
-- Installeren blijft dan altijd een handeling van de aangemelde eigenaar.
+| Instelling | Stand | Door |
+|---|---|---|
+| Environment `orcon-production-release` | **aangemaakt** (2026-11-19) | Claude, via `gh api` |
+| — deployment branches | **alleen `main`** (eigen branchbeleid) | Claude |
+| — required reviewers | **MarcoHuib** (goedkeuring per release) | Claude |
+| — admins mogen regels omzeilen | **nee** (`can_admins_bypass: false`) | Claude |
+| — secret `ORCON_OTA_SIGNING_KEY` | **ONTBREEKT** (bewust niet gezet, zie hieronder) | eigenaar |
+| Repository-secrets en -variabelen | geen (en zo laten) | — |
+| Actions | aan; standaard workflowrechten *read*; PR-goedkeuring door Actions uit | ongewijzigd |
+| Branchbescherming `main` | geen (alleen de eigenaar heeft schrijfrechten) | ongewijzigd, zie aanbeveling |
 
-## Releaseblokkades (vóór de eerste publieke release)
+Wil je de extra goedkeuringsklik niet, verwijder dan de reviewer onder Settings → Environments → `orcon-production-release`. Het branchbeleid moet blijven.
 
-1. **HTTPS op het LAN.** Een wachtwoord via HTTP is niet voldoende. Ontwerp: [`HTTPS_ONTWERP.md`](HTTPS_ONTWERP.md).
-2. **Hardwarevalidatie**: [`HW_VALIDATIE_PROVISIONING.md`](HW_VALIDATIE_PROVISIONING.md).
-3. **Een groene laatste onafhankelijke securityreview**: [`CODEX_OWNER_SECURITY_REVIEW.md`](CODEX_OWNER_SECURITY_REVIEW.md).
-4. **Een eigen releasesleutel**, gescheiden van de ontwikkelsleutel, ingevoerd met de migratie in [`RELEASESLEUTEL.md`](RELEASESLEUTEL.md); het privé-deel straks alleen als secret van een beveiligde GitHub Environment (besluit hierboven). Alleen met apart akkoord.
+## Sleutel: wat nog ontbreekt
 
-## Releasesleutel: aparte sleutel besloten, migratie ontworpen
+**Feiten (gecontroleerd):**
+- `~/.orcon/ota-signing-key.pem` hoort bij `src/ota_pubkey.h`: SPKI-SHA-256 `e71543f1…`.
+- `ota_pubkey.h` is ongewijzigd sinds bb80bb3. De firmware op het board (b75fad3 in app1, 2edb423 in app0) vertrouwt dus precies deze sleutel.
+- Een release moet met deze sleutel getekend zijn, anders weigert de huidige controller hem. Daarom wordt er geen nieuwe sleutel gebruikt en niet geroteerd.
 
-Het ontwerp staat in [`RELEASESLEUTEL.md`](RELEASESLEUTEL.md). De tekst hieronder is de oorspronkelijke analyse. Sinds het besluit van 2026-11-19 tekent straks een gecontroleerde GitHub-releasejob met de sleutel uit een beveiligde Environment; de offline-ceremonie in dat ontwerp wordt in de releasefase daarop aangepast.
+**Waarom het secret nog niet is gezet.** Op een controller in de toestand *legacy* (gemigreerd, nog geen herstelsleutel van de eigenaar) is deze sleutel méér dan een firmwaresleutel. Wie hem heeft, kan via `orcon.py auth-code` (`/api/auth/nonce` + `/api/auth/reset`, `vendorRecoveryOk()` in `setup_web.cpp`) vanaf het thuisnetwerk een herstelcode krijgen en het beheerderswachtwoord vervangen. Jouw controller meldt `legacy`.
 
-**Huidige situatie**
-- De publieke sleutel in `src/ota_pubkey.h` hoort bij `~/.orcon/ota-signing-key.pem` op de ontwikkel-Mac.
-- Die sleutel is daarmee de releasesleutel voor elk apparaat dat deze firmware draait.
+Staat de sleutel in GitHub, dan geeft een lek daar (plus toegang tot je netwerk) toegang tot je controller. Dat valt buiten de opdracht "alleen als bestaande apparaten zonder rotatie veilig blijven". Een lek kan op drie manieren ontstaan:
+- een kwaadaardige commit op `main`;
+- een gecompromitteerde action;
+- GitHub zelf.
 
-**Advies vóór de eerste publieke release**
-- Maak een aparte releasesleutel die niet op de dagelijkse ontwikkelmachine staat, bijvoorbeeld versleuteld en offline.
-- Zet die publieke sleutel in de firmware.
-- Wisselen kan nu nog eenvoudig, want er zijn nog geen publieke apparaten.
-- Later wisselen vraagt een overgangsrelease, getekend met de oude sleutel, die de nieuwe sleutel meebrengt.
+**Kies een van twee:**
+1. **Aanbevolen.** Registreer eerst een herstelsleutel op de controller: RST, dan PRG 15 s → Herstelmodus, zie [INSTALLATIE.md](INSTALLATIE.md). De toestand wordt dan *done* en de releasesleutel geeft geen toegang meer (`owner-key-required`). Zet daarna het secret:
+   ```
+   gh secret set ORCON_OTA_SIGNING_KEY --env orcon-production-release --repo MarcoHuib/orcon-15rf-controller < ~/.orcon/ota-signing-key.pem
+   ```
+   `gh` versleutelt lokaal (sealed box). De inhoud verschijnt niet in de terminal of in logs. Het lokale bestand blijft staan.
+2. Je accepteert dit risico bewust en zet het secret meteen met hetzelfde commando.
 
-**Gevolg voor ontwikkeling.** Ontwikkel-OTA's naar je eigen board moeten dan met de releasesleutel worden ondertekend, of met een ontwikkelbuild waarin de ontwikkelsleutel zit. Dat besluit ligt bij de maintainer.
+Zonder secret faalt de job `sign` met `signing key missing`. Er wordt dan niets gepubliceerd.
 
-## Publiceren zolang er geen release-workflow is (alleen na toestemming)
+**Later (apart akkoord):** een aparte releasesleutel K_rel volgens [RELEASESLEUTEL.md](RELEASESLEUTEL.md), zodat de ontwikkel-Mac en GitHub niet dezelfde sleutel delen.
 
-1. Bouw en verifieer lokaal: host-tests, alle omgevingen, het bewijspakket en `heltec_v2.sh verify`.
-2. Maak de bundels en `SHA256SUMS`. Controleer de hashes.
-3. Controleer dat geen workflow reageert op tags of releases.
-4. Publiceer: `gh release create vN <bestanden> --notes-file <notes>`, alleen na expliciete toestemming.
+## Bekende restpunten van het releaseproces (Codex r4, MINOR)
+
+- PlatformIO-pakketten (framework, esptool, SCons) worden van het PlatformIO-register gehaald en pas daarna tegen de lock gecontroleerd. Er zijn nog geen eigen gepinde archief-digests.
+- Tussen de laatste controle en het publiceren kan iemand met schrijfrechten de draft nog wijzigen. Alleen de eigenaar heeft die rechten. Overweeg *immutable releases* in de repository-instellingen.
+- De runner-image, de patchversie van Python 3.12 en `gh`/`g++`/OpenSSL op de runner zijn niet gepind.
+
+## Herstel bij een mislukte release
+
+- **Mislukt vóór `publish`.** Er is niets aangemaakt. Los de oorzaak op en start opnieuw. Dezelfde versie mag, want er bestaat nog geen tag.
+- **Mislukt in `publish`.** Er kunnen een tag en/of een draft-release bestaan, en de workflow weigert die versie dan (*already exists*). Herstel met de hand:
+  1. Controleer in GitHub of de release een **draft** is. Een gepubliceerde release verwijder je niet; geef dan een nieuwe versie uit.
+  2. Verwijder de draft en de tag:
+     ```
+     gh release delete vX.Y.Z --yes
+     git push --delete origin vX.Y.Z
+     ```
+  3. Start de workflow opnieuw.
+- **Een gepubliceerde release is fout.** Publiceer een hogere versie. Controllers installeren nooit een oudere.
+
+## Lokaal hetzelfde controleren (zonder publiceren)
+
+```
+python3 tools/test_release_ci.py      # hele pipeline met wegwerpsleutels en gemanipuleerde invoer
+python3 tools/test_tx_poc_safety.py   # workflowpin + releaseworkflow-guard + mutaties
+python3 tools/test_ab_transition.py   # app0/app1 door de overgang heen (simulatie)
+bash test/run_host_tests.sh           # alles, incl. updatecontrole en webinterface
+```
+
+Gebruik voor tekentests nooit de productiesleutel. De tests maken per run wegwerpsleutels.
+
+## Eerste release: wat er op het board gebeurt
+
+Zie [A/B-overgang](AB_OVERGANG.md). Kort samengevat:
+- Het board draait b75fad3 (control) uit **app1**. De eerste release gaat dus naar **app0** en vervangt het oude RX-only-image 2edb423.
+- b75fad3 blijft de terugvaloptie.
+- Daarna wisselen app0 en app1 per release, steeds met de vorige control-release als terugvaloptie.
+
+## Hardwarevalidatie (nog te doen, met toestemming per stap)
+
+1. De eerste release installeren via **Update installeren**. Dan controleren:
+   - voortgang;
+   - proefstart;
+   - *Update geslaagd*;
+   - `/api/ota`: app0 valid en running, app1 = b75fad3 valid.
+2. `/api/update` na de controle: `mem.heap_min_job` en `mem.stack_free_job` noteren (TLS-geheugen).
+3. RF-bediening en Siri na de update. Profielen, WiFi en eigenaarschap moeten ongewijzigd zijn (`orcon.py backup-check`).
+4. Optioneel een rollbacktest met de volgende release (`orcon.py ota-install --test-rollback`, of de hold-knop): het board moet terug naar de vorige control-release.
+
+## Eerder genoemde releaseblokkades (besluit eigenaar)
+
+De workflow controleert deze niet. Ze blijven gelden voor een release die ook voor anderen bedoeld is:
+- HTTPS op het LAN ([HTTPS_ONTWERP.md](HTTPS_ONTWERP.md));
+- hardwarevalidatie van de installatiewizard ([HW_VALIDATIE_PROVISIONING.md](HW_VALIDATIE_PROVISIONING.md));
+- een aparte releasesleutel ([RELEASESLEUTEL.md](RELEASESLEUTEL.md)).
+
+Voor een release voor je eigen controller zijn ze geen technische voorwaarde.

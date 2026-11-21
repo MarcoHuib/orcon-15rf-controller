@@ -21,6 +21,7 @@
 #include "setup_web.h"
 #endif
 #include "ota_signed.h"
+#include "fw_update_esp.h"
 
 static uint32_t g_loopMaxUs = 0;
 
@@ -111,6 +112,9 @@ void loop() {
     net::loop();
 #if ORCON_SIGNED_OTA
     ota::tick(millis());               // confirm a freshly installed image, or roll back
+#endif
+#if ORCON_UPDATE_CHECK
+    updsvc::tick(millis());            // automatic release check; restart after a written one-click update
 #endif
 
     const uint32_t loopUs = micros() - loopStart;   // longest main-loop pass = worst network stall

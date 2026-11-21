@@ -9,6 +9,7 @@
 #include "rf_console.h"
 #include "config.h"
 #include "net.h"
+#include "fw_update_esp.h"
 #include "orcon.h"
 #include "orcon_log.h"
 #include "ramses_radio.h"
@@ -104,6 +105,7 @@ static const char* rfState() {
 }
 static bool pairActive() { return g_pair.st == St::Active; }
 bool busy() {   // a read or pair session, or an RF transaction in flight: net.cpp's WiFi watch never restarts then
+    if (updsvc::busy()) return true;          // a release check or download (fw_update_esp.cpp)
 #if ORCON_TX_POC
     if (txpoc::controller().status().busy) return true;
 #endif
@@ -249,7 +251,7 @@ static void profileFields(Out& o) {
 }
 static void profileBody(int code) {Out o;profileFields(o);reply(code,o);}
 static bool profileBusy() {
-    if(g_read.st==St::Active||pairActive())return true;
+    if(g_read.st==St::Active||pairActive()||updsvc::busy())return true;
 #if !ORCON_TX_POC
     if(g_cmd.confirm==Cmd::Pending)return true;
 #endif
@@ -333,7 +335,7 @@ static void handleState() {
     o.add("{\"fw\":\"%s\",\"rx_only\":%s,\"caps\":{\"rx_supported\":%s,\"tx_supported\":%s,"
           "\"read_supported\":%s,\"pair_supported\":%s,\"control_supported\":%s,\"simulated\":%s,"
           "\"timer_supported\":%s,\"profile_control_supported\":%s,\"settings_pages\":%s,\"tx_max_per_boot\":%d,"
-          "\"tx_per_minute\":%d,\"tx_per_hour\":%d,\"siri_supported\":%s},"
+          "\"tx_per_minute\":%d,\"tx_per_hour\":%d,\"siri_supported\":%s,\"update_check\":%s},"
           "\"rf\":\"%s\",\"token\":\"%s\",\"mask_ids\":%s,\"active\":\"%s\","
           "\"auth\":{\"enabled\":%s,\"logged_in\":true}",
           FW_VERSION, RX_ONLY ? "true" : "false", CAN_RX ? "true" : "false", CAN_TX ? "true" : "false",
@@ -342,7 +344,7 @@ static void handleState() {
           !ORCON_TX_POC || ORCON_TX_CONTROL ? "true" : "false",    // WiFi/Systeem/OLED routes exist (net.cpp)
           ORCON_TX_MAX_PER_BOOT,
           ORCON_TX_RF_ENABLE ? int(TXB_PER_MINUTE) : 0, ORCON_TX_RF_ENABLE ? int(TXB_PER_HOUR) : 0,
-          ORCON_SIRI ? "true" : "false",
+          ORCON_SIRI ? "true" : "false", ORCON_UPDATE_CHECK ? "true" : "false",
           rfState(), token, net::maskIds() ? "true" : "false",
           g_read.st == St::Active ? "read" : pairActive() ? "pair" : "none", ORCON_WEB_AUTH ? "true" : "false");
     char id[16] = "";
@@ -404,6 +406,7 @@ static void handleReadStart() {
     JsonDocument d;
     if (!guard(d, K, 1)) return;
     if (!CAN_RX) { fail(501, "read-unsupported"); return; }
+    if (updsvc::busy()) { fail(409, "update-busy"); return; }
     if (g_read.st == St::Active || pairActive()) { fail(409, "session-busy"); return; }
 #if ORCON_TX_POC
     if (txpoc::controller().status().busy) { fail(409, "session-busy"); return; }
@@ -467,6 +470,7 @@ static void handlePairStart() {
     JsonDocument d;
     if (!guard(d, nullptr, 0)) return;
     if (!CAN_PAIR) { fail(501, ORCON_TX_POC ? "pairing-unverified" : "tx-unavailable"); return; }
+    if (updsvc::busy()) { fail(409, "update-busy"); return; }
     if (g_read.st == St::Active || pairActive()) { fail(409, "session-busy"); return; }
 #if ORCON_TX_POC
     if (txpoc::controller().status().busy) { fail(409, "session-busy"); return; }  // open RF transaction
@@ -602,6 +606,7 @@ static void handleRemoteState() { if (!authorize(false, true)) return; remoteBod
 // "tx-budget") says when to try again.
 static int ctlAdmit(uint8_t k, uint32_t request, const char*& e, uint32_t& waitMs) {
     e = "invalid"; waitMs = 0;
+    if (updsvc::busy()) { e = "update-busy"; return 409; }   // no RF command while a firmware update downloads or restarts
     if (!orcon::state().fanKnown) { e = "unit-not-selected"; return 409; }
     if (g_read.st == St::Active || pairActive()) { e = "session-busy"; return 409; }
     const rlog::Device* heard = nullptr; const size_t heardN = rlog::devices(&heard);
@@ -688,6 +693,7 @@ static void handleSiri() {
     else if (w) snprintf(t, sizeof(t), "Even wachten: de zendlimiet is bereikt. Probeer het over %lu seconden opnieuw.", (unsigned long)((w + 999) / 1000));
     else if (!strcmp(e, "too-fast") || !strcmp(e, "remote-active") || !strcmp(e, "session-busy")) snprintf(t, sizeof(t), "De ventilatie is even bezig. Probeer het zo opnieuw.");
     else if (!strcmp(e, "profile-required")) snprintf(t, sizeof(t), "Kies eerst een profiel in de webinterface.");
+    else if (!strcmp(e, "update-busy")) snprintf(t, sizeof(t), "De controller installeert een firmware-update. Probeer het over een paar minuten opnieuw.");
     else snprintf(t, sizeof(t), "Dat lukt nu niet (%s).", e);
     siriSay(code, t);
 }
