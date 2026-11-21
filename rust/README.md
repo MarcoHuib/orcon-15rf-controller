@@ -6,10 +6,10 @@ PlatformIO while the entire firmware is being ported.
 
 ## Current code
 
-- **orcon-protocol**: a dependency-free \`#![no_std]\` RAMSES-II codec.
+- **orcon-protocol**: a dependency-free `#![no_std]` RAMSES-II codec.
   Covers frame headers and checksums, Manchester wire format, UART on-air
   encoding/decoding, and truncated-sync stream scanning.
-- Test locally: \`cargo test --manifest-path rust/orcon-protocol/Cargo.toml\`.
+- Test locally: `cargo test --manifest-path rust/orcon-protocol/Cargo.toml`.
 - Current production code, OTA slots, RF transmission limits and flash
   instructions are **unchanged**.
 
@@ -18,8 +18,8 @@ PlatformIO while the entire firmware is being ported.
 - **Only hardware:** Heltec WiFi LoRa 32 V2, original ESP32 (Xtensa LX6),
   SX1276 (868 MHz), OLED.
 - **Runtime candidate:** Rust + ESP-IDF, using the maintained
-  \`esp-rs/esp-idf\` monorepo (not the archived standalone
-  \`esp-rs/esp-idf-svc\` repository). Exact ESP-IDF / Rust versions and
+  `esp-rs/esp-idf` monorepo (not the archived standalone
+  `esp-rs/esp-idf-svc` repository). Exact ESP-IDF / Rust versions and
   component APIs must be pinned after the first on-target build.
 - Preserve the existing proven SX1276 **FSK direct-mode receive** behavior:
   DIO2 demodulated NRZ stream, UART at 38400 baud, bounded RX queue,
