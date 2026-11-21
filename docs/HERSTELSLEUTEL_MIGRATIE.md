@@ -75,14 +75,14 @@ Zonder sleutel wordt de proefstart nooit bevestigd. De sleutel wordt vóór elke
 Een installatie via USB heeft geen proefstart. Op een board zonder sleutel geldt dan "done zonder sleutel" (zie hierboven): je kunt aanmelden en een sleutel registreren.
 
 **Voorwaarde voor USB: een leesbaar otadata-record** (Codex ronde 6). De firmware rekent alleen een image met de status `VALID` of `UNDEFINED` als vast. `UNDEFINED` is het record dat `boot_app0.bin` schrijft. De USB-routes van dit project schrijven dat record of eisen het vooraf: `heltec_v2.sh recover` en het fabrieksimage schrijven het, `heltec_v2.sh flash` weigert zonder. Ontbreekt het record (otadata gewist zonder `boot_app0.bin`), of blijft het onleesbaar, dan blijft de status onbekend. Er start dan geen update, en het PRG-menu (herstelmodus, WiFi wissen, fabrieksreset) blijft dicht. Aanmelden werkt wel. De console meldt na 300 s "OTA-status niet leesbaar: updates blijven dicht". Herstart eerst. Helpt dat niet, dan is er het USB-herstel, elke stap met apart akkoord (Codex ronde 7):
-1. `LOCAL_ENV=heltec_v2_sx1276 tools/heltec_v2.sh recover check <commit>` leest alleen en schrijft niets; het openen van de poort herstart de ESP32 wel. Voorwaarden:
+1. `LOCAL_ENV=heltec_v2_sx1276 tools/heltec_v2.sh recover check <commit>` leest alleen en schrijft niets. Het openen van de poort herstart de ESP32 wel in de seriële loader, en daar blijft hij na de controle. Druk daarna op RST (PRG losgelaten) om weer normaal te starten (Codex ronde 8). Voorwaarden, naast de vaste boardgegevens en offline tools van `heltec_v2.sh`:
    - een geverifieerd lokaal RX-only-pakket van `<commit>`;
    - bootloader en partitietabel van het board byte-gelijk aan het pakket;
    - otadata leesbaar;
    - beide slots elk leeg of een bekend image: een lokaal pakket, de rollback-commit of een regel in `~/.orcon/installed.txt`.
 2. Alleen na `RECOVERY CHECK OK`: `LOCAL_ENV=heltec_v2_sx1276 tools/heltec_v2.sh recover write <commit>`. Dat schrijft app0 en daarna het record uit de gepinde `boot_app0.bin`, elk met readback. NVS, bootloader, partitietabel en app1 blijven onaangeroerd.
 
-Weigert de controle (een onbekend of half geschreven image, een afwijkende bootloader, otadata onleesbaar), dan is er niets geschreven en werkt aanmelden nog. Er is dan **geen geverifieerde route die NVS bewaart**; improviseer niet met esptool. Wat overblijft is het fabrieksimage uit de release (`…-factory-usb.bin`, vanaf adres 0x0). Dat wist NVS (WiFi, wachtwoord, profielen, sleutel), daarna start de installatiewizard. De PRG-fabrieksreset is in deze toestand niet beschikbaar, want het PRG-menu blijft dicht.
+Weigert de controle (een onbekend of half geschreven image, een afwijkende bootloader, otadata onleesbaar), dan is er niets geschreven en werkt aanmelden nog. Er is dan **geen geverifieerde route die NVS bewaart**; improviseer niet met esptool. Wat overblijft is het fabrieksimage uit de release (`…-factory-usb.bin`, vanaf adres 0x0). Dat wist NVS (WiFi, wachtwoord, profielen, sleutel) en schrijft het otadata-record opnieuw; app1 en de eigendomsmarkering buiten NVS raakt het niet. Het board start daarna dus als *Locked*: de markering zegt nog dat er een eigenaar is. Het PRG-menu is dan wel weer open, want de status is weer leesbaar. Doe daarom de PRG-fabrieksreset (het PRG-menu zoals in stap 1, maar kies Fabrieksreset); pas daarna start de installatiewizard (Codex ronde 8). Vóór het fabrieksimage is de PRG-fabrieksreset niet beschikbaar, want het PRG-menu blijft dan dicht.
 
 **Tests:**
 - `test_provision` (173): de oude waarden 0 + wachtwoord en 3 lezen als Done, zonder schrijven.
@@ -101,11 +101,11 @@ Weigert de controle (een onbekend of half geschreven image, een afwijkende bootl
   - de herhaalde leespoging van de proefstartstatus, zonder klok die een onbekende status openzet;
   - de statuscontrole ook in `startWrite()`, de gedeelde schrijfingang van beide installatieroutes;
   - geen schrijfactie zonder bruikbare sleutel: de controle in beide toegangen (`manualBlocked`, `claimDownload`), en elke weg naar `startWrite()` loopt daarlangs (Codex ronde 7);
-  - de aanroep van `ota::tick` in de hoofdlus: precies binnen `#if ORCON_SIGNED_OTA`, als losse opdracht op lusniveau direct na `net::loop()`, zonder `return` of `goto` ervoor. `ORCON_SIGNED_OTA` wordt alleen door de boardschakelaar in `config.h` gezet. Een `#if 0` eromheen, een `if (false)` ervoor en een tweede definitie worden geweigerd;
-  - de hulpfuncties zelf: `authorize` en `uploadAuthorized` eisen sessie én CSRF-token, en het eigendomsmodel bestaat alleen met login (Codex ronde 7);
+  - de aanroep van `ota::tick` in de hoofdlus: precies binnen `#if ORCON_SIGNED_OTA`, als losse opdracht op lusniveau direct na `net::loop()`, zonder `return` of `goto` ervoor; commentaar telt niet mee, dus een aanroep binnen `/* … */` wordt geweigerd. `ORCON_SIGNED_OTA` wordt alleen door de boardschakelaar in `config.h` gezet. Een `#if 0` eromheen, een `if (false)` ervoor en een tweede definitie worden geweigerd;
+  - de hulpfuncties zelf: de loginbranch van `authorize` en `uploadAuthorized` ligt letterlijk vast (sessie én CSRF-token, geen vroege return), en het eigendomsmodel bestaat alleen met login (Codex ronde 7–8);
   - in de fail-closed start: de status elke seconde opnieuw, en automatisch terug alleen bij een proefstart die op dat moment als proefstart gelezen wordt.
 
-  Er zijn 61 gerichte mutaties, die allemaal worden geweigerd.
+  Er zijn 64 gerichte mutaties, die allemaal worden geweigerd.
 
 ## Migratievolgorde voor jouw Heltec
 
@@ -142,6 +142,7 @@ Beide images hebben het eigendomsmodel. Uit de broncode van beide commits volgt 
 - Kan de firmware de OTA-status niet lezen, dan leest `tick()` hem elke seconde opnieuw, zonder tijdslimiet. Zolang de status onbekend is, start er geen update (`readTrialState`, `g_stateOpen`, ook in `startWrite()`; Codex ronde 3–6). Een onbekende status gaat dus nooit vanzelf open. Een echte proefstart met mislukte lezingen kan daardoor niet over zijn eigen rollback-image heen schrijven. Gevolg: een leesfout die blijft, of otadata zonder record, houdt updates en het PRG-menu dicht tot een herstart of het USB-herstel (zie "Voorwaarde voor USB" hierboven). Wordt de proefstart pas na 300 s herkend, dan volgt meteen de rollback.
 - Een proefstart waarvan elke lezing mislukt, wordt nooit door de firmware zelf teruggedraaid of bevestigd. Het image blijft in otadata onbevestigd, dus elke herstart (RST, stroom, watchdog) rolt terug.
 - Er is geen hosttest van de hele startvolgorde (opstarthaak → proefstart → `tick`) en van de OTA-routes met een ontbrekende sessie of CSRF-token. De guard pint die code wel vast, met mutaties.
+- Lukt het lezen van de sleutel bij `/api/ota/begin` wel, maar mislukt het een tel later bij de start van de upload, dan wordt er niets gewist. Toch ziet de pagina dan niet `owner-key-first`, maar een afgebroken upload, en wacht hij op een herstart die niet komt. De controller draait gewoon door op de huidige firmware: herlaad de pagina en probeer het opnieuw (Codex ronde 8; alleen de melding klopt niet).
 
 **Restpunt.** Raakt NVS precies de namespace `orconown` kwijt terwijl `orconauth` blijft, dan leest een **oud** image (b75fad3, 2edb423, PR #16) het board weer als *legacy*. Dat kan alleen door ingrijpen via USB of door schade aan het flashgeheugen; geen enkele route doet het. Na stap 8 staat er geen oud image meer op het board.
 

@@ -377,6 +377,8 @@ def active_conds(text,pos):                             # the preprocessor condi
         elif re.match(r'#\s*el',s): st[-1]=s
         elif re.match(r'#\s*endif',s): st.pop()
     return st
+def code_only(text):                                    # comments blanked (their newlines kept), string literals kept
+    return re.sub(r'"(?:\\.|[^"\\\n])*"|/\*.*?\*/|//[^\n]*',lambda m: m.group(0) if m.group(0)[0]=='"' else re.sub(r'[^\n]','',m.group(0)),text,flags=re.S)
 def legacy_recovery_safe(files,ota):
     for path,text in files.items():
         for bad in LEGACY_RECOVERY: assert bad not in text,(path,bad,'release-key password recovery must stay removed')
@@ -432,8 +434,8 @@ def legacy_recovery_safe(files,ota):
     # The main loop runs the trial in every signed build: one call at loop level, inside exactly #if ORCON_SIGNED_OTA,
     # and that switch is on for the Heltec V2 SX1276 builds (Codex legacy r5/r6).
     # A standalone statement at loop level after net::loop(), with no return or goto before it (Codex legacy r7).
-    main=files['src/main.cpp']; lp=main.index('void loop() {')+len('void loop() {'); call=main.find('\n    net::loop();\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());')
-    pre=re.sub(r'"(?:\\.|[^"\\])*"','""',re.sub(r'//[^\n]*','',main[lp:call]))
+    main=code_only(files['src/main.cpp']); lp=main.index('void loop() {')+len('void loop() {'); call=main.find('\n    net::loop();\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());')
+    pre=re.sub(r'"(?:\\.|[^"\\])*"','""',main[lp:call])   # a commented-out call does not count (Codex legacy r8)
     assert main.count('ota::tick(')==1 and lp < call < lp+len(fn(main,'void loop() {')) and active_conds(main,main.index('\n    ota::tick(millis());'))==['#if ORCON_SIGNED_OTA'],'the main loop runs the trial'
     assert pre.count('{')==pre.count('}') and not re.search(r'\b(return|goto)\b',pre),'the trial call is reached in every loop pass'
     cfg=files['src/config.h']
@@ -445,8 +447,9 @@ def legacy_recovery_safe(files,ota):
     for h in ('static void handleNonce() {','static void handleBegin() {'): assert fn(ota,h).lstrip().startswith('if (!ownerConsent()) return;'),(h,'asks the owner first')
     # The helpers themselves: a session AND its CSRF token, on every ownership-model build (Codex legacy r7).
     web=files['src/setup_web.cpp']; az=fn(web,'bool authorize(bool mutation, bool allowAp) {'); ua=fn(web,'bool uploadAuthorized() {')
-    assert az.startswith('\n#if ORCON_WEB_AUTH\n    if (mutation) { if (!sameOrigin(allowAp)) return false; }\n') and '\n    if (!s) { fail(401, "login-required"); return false; }\n    if (mutation && !webauth::equal(g_srv->header("X-Orcon-Token").c_str(), s->csrf)) { fail(403, "bad-token"); return false; }\n    return true;\n#else' in az,'owner consent: same origin, session and CSRF token'
-    assert ua.startswith('\n#if ORCON_WEB_AUTH\n    if (!hostOk()) return false;\n') and '\n    webauth::Session* s = currentSession();\n    return s && webauth::equal(g_srv->header("X-Orcon-Token").c_str(), s->csrf);\n#else' in ua,'the upload: session and CSRF token'
+    # The whole login branch, exactly: no early return before the checks (Codex legacy r8).
+    assert az.split('\n#else\n',1)[0]=='\n#if ORCON_WEB_AUTH\n    if (mutation) { if (!sameOrigin(allowAp)) return false; }\n    else if (!hostOk()) { fail(403, "forbidden-request"); return false; }\n    webauth::Session* s = currentSession();\n    if (!s) { fail(401, "login-required"); return false; }\n    if (mutation && !webauth::equal(g_srv->header("X-Orcon-Token").c_str(), s->csrf)) { fail(403, "bad-token"); return false; }\n    return true;','owner consent: same origin, session and CSRF token'
+    assert ua.split('\n#else\n',1)[0]=='\n#if ORCON_WEB_AUTH\n    if (!hostOk()) return false;\n    const String origin = g_srv->header("Origin");      // kept alive: c_str() of a temporary would dangle\n    if (origin.length() && !requestAllowed("application/json", origin.c_str(), g_srv->hostHeader().c_str())) return false;   // same origin when sent\n    webauth::Session* s = currentSession();\n    return s && webauth::equal(g_srv->header("X-Orcon-Token").c_str(), s->csrf);','the upload: session and CSRF token'
     assert '#if ORCON_WEB_AUTH && (!ORCON_TX_POC || ORCON_WEB_CONTROL)\n#define ORCON_OWNER_MODEL 1\n' in cfg,'the ownership model always has the login'
     assert '#if ORCON_OWNER_MODEL\n        if (!setupweb::uploadAuthorized()) { g_st = St::Failed; g_err = "login-required"; dropClient(); return; }\n#endif\n        if (startWrite()) return;' in fn(ota,'static void handleUploadData() {'),'the upload checks the session before it writes'
     assert re.search(r'#if ORCON_OWNER_MODEL\n(?:\s*//[^\n]*\n)*\s*s\.on\("/api/ota/nonce",[^\n]*\n\s*s\.on\("/api/ota/begin",[^\n]*\n\s*s\.on\("/api/ota/upload",[^\n]*\n#endif',ota) and ota.count('s.on("/api/ota/begin"')==1,'no network writer without the owner session (Codex legacy r2)'
@@ -479,6 +482,9 @@ for name,where,old,new in (('reset-route-back','src/setup_web.cpp','    s.on("/a
                            ('tick-in-false-block','src/main.cpp','    net::loop();\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());               // confirm a freshly installed image, or roll back\n#endif\n','    if (false) {\n    net::loop();\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());               // confirm a freshly installed image, or roll back\n#endif\n    }\n'),
                            ('return-before-tick','src/main.cpp','    // 3) web / OLED\n','    return;\n    // 3) web / OLED\n'),
                            ('signed-ota-redefined','src/config.h','#else\n#define ORCON_SIGNED_OTA 0\n#endif','#else\n#define ORCON_SIGNED_OTA 0\n#endif\n#undef ORCON_SIGNED_OTA\n#define ORCON_SIGNED_OTA 0'),
+                           ('tick-block-commented','src/main.cpp','    net::loop();\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());               // confirm a freshly installed image, or roll back\n#endif\n','    /*\n    net::loop();\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());               // confirm a freshly installed image, or roll back\n#endif\n    */\n'),
+                           ('upload-early-return','src/setup_web.cpp','#if ORCON_WEB_AUTH\n    if (!hostOk()) return false;\n    const String origin','#if ORCON_WEB_AUTH\n    if (!hostOk()) return false;\n    return false;\n    const String origin'),
+                           ('consent-early-return','src/setup_web.cpp','    if (mutation) { if (!sameOrigin(allowAp)) return false; }\n','    return true;\n    if (mutation) { if (!sameOrigin(allowAp)) return false; }\n'),
                            ('upload-session-only','src/setup_web.cpp','    return s && webauth::equal(g_srv->header("X-Orcon-Token").c_str(), s->csrf);','    return s != nullptr;'),
                            ('consent-without-csrf','src/setup_web.cpp','    if (mutation && !webauth::equal(g_srv->header("X-Orcon-Token").c_str(), s->csrf)) { fail(403, "bad-token"); return false; }\n',''),
                            ('owner-model-without-login','src/config.h','#if ORCON_WEB_AUTH && (!ORCON_TX_POC || ORCON_WEB_CONTROL)\n#define ORCON_OWNER_MODEL 1','#if (!ORCON_TX_POC || ORCON_WEB_CONTROL)\n#define ORCON_OWNER_MODEL 1'),
