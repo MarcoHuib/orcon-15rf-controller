@@ -66,7 +66,7 @@ Bron: `tools/test_ab_transition.py`. Die test schrijft echte otadata-bytes volge
 
 Mislukt de eerste update, dan heeft het board even maar één geldig image. De volgende geslaagde update herstelt de A/B-situatie. Wil je die tijdelijke situatie vermijden, dan is er alleen de USB-herstelroute (`heltec_v2.sh recover`, apart akkoord).
 
-**Bootloader, partitietabel en herstel blijven gelijk.** Een release schrijft nooit buiten het inactieve app-slot en otadata. De releasebuild controleert dat bootloader, partitietabel en boot_app0 byte-gelijk zijn aan de gepinde bestanden. `heltec_v2.sh recover` blijft werken, want de releases worden in `installed.txt` herkend zodra je ze via `orcon.py` installeert. Na een installatie via de webpagina voeg je de SHA-256 uit `SHA256SUMS` toe aan `~/.orcon/installed.txt`.
+**Bootloader, partitietabel en herstel blijven gelijk.** Een release schrijft nooit buiten het inactieve app-slot en otadata. De releasebuild controleert dat bootloader, partitietabel en boot_app0 byte-gelijk zijn aan de gepinde bestanden. `heltec_v2.sh recover` blijft werken, want de releases worden in `installed.txt` herkend zodra je ze via `orcon.py` installeert. Na een installatie via de webpagina voeg je de SHA-256 van het image toe aan `~/.orcon/installed.txt`: `firmware.sha256` uit `BUILD_INFO.json` van de release. `SHA256SUMS` noemt alleen de bundel. Het exacte commando staat in `HERSTELSLEUTEL_MIGRATIE.md`, stap 7.
 
 ## Acceptatie door de oude beleidscode
 

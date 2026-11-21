@@ -81,8 +81,9 @@ class Board:
         self.pending = self.state_of_running() == PENDING
 
     # ---- one update as ota_signed.cpp + fw_update_esp.cpp run it ----
-    def update(self, image, *, power_cut=None, healthy=True, reset_in_trial=False):
+    def update(self, image, *, power_cut=None, healthy=True, reset_in_trial=False, owner_key=True):
         if self.pending: return 'refused: confirm-running-image-first'
+        if not owner_key: return 'refused: owner-key-first'          # nothing erased (ota_signed.cpp ownerKeyUsable)
         target = self.next_update()
         assert target != self.running
         self.slot[target] = ''                                         # sequential erase/write has started
@@ -154,6 +155,10 @@ ok('power cut after the boot slot was set: the next start is the normal trial bo
 b = board(); b.set_boot(0); b.boot()
 assert b.pending and b.update('v1.0.1 control') == 'refused: confirm-running-image-first'
 ok('no update during a trial boot (ota_signed.cpp g_pending; ESP-IDF refuses esp_ota_begin too)')
+
+b = Board('v1.0.0 RX-only', 'b75fad3 control', running=0, seq=5)   # USB recovery: this branch in app0, keyless NVS
+assert b.update('v1.0.1 control', owner_key=False) == 'refused: owner-key-first' and b.slot == ['v1.0.0 RX-only', 'b75fad3 control'], b.view()
+ok('no owner key: the update is refused before anything is erased, so b75fad3 (old recovery) stays in app1 (Codex legacy r7)')
 
 b = board(); b.update('v1.0.0 control'); b.update('v1.1.0 control', healthy=False)
 assert b.running == 0 and b.slot == ['v1.0.0 control', 'v1.1.0 control'] and 'app1=v1.1.0 control [invalid]' in b.view(), b.view()

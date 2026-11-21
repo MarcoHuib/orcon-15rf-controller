@@ -6,9 +6,12 @@
 //   Setup   1: the owner set a password; wizard steps 2-4 run. Written BEFORE the password, so
 //           a password without a state can only come from firmware older than this model.
 //   Done    2: the owner's public key is registered: normal operation.
-//   Legacy  3: migrated from a pre-owner firmware (a password existed, no state). Works as Done;
-//           the old OTA-key-signed password recovery stays until the owner registers a key.
-// Anything else stored reads as Done without a key: fail closed (no wizard, no vendor recovery).
+// Anything else stored reads as Done (fail closed: no wizard). That includes 3, which firmware before the
+// removal of the release-key password reset wrote for a board migrated from pre-owner firmware, and a
+// password without a state. Such a board has no owner key yet: the login works, a key is registered in the
+// PRG recovery mode, and a forgotten password needs that key (or the PRG factory reset). Nothing rewrites
+// NVS for it, so an older image in the other slot still reads it as before. The firmware signing key never
+// sets or resets a password, in any state (docs/HERSTELSLEUTEL_MIGRATIE.md).
 //
 // The wizard's secret-bearing routes (first password, WiFi password, key file, recovery) need all of:
 //   - the request came in on the setup access point (local address = AP address, client in the AP
@@ -25,8 +28,8 @@ namespace provision {
 // Locked: NVS lost its owner without a completed factory reset (the Arduino core formats a full or newer
 // NVS before setup(), Codex OWNER-11), while the ownership sentinel below says the device has an owner.
 // Nothing reopens: no wizard, no login, no recovery. Only the PRG factory reset clears it.
-enum class State : uint8_t { New, Setup, Done, Legacy, Locked };
-constexpr uint8_t STORED_SETUP = 1, STORED_DONE = 2, STORED_LEGACY = 3;
+enum class State : uint8_t { New, Setup, Done, Locked };
+constexpr uint8_t STORED_SETUP = 1, STORED_DONE = 2;
 constexpr uint32_t PHYSICAL_MS = 15u * 60u * 1000u;      // the button-started recovery mode lasts 15 minutes
 
 // The button-started recovery mode: active for PHYSICAL_MS after boot, then off for good. Latched,
@@ -43,10 +46,9 @@ private:
     bool on_ = false, over_ = false;
 };
 
-// From NVS at boot. migrate: store STORED_LEGACY now (a pre-owner password, nothing else).
-// pubPresent: an owner key is stored (or unreadable: count it). A stored key always means Done, so an
-// interrupted registration (key written, state not) never leaves Setup or Legacy (Codex OWNER-07).
-State fromStored(uint8_t stored, bool credPresent, bool pubPresent, bool& migrate);
+// From NVS at boot; writes nothing. pubPresent: an owner key is stored (or unreadable: count it). A stored
+// key always means Done, so an interrupted registration (key written, state not) never leaves Setup (Codex OWNER-07).
+State fromStored(uint8_t stored, bool credPresent, bool pubPresent);
 const char* name(State);
 inline bool installing(State s) { return s == State::New || s == State::Setup; }
 
@@ -82,7 +84,7 @@ struct ResetOps {
 };
 // The password first, then the owner state and key: a reset cut off in between leaves an
 // installed device without a password (locked, fail closed), never "a password without a state",
-// which is what a pre-owner (Legacy) device looks like. Then pairing and profiles, WiFi and
+// which is what a board from pre-owner firmware looks like. Then pairing and profiles, WiFi and
 // identities, and the WiFi driver's own copy of the home network and AP credentials (Arduino
 // stores them there unless WiFi.persistent(false); net.cpp now turns that off, older boots wrote them).
 constexpr const char* WIPE[] = {"orconauth", "orconown", "orconprofiles", "orcon", "nvs.net80211"};

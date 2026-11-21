@@ -14,6 +14,11 @@ static const char SIGNED_OTA_MARKER[] = "ORCON-SIGNED-OTA v1";
 // per-device owner keys (their password recovery trusts the release key) and are never installed
 // over the air; a factory reset erases such an image from the other slot.
 static const char OWNER_MODEL_MARKER[] = "ORCON-OWNER-MODEL v1";
+// An image that runs the ownership model WITH owner-key recovery and without the release-key reset. Unlike the marker
+// above (which every build with this scanner contains), only ORCON_OWNER_MODEL builds contain it in plain text: the
+// scanner looks for an encoded copy. Required for every incoming image (Codex legacy r3); older owner-model images
+// without it stay valid rollback targets.
+static const char OWNER_KEY_MARKER[] = "ORCON-OWNER-KEY v1";
 
 // Only explicitly approved firmware variants can be installed over the air.
 enum class Variant : uint8_t { None, RxOnly, RfTest, Control };
@@ -59,6 +64,8 @@ public:
     bool legacyOta = false;   // unauthenticated HTTP/Arduino OTA strings
     bool signedOta = false;   // SIGNED_OTA_MARKER
     bool ownerModel = false;  // OWNER_MODEL_MARKER
+    bool ownerKey = false;    // OWNER_KEY_MARKER
+    bool releaseKeyReset = false;   // the removed password reset with the firmware signing key (its request kind)
     bool commitStamp = false; // the manifest's 40-hex commit
 private:
     void match(const uint8_t* buf, size_t n);
@@ -68,5 +75,22 @@ private:
 
 // The image as received against its manifest: size, hash, variant markers, OTA marker, commit.
 const char* checkImage(const Manifest& m, const Scanner& s, uint32_t received, const uint8_t sha256[32]);
+// An image already on the board that keeps an owner recovery, so it may stay a rollback target: this firmware (owner
+// keys), or one of the two older ownership images (b75fad3, 2edb423) whose recovery still trusted the release key.
+// Never a build without the ownership model that only carries OWNER_MODEL_MARKER (Codex legacy r4).
+inline bool ownerRecovery(const Scanner& s) { return s.ownerModel && (s.ownerKey || s.releaseKeyReset); }
+
+// One trial-boot decision per main-loop pass (ota_signed.cpp tick). A healthy image may try to confirm itself after
+// confirmAfter ms, at most once per second; the caller reads the owner key right before each attempt. Past rollbackAfter
+// an image that is not confirmed returns to the previous one. lastTry: 0 before the first attempt.
+enum class Trial : uint8_t { Wait, TryConfirm, Rollback };
+Trial trialStep(uint32_t now, bool healthy, uint32_t& lastTry, uint32_t confirmAfter, uint32_t rollbackAfter);
+
+// The running image's OTA state, from esp_ota_get_state_partition (IDF values: PENDING_VERIFY 1, VALID 2, UNDEFINED
+// 0xFFFFFFFF, the record boot_app0.bin writes for a USB install). Only a read that says VALID or UNDEFINED is settled;
+// PENDING_VERIFY is a trial. Anything else stays unknown at every uptime, a read error and a missing record included
+// (IDF 4.4 reports both as ESP_ERR_NOT_FOUND): no update starts and the state is read again (Codex legacy r6).
+enum class RunState : uint8_t { Unknown, Trial, Settled };
+RunState runState(bool readOk, uint32_t state);
 
 }  // namespace otap

@@ -3,24 +3,15 @@
 
 namespace provision {
 
-State fromStored(uint8_t stored, bool credPresent, bool pubPresent, bool& migrate) {
-    migrate = false;
+State fromStored(uint8_t stored, bool credPresent, bool pubPresent) {
     if (pubPresent) return State::Done;           // an owner key exists: whatever the state says, never less
-    switch (stored) {
-        case 0:
-            if (!credPresent) return State::New;
-            migrate = true;                       // only firmware without this model wrote a password alone
-            return State::Legacy;
-        case STORED_SETUP: return State::Setup;
-        case STORED_LEGACY: return State::Legacy;
-        default: return State::Done;              // STORED_DONE, or unknown: fail closed
-    }
+    if (stored == 0) return credPresent ? State::Done : State::New;   // a password alone: pre-owner firmware wrote it
+    return stored == STORED_SETUP ? State::Setup : State::Done;      // STORED_DONE, the old 3, or unknown: fail closed
 }
 const char* name(State s) {
     switch (s) {
         case State::New: return "new";
         case State::Setup: return "setup";
-        case State::Legacy: return "legacy";
         case State::Locked: return "locked";
         default: return "done";
     }
@@ -31,7 +22,6 @@ const char* allow(Route r, const Ctx& c) {
     if (r == Route::State) return nullptr;        // read-only, no secrets: shows what the AP client can do
     if (c.state == State::Locked) return "factory-reset-required";   // only the PRG factory reset reopens anything
     if (c.staUp) return "wifi-test-running";      // never while a path to the home network exists
-    const bool owner = c.state == State::Done || c.state == State::Legacy;
     switch (r) {
         case Route::Password:                      // wizard step 1: the first password, once
             if (!installing(c.state)) return "not-installing";
@@ -41,11 +31,11 @@ const char* allow(Route r, const Ctx& c) {
         case Route::Key:                           // step 4, or a new key in the button-started recovery mode
         case Route::KeyFile:
         case Route::KeyVerify:
-            if (!(c.state == State::Setup || (owner && c.physical))) return installing(c.state) ? "password-required" : "physical-mode-required";
+            if (!(c.state == State::Setup || (c.state == State::Done && c.physical))) return installing(c.state) ? "password-required" : "physical-mode-required";
             if (!c.loggedIn) return "login-required";
             return r == Route::Key || c.keyPending ? nullptr : "no-key-pending";
         case Route::Recover:                       // forgotten password: the recovery key file, no login
-            if (c.state != State::Done) return c.state == State::Legacy ? "no-owner-key" : "not-installed";
+            if (c.state != State::Done) return "not-installed";   // without a registered key the route answers no-owner-key
             return c.physical ? nullptr : "physical-mode-required";
         default: return "bad-route";
     }

@@ -148,7 +148,7 @@ Het grootste deel is de TLS-client: mbedTLS SSL/X.509 en WiFiClientSecure. Bootl
 
 ## Fouten (in de pagina in het Nederlands)
 
-`no-network`, `dns-failed`, `tls-failed`, `connect-failed`, `timeout`, `connection-lost`, `bad-response`, `redirect-not-allowed`, `too-many-redirects`, `rate-limited` (403/429), `server-error`, `http-error`, `unsupported-encoding`, `response-too-large`, `no-release`, `bad-index`, `bad-signature`, `wrong-variant`, `older-release`, `asset-missing`, `bundle-mismatch`, `bad-bundle`, `size-mismatch`, `low-memory`, `too-soon`, `no-update-offered`, `update-busy`, `confirm-running-image-first`. Daarnaast de bestaande OTA-codes, zoals `hash-mismatch`, `image-not-control` en `flash-write-failed`.
+`no-network`, `dns-failed`, `tls-failed`, `connect-failed`, `timeout`, `connection-lost`, `bad-response`, `redirect-not-allowed`, `too-many-redirects`, `rate-limited` (403/429), `server-error`, `http-error`, `unsupported-encoding`, `response-too-large`, `no-release`, `bad-index`, `bad-signature`, `wrong-variant`, `older-release`, `asset-missing`, `bundle-mismatch`, `bad-bundle`, `size-mismatch`, `low-memory`, `too-soon`, `no-update-offered`, `update-busy`, `confirm-running-image-first`, `owner-key-first`. Daarnaast de bestaande OTA-codes, zoals `hash-mismatch`, `image-not-control` en `flash-write-failed`.
 
 ## Tests
 
