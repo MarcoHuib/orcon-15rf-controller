@@ -36,10 +36,10 @@ with tempfile.TemporaryDirectory() as t:
         except SystemExit: check(True, f'{env}: the phrase of the other image is refused')
         orcon.rf_gate(env, phrase); check(True, f'{env}: its own phrase accepted')
     check(orcon.ENV_ACK['heltec_v2_sx1276_control'] == ('ORCON_CONTROL_ACK', 'control firmware'), 'control phrase is passed to heltec_v2.sh')
-    req = json.loads(orcon.reset_request('02:00:00:00:00:0A', 'c' * 32))
-    check(req == {'v': 1, 'kind': 'orcon-auth-reset', 'mac': '02:00:00:00:00:0a', 'nonce': 'c' * 32},
-          'recovery request: exactly v, kind, this board (lower case) and the nonce')
-    check(set(req) & {'env', 'variant', 'size', 'sha256'} == set(), 'a recovery request is never an OTA manifest')
+    check(not hasattr(orcon, 'reset_request') and not hasattr(orcon, 'cmd_auth_code'),
+          'no password recovery with the firmware signing key (auth-code removed)')
+    try: orcon.main(['auth-code']); check(False, 'auth-code is no longer a command')
+    except SystemExit as e: check(e.code == 2, 'auth-code is no longer a command')
     # signature round trip with a throw-away key, verified the way the device does (SHA-256 ECDSA, DER)
     key = t / 'k.pem'
     subprocess.run(['openssl', 'ecparam', '-name', 'prime256v1', '-genkey', '-noout', '-out', str(key)], check=True); os.chmod(key, 0o600)

@@ -110,8 +110,9 @@
 #define ORCON_SIGNED_OTA 0
 #endif
 // Web login (web_auth / auth_store): password, sessions and CSRF for every control and settings
-// route. Needs the signed-OTA key: a password is only (re)set with a code the device issues for
-// a request signed with that key. Other boards keep the per-boot token of the setup page.
+// route, on the Heltec V2 signed builds. The first password comes from the installation wizard and a
+// forgotten one is reset with the owner's recovery key (ownership model below), never with the
+// firmware signing key. Other boards keep the per-boot token of the setup page.
 #ifndef ORCON_WEB_AUTH
 #if ORCON_SIGNED_OTA
 #define ORCON_WEB_AUTH 1
@@ -120,7 +121,7 @@
 #endif
 #endif
 #if ORCON_WEB_AUTH && !ORCON_SIGNED_OTA
-#error "ORCON_WEB_AUTH needs ORCON_SIGNED_OTA (password recovery is signed with the OTA key)"
+#error "ORCON_WEB_AUTH exists only on the signed Heltec V2 builds"
 #endif
 #if ORCON_TX_CONTROL && !ORCON_WEB_AUTH
 #error "the control image transmits for anyone who can use its web page: it requires the web login"

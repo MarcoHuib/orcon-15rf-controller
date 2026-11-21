@@ -24,6 +24,7 @@ enum class Mode : uint8_t { None, Recovery, WifiReset };
 void armMode(Mode);                              // for the next boot only
 Mode bootMode();                                 // what the PRG menu started this boot for
 bool physicalActive();                           // a PRG-menu boot, within provision::PHYSICAL_MS
+bool recoveryActive();                           // the same, started as Herstelmodus: only that opens the key and recovery routes
 uint32_t physicalLeftMs();
 
 bool unsettledBoot();                            // in an OTA trial, or its state is unknown: no restarting actions

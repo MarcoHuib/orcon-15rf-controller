@@ -16,11 +16,6 @@
                                         written; a hold that fails is retried until the trial boot ends
   orcon.py backup-check --nvs DUMP      compare the board (RF IDs, OLED mode, WiFi name, profiles) with an
                                         NVS dump (tools/nvs_keys.py); prints only equal/different per field
-  orcon.py auth-code                    web login: a one-time code (10 min) to set or reset the
-                                        password, issued only for a request signed with the OTA key.
-                                        Only on a device migrated from before the ownership model that
-                                        has no owner key yet; afterwards recovery uses the owner's key
-                                        file in the PRG recovery mode (docs/PROVISIONING.md)
   orcon.py release --worktree DIR --env ENV --version N --yes [--tx-ack PHRASE] [--out DIR]
                                         a signed release bundle (.orconfw) for every board: the image
                                         plus a v2 manifest signed with the release key. Owners install
@@ -158,11 +153,6 @@ def rf_gate(env, ack):
     if ENV_VARIANT.get(env, (None, False))[1]:
         need = ENV_ACK[env][1]
         if ack != need: raise SystemExit(f'{env} can transmit: pass --tx-ack "{need}" to install it')
-
-
-def reset_request(mac, nonce):
-    """The signed web-login recovery request: exactly these fields, for this board and nonce."""
-    return json.dumps({'v': 1, 'kind': 'orcon-auth-reset', 'mac': mac.lower(), 'nonce': nonce}, separators=(',', ':'))
 
 
 # ---- log collection with gap detection ---------------------------------------------------
@@ -320,22 +310,6 @@ def watch_confirmation(get, commit, old_fw, clock, sleep, limit=420, boot_grace=
     return f'NO CONFIRMATION within {limit} s; last state: {last}'
 
 
-def cmd_auth_code(args):
-    """Web login recovery: the board issues a one-time code only for a request signed with the
-    OTA key on this Mac. Enter it in the web page ("Wachtwoord vergeten") with a new password."""
-    h = host(args)
-    st, n = http(h, '/api/auth/nonce', {})
-    if st == 404: raise SystemExit('this firmware has no web login (no /api/auth)')
-    if st == 403 and n.get('error') == 'owner-key-required':
-        raise SystemExit('this board has an owner key: recover the password with the key file in the PRG recovery mode (docs/INSTALLATIE.md)')
-    if st != 200 or 'mac' not in n: raise SystemExit(f'nonce refused (HTTP {st}): {n}')
-    text = reset_request(n['mac'], n['nonce'])
-    st, r = http(h, '/api/auth/reset', {'manifest': text, 'sig': sign(text)})
-    if st != 200: raise SystemExit(f'recovery request refused (HTTP {st}): {r.get("error", r)}')
-    print(f"Herstelcode: {r['code']}   (eenmalig, {r['ttl_s'] // 60} minuten geldig)")
-    print('Open de webinterface, kies "Wachtwoord vergeten" (of het instelscherm) en stel een nieuw wachtwoord in.')
-
-
 def cmd_release(args):
     """A release bundle for every board, from a verified local package (same verification as USB/OTA)."""
     wt, env = Path(args.worktree).resolve(), args.env
@@ -414,7 +388,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--host')
     sub = p.add_subparsers(dest='cmd', required=True)
-    sub.add_parser('status'); sub.add_parser('capture'); sub.add_parser('keygen'); sub.add_parser('auth-code')
+    sub.add_parser('status'); sub.add_parser('capture'); sub.add_parser('keygen')
     lg = sub.add_parser('logs'); lg.add_argument('--minutes', type=float, default=60)
     oi = sub.add_parser('ota-install'); oi.add_argument('--worktree', required=True); oi.add_argument('--env', required=True)
     oi.add_argument('--yes', action='store_true'); oi.add_argument('--tx-ack', '--rf-ack', dest='tx_ack', default='')
@@ -425,7 +399,7 @@ def main(argv=None):
     sub.add_parser('backup-check').add_argument('--nvs', required=True)
     a = p.parse_args(argv)
     {'status': cmd_status, 'logs': cmd_logs, 'capture': cmd_capture, 'ota-install': cmd_ota_install, 'keygen': cmd_keygen,
-     'auth-code': cmd_auth_code, 'release': cmd_release, 'backup-check': cmd_backup_check}[a.cmd](a)
+     'release': cmd_release, 'backup-check': cmd_backup_check}[a.cmd](a)
 
 
 if __name__ == '__main__':

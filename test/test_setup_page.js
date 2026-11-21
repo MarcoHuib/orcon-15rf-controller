@@ -796,7 +796,7 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.equal(ccalls().length, away); ok('leaving the read page stops polling even when open');
     }
 
-    // ---- web login: no default password, recovery code, login, logout, account, RF budget messages -------
+    // ---- web login: no default password, login, logout, account, RF budget messages ---------------------
     {
         const st = { fw: 'test', auth: { enabled: true, logged_in: false, password_set: false, login_wait_s: 0 }, wifi: { ap: false } };
         const full = state({ ...CAPS_TX, profile_control_supported: true, settings_pages: true, tx_per_minute: 10, tx_per_hour: 60 },
@@ -804,7 +804,6 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         let logged = false, rs = { id: 0, phase: 'idle', confirm: 'none', budget: { minute: 3, minute_max: 10, hour: 9, hour_max: 60, air_ms_hour: 120, retry_s: 0 } };
         const routes = {
             'GET /api/setup/state': () => [200, logged ? full : st],
-            'POST /api/auth/setup': c => { if (c.body.code !== 'ABCD-EFGH') return [401, { error: 'bad-code' }]; logged = true; st.auth.password_set = true; return [200, { ok: true, token: 'csrf1' }]; },
             'POST /api/auth/login': c => { if (c.body.password !== 'juist-wachtwoord') return [401, { error: 'bad-password', retry_s: 30 }]; logged = true; return [200, { ok: true, token: 'csrf1' }]; },
             'POST /api/auth/logout': () => { logged = false; return [200, { ok: true }]; },
             'POST /api/auth/password': c => c.body.current === 'juist-wachtwoord' ? [200, { ok: true, token: 'csrf2' }] : [401, { error: 'bad-password', retry_s: 0 }],
@@ -816,24 +815,17 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.equal(p.location.hash, '#login'); assert.equal(p.$('authP').hidden, false); assert.equal(p.$('ctlP').hidden, true);
         assert.equal(p.$('aSet').hidden, false); assert.equal(p.$('aLogin').hidden, true); assert.equal(p.$('aBack').hidden, true);
         assert.equal(p.$('logout').hidden, true); assert.equal(p.$('title').textContent, 'Aanmelden');
-        assert.match(html, /id="aHint">[^]*?python3 tools\/orcon\.py auth-code/);
-        ok('no password yet: only the set-password form, with how to get a recovery code');
+        assert.ok(!/auth-code|herstelcode|id="aCode|id="aSetGo|\/api\/auth\/(setup|nonce|reset)/i.test(html));
+        assert.equal(p.$('aHintOwn').hidden, false); assert.match(p.$('aHintOwn').textContent, /herstelsleutel/);
+        ok('no password stored: no code form, no release-key instructions; only the recovery with the owner\'s key is explained');
         assert.ok(!p.calls.some(c => c.key.includes('/api/remote/') || c.key.includes('/api/profiles')));
-        ok('no session data is requested before login');
-        p.$('aCode').value = 'ABCD-EFGH'; p.$('aNew').value = 'nieuw-wachtwoord'; p.$('aNew2').value = 'anders';
-        p.$('aSetGo').click(); await flush();
-        assert.equal(p.posts().length, 0); assert.match(p.$('err').textContent, /verschillen/);
-        ok('two different new passwords: refused in the page, nothing sent');
-        p.$('aCode').value = 'ZZZZ-ZZZZ'; p.$('aNew').value = 'nieuw-wachtwoord'; p.$('aNew2').value = 'nieuw-wachtwoord';
-        p.$('aSetGo').click(); await flush();
-        assert.match(p.$('err').textContent, /Onjuiste herstelcode/); assert.equal(p.$('aNew').value, ''); assert.equal(p.$('aNew2').value, '');
-        ok('wrong code: message; the password fields are emptied, never kept');
-        p.$('aCode').value = 'ABCD-EFGH'; p.$('aNew').value = 'nieuw-wachtwoord'; p.$('aNew2').value = 'nieuw-wachtwoord';
-        p.$('aSetGo').click(); await flush(); await p.refresh();
-        const setCall = p.posts().find(c => c.key === 'POST /api/auth/setup' && c.body.code === 'ABCD-EFGH');
-        assert.deepEqual(setCall.body, { code: 'ABCD-EFGH', password: 'nieuw-wachtwoord' });
+        assert.equal(p.posts().length, 0);
+        ok('no session data is requested before login, and nothing is posted');
+        st.auth.password_set = true; await p.refresh();
+        assert.equal(p.$('aLogin').hidden, false); assert.equal(p.$('aSet').hidden, true);
+        p.$('aPass').value = 'juist-wachtwoord'; p.$('aGo').click(); await flush(); await p.refresh();
         assert.equal(p.location.hash, '#control'); assert.equal(p.$('authP').hidden, true); assert.equal(p.$('logout').hidden, false);
-        ok('code + password: logged in, on to the dashboard; "Afmelden" in the header');
+        ok('password: logged in, on to the dashboard; "Afmelden" in the header');
         assert.equal(p.$('cAcct').hidden, false);
         ok('control image: an Account card');
         assert.match(p.$('ctlM').textContent, /Zendbudget: nog 7 van 10 deze minuut, 51 van 60 dit uur/);
@@ -935,10 +927,11 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
     }
     {   // forgotten password on an installed device: instructions from the home network, the key page in the recovery mode
         const st = { fw: 'test', auth: { enabled: true, logged_in: false, password_set: true, login_wait_s: 0 }, wifi: { ap: false }, setup: { state: 'done', via_ap: false, physical: false } };
-        const p = await page({ 'GET /api/setup/state': () => [200, st], 'POST /api/provision/recover': () => [200, { ok: true, token: 'tok9' }] });
+        const PW = { state: 'done', physical: true, key: { registered: true } };
+        const p = await page({ 'GET /api/setup/state': () => [200, st], 'GET /api/provision/state': () => [200, PW], 'POST /api/provision/recover': () => [200, { ok: true, token: 'tok9' }] });
         await p.refresh(); assert.equal(p.location.hash, '#login');
         p.$('aForgot').click(); await flush();
-        assert.equal(p.$('aHintOwn').hidden, false); assert.equal(p.$('aCodeBox').hidden, true); assert.equal(p.$('aHint').hidden, true);
+        assert.equal(p.$('aHintOwn').hidden, false); assert.equal(p.$('aCodeBox'), undefined); assert.equal(p.$('aHint'), undefined);
         assert.match(p.$('aHintOwn').textContent, /RST.*PRG 15 seconden.*Herstelmodus/);
         ok('installed device, forgotten password: the PRG recovery steps; no code entry (the release key grants no recovery)');
         st.setup = { state: 'done', via_ap: true, physical: true }; await p.refresh();
@@ -951,10 +944,24 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.match(rc.body.pem, /BEGIN ENCRYPTED/); assert.equal(rc.body.passphrase, 'goede sleutelzin'); assert.equal(rc.body.password, 'nieuw-wachtwoord');
         assert.equal(p.$('rPass').value, ''); assert.equal(p.$('rNew').value, ''); assert.equal(p.$('rPaste').value, '');
         ok('recovery mode on the AP: key file, passphrase and new password in one request; every field emptied');
-        st.setup = { state: 'legacy', via_ap: false, physical: false };
+        { const NK = { state: 'done', physical: true, key: { registered: false } };
+          const k = await page({ 'GET /api/setup/state': () => [200, st], 'GET /api/provision/state': () => [200, NK] }); await k.refresh();
+          k.$('aForgot').click(); await flush(); await k.refresh(); assert.equal(k.location.hash, '#recover');
+          assert.equal(k.$('rNoKey').hidden, false); assert.match(html, /id="rNoKey" hidden>[^<]*geen geregistreerde herstelsleutel[^<]*leesfout[^<]*Fabrieksreset/);
+          assert.equal(k.$('rGo').disabled, false); assert.notEqual(k.$('rIn').hidden, true);
+          ok('recovery mode, no key reported: the factory reset is explained first; the form stays (a read error can be temporary)'); }
+        { const nc = { ...st, auth: { ...st.auth, password_set: false } };   // the password record is gone, the key survives
+          const k = await page({ 'GET /api/setup/state': () => [200, nc], 'GET /api/provision/state': () => [200, PW] }); await k.refresh();
+          assert.equal(k.$('aLogin').hidden, true); assert.equal(k.$('aRec').hidden, false);
+          k.$('aRec').click(); await flush(); assert.equal(k.location.hash, '#recover'); assert.equal(k.$('recP').hidden, false);
+          const h = await page({ 'GET /api/setup/state': () => [200, { ...nc, setup: { state: 'done', via_ap: false, physical: false } }] }); await h.refresh();
+          assert.equal(h.$('aRec').hidden, true);
+          ok('recovery mode without a password record: the recovery form is still reachable; not outside the recovery mode (Codex legacy r3)'); }
+        st.setup = { state: 'done', via_ap: false, physical: false };
         const q = await page({ 'GET /api/setup/state': () => [200, st] }); await q.refresh(); q.$('aForgot').click(); await flush();
-        assert.equal(q.$('aCodeBox').hidden, false); assert.equal(q.$('aHint').hidden, false); assert.equal(q.$('aHintOwn').hidden, true);
-        ok('migrated device without an owner key: the existing signed-code recovery stays');
+        assert.equal(q.$('aSet').hidden, false); assert.equal(q.$('aHintOwn').hidden, false); assert.match(q.$('aHintOwn').textContent, /herstelsleutel.*Herstelmodus/);
+        assert.equal(q.posts().length, 0);
+        ok('forgotten password on the home network: only the way to the PRG recovery mode with the owner\'s key, no code entry');
         st.setup = { state: 'setup', via_ap: true, physical: false };
         const r = await page({ 'GET /api/setup/state': () => [200, st] }); await r.refresh();
         assert.equal(r.location.hash, '#login'); assert.match(r.$('sub').textContent, /Installatie hervatten/);
@@ -962,7 +969,7 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         ok('interrupted installation: log in with the step-1 password; forgotten -> factory reset (no key exists yet)');
         st.setup = { state: 'locked', via_ap: true, physical: false }; st.auth.password_set = false;
         const lq = await page({ 'GET /api/setup/state': () => [200, st] }); await lq.refresh();
-        assert.equal(lq.location.hash, '#login'); assert.equal(lq.$('aLogin').hidden, true); assert.equal(lq.$('aCodeBox').hidden, true);
+        assert.equal(lq.location.hash, '#login'); assert.equal(lq.$('aLogin').hidden, true); assert.equal(lq.$('aSet').hidden, false);
         assert.equal(lq.$('aBack').hidden, true); assert.match(lq.$('aHintOwn').textContent, /kwijtgeraakt.*Fabrieksreset/);
         ok('locked (NVS lost its owner): no login, no setup, no code entry; only the PRG factory reset is explained');
     }
