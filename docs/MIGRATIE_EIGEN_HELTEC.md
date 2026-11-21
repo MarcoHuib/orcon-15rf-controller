@@ -1,5 +1,7 @@
 # Migratie, eerste tests en fabrieksreset op de eigen Heltec
 
+> Historisch plan (november 2026). Het wachtwoordherstel met `orcon.py auth-code` en de staat Legacy zijn verwijderd. De migratie naar een eigen herstelsleutel staat in [`HERSTELSLEUTEL_MIGRATIE.md`](HERSTELSLEUTEL_MIGRATIE.md).
+
 **Besluit van 14-11-2026**
 - Er is één Heltec V2: het werkende board. Er komt geen tweede board.
 - Elke firmware-installatie, USB-handeling, reset en RF-zending gebeurt alleen na een apart akkoord voor precies die stap.

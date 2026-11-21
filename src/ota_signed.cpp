@@ -19,6 +19,9 @@
 #include "setup_web.h"
 #include "rf_console.h"
 #include "tx_poc_caps.h"
+#if ORCON_OWNER_MODEL
+#include "owner_store.h"
+#endif
 #include <Arduino.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
@@ -68,6 +71,22 @@ static RTC_NOINIT_ATTR Crumb g_crumb;
 static uint32_t g_prevUptimeS = 0;
 static bool g_prevKnown = false;
 static std::atomic<bool> g_pending{false};      // also read by the loop watchdog on core 0 (Codex r6)
+// The trial state is unknown (otap::runState): not read yet, unreadable, or no settled value. No update starts and
+// tick() reads it again once a second, at every uptime: an unknown state never opens the writer by itself, because a
+// real trial whose reads fail would then overwrite its own rollback image (Codex legacy r3-r6). A USB install reads
+// UNDEFINED from boot_app0.bin, which every USB route of this project writes.
+static std::atomic<bool> g_stateOpen{true};
+static_assert(ESP_OTA_IMG_PENDING_VERIFY == 1 && ESP_OTA_IMG_VALID == 2 && ESP_OTA_IMG_UNDEFINED == 0xFFFFFFFFu, "otap::runState values");
+static otap::RunState runningState() {
+    esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
+    const bool ok = esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK;
+    return otap::runState(ok, uint32_t(st));
+}
+static void readTrialState() {
+    const otap::RunState r = runningState();
+    g_pending = r == otap::RunState::Trial;
+    g_stateOpen = r == otap::RunState::Unknown;
+}
 static bool g_hold = false;   // rollback test: this trial boot refuses to confirm itself (RAM only)
 #define ORCON_STR2(x) #x
 #define ORCON_STR(x) ORCON_STR2(x)
@@ -148,7 +167,12 @@ static void handleInfo() {
              boot ? boot->label : "?", next ? next->label : "?", stateName(next), (unsigned long)(next ? next->size : 0),
              dl ? "download" : g_st == St::Idle ? "idle" : g_st == St::Ready ? "ready" : g_st == St::Writing ? "writing" : g_st == St::Done ? "done" : "failed",
              dl ? "none" : g_err, g_nonce[0] && millis() - g_nonceMs < NONCE_TTL_MS ? "true" : "false", g_hold ? "true" : "false",
-             otap::OWNER_MODEL_MARKER, (unsigned long)ORCON_RELEASE_VERSION, RELEASE_STAMP, rel);
+#if ORCON_OWNER_MODEL
+             otap::OWNER_KEY_MARKER,   // the only plain copy in the image: builds without the ownership model never carry it
+#else
+             "",
+#endif
+             (unsigned long)ORCON_RELEASE_VERSION, RELEASE_STAMP, rel);
     reply(200, b);
 }
 
@@ -185,12 +209,25 @@ static bool ownerConsent() {
 // next update target, so bytes written there could boot before every check passed (Codex r4). Refuse until the
 // running image is the boot choice again (USB recovery, docs/AB_OVERGANG.md).
 static bool bootMismatch() { return esp_ota_get_boot_partition() != esp_ota_get_running_partition(); }
+// A readable, on-curve owner key this image can use, read now (no cache). Without it an update would never be confirmed,
+// and writing it would still erase the other slot, which may hold the last image with the old recovery (Codex legacy r7).
+static bool ownerKeyUsable() {
+#if ORCON_OWNER_MODEL
+    uint8_t q[65];
+    // Also the recovery's own crypto self-test: a key this image could not use would be no way back (Codex legacy r2).
+    const bool ok = ownerstore::state() == provision::State::Done && ownerstore::ownerKey(q) && ownerstore::cryptoReady();
+    return ok;
+#else
+    return true;                                            // no ownership model: no owner key to require
+#endif
+}
 static const char* manualBlocked() {
     if (g_dl) return "update-busy";
     if (g_selected || net::restartQueued()) return "restart-pending";
     if (bootMismatch()) return "boot-slot-mismatch";
     if (g_st == St::Writing) return "update-busy";
-    if (g_pending) return "confirm-running-image-first";
+    if (g_pending || g_stateOpen) return "confirm-running-image-first";
+    if (!ownerKeyUsable()) return "owner-key-first";
 #if !ORCON_TX_POC || ORCON_WEB_CONTROL
     if (setupweb::busy()) return "session-busy";
 #endif
@@ -283,6 +320,11 @@ static void abortWrite(const char* e) {
 static const char* startWrite() {   // Ready -> Writing
     if (g_selected) { g_st = St::Failed; return g_err = "restart-pending"; }
     if (g_st != St::Ready) return "not-ready";
+    // The shared entry of both paths: the SDK's own check in esp_ota_begin() skips a state it cannot read (Codex legacy r6).
+    if (g_pending || g_stateOpen) { g_st = St::Failed; return g_err = "confirm-running-image-first"; }
+    // The owner key is read by both callers' admission on the loop task, just before this (manualBlocked at the upload's
+    // start, claimDownload before the worker exists); NVS and the self-test are not read from the worker. The key cannot
+    // go away meanwhile: the PRG menu (recovery, factory reset) refuses while updsvc::busy() (Codex legacy r7).
     if (esp_ota_begin(g_part, OTA_WITH_SEQUENTIAL_WRITES, &g_h) != ESP_OK) { g_st = St::Failed; return g_err = "ota-begin-failed"; }
     mbedtls_sha256_init(&g_sha); mbedtls_sha256_starts_ret(&g_sha, 0);
     g_rx = 0; g_st = St::Writing;
@@ -365,14 +407,16 @@ static void handleUploadDone() {
 }
 
 // ---- the one-click update (fw_update_esp.cpp): the same checks and writer as begin + upload, v2 releases only ----
-bool pendingVerify() { return g_pending; }
+bool pendingVerify() { return g_pending || g_stateOpen; }
+bool trialNow() { return runningState() == otap::RunState::Trial; }
 bool writerBusy() { return g_dl || g_st == St::Writing || g_selected; }
 uint32_t updateSlotSize() { const esp_partition_t* p = esp_ota_get_next_update_partition(nullptr); return p ? p->size : 0; }
 const char* claimDownload() {   // loop task, before the worker task exists
     if (g_selected) return "restart-pending";
     if (bootMismatch()) return "boot-slot-mismatch";
     if (g_dl || g_st == St::Writing) return "update-busy";
-    if (g_pending) return "confirm-running-image-first";
+    if (g_pending || g_stateOpen) return "confirm-running-image-first";
+    if (!ownerKeyUsable()) return "owner-key-first";
     g_nonce[0] = 0; g_st = St::Idle; g_err = "none";   // a manual begin that was never uploaded is dropped
     g_dl = true;
     return nullptr;
@@ -462,20 +506,39 @@ void begin(WebServer& s) {
     else { g_crumb.magic = 0x4F524331u; g_crumb.boots = 1; }
     g_crumb.lastUptimeS = 0;
     const esp_partition_t* run = esp_ota_get_running_partition();
-    esp_ota_img_states_t st;
-    g_pending = esp_ota_get_state_partition(run, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY;
+    readTrialState();
     // After the trial state is known, so the watchdog never starts with the wrong limit (Codex r6).
     if (xTaskCreatePinnedToCore(loopWatch, "loop_watch", 2048, nullptr, 2, nullptr, 0) != pdPASS) Serial.println("[ota] loop watchdog not started");
     note(rfcon::INFO, "opgestart: %s, reden %s, vorige sessie %ld s, %s%s", run->label, resetName(esp_reset_reason()),
          g_prevKnown ? long(g_prevUptimeS) : -1L, variantOfThisBuild(), g_pending ? ", proefstart na OTA" : "");
     s.on("/api/ota",        HTTP_GET,  handleInfo);
+#if ORCON_OWNER_MODEL
+    // Writing firmware needs the owner's session and CSRF token besides the signature. Builds without the ownership
+    // model (the old PoC portals) have no network writer at all: the signing key alone never installs anything there
+    // (Codex legacy r2). Those boards are installed over USB.
     s.on("/api/ota/nonce",  HTTP_POST, handleNonce);
     s.on("/api/ota/begin",  HTTP_POST, handleBegin);
     s.on("/api/ota/upload", HTTP_POST, handleUploadDone, handleUploadData);
+#endif
 #if !ORCON_TX_POC || ORCON_WEB_CONTROL
     s.on("/api/ota/hold",   HTTP_POST, handleHold);
 #endif
     s.on("/api/diag",       HTTP_GET,  handleDiag);
+}
+
+// This firmware has no password reset with the firmware signing key. An older image may still have it for a
+// board without an owner key: an update on such a board is never confirmed, so the previous image (and its
+// recovery) returns until the owner registers a key (docs/HERSTELSLEUTEL_MIGRATIE.md). Read again before every
+// confirmation attempt: a passing read error does not force a rollback, a key that became unreadable is noticed.
+static bool ownerKeyRegistered() {
+    const bool ok = ownerKeyUsable();
+    static bool told = false;
+    if (!ok && !told) {
+        told = true;
+        note(rfcon::ERR, "geen herstelsleutel geregistreerd: deze firmware wordt niet bevestigd en de vorige keert terug. "
+                         "Registreer eerst een herstelsleutel in de herstelmodus (PRG-menu).");
+    }
+    return ok;
 }
 
 void tick(uint32_t now) {
@@ -483,17 +546,33 @@ void tick(uint32_t now) {
     static uint32_t lastCrumb = 0;
     if (now - lastCrumb >= 5000) { lastCrumb = now; g_crumb.lastUptimeS = now / 1000; }
     if (g_nonce[0] && now - g_nonceMs >= NONCE_TTL_MS) g_nonce[0] = 0;   // a 49.7-day millis() wrap must not revive it
-    if (!g_pending) return;
-    // Healthy = this image runs, joined the network (so a later OTA can still reach it) and
-    // the receiver is up. Only then is it confirmed; otherwise the previous image returns.
-    const bool healthy = !g_hold && now >= CONFIRM_AFTER_MS && net::wifiConnected() && radio::rxDiagnostics().rxState == 0;
-    if (healthy && esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
-        g_pending = false; note(rfcon::INFO, "nieuwe firmware bevestigd (gezond na %lu s)", (unsigned long)(now / 1000));
-        return;
+    static uint32_t lastRead = 0;
+    static bool toldUnknown = false;
+    if (g_stateOpen && now - lastRead >= 1000) {   // unknown: read again; only a settled read opens the writer
+        lastRead = now; readTrialState();
+        if (g_pending) note(rfcon::WARN, "proefstart alsnog herkend (OTA-status bij het opstarten niet leesbaar)");
+        else if (g_stateOpen && now >= ROLLBACK_AFTER_MS && !toldUnknown) {
+            toldUnknown = true;
+            note(rfcon::ERR, "OTA-status niet leesbaar: updates blijven dicht. Herstart; blijft het zo, herstel via USB (docs/HERSTELSLEUTEL_MIGRATIE.md)");
+        }
     }
-    if (now >= ROLLBACK_AFTER_MS) {   // unhealthy, or a confirmation that keeps failing: the previous image returns
-        note(rfcon::ERR, "nieuwe firmware niet gezond binnen %lu s: terug naar de vorige", (unsigned long)(ROLLBACK_AFTER_MS / 1000));
-        rollbackNow();
+    if (!g_pending) return;
+    // Healthy = this image runs, joined the network (so a later OTA can still reach it) and the receiver is up. It is
+    // confirmed only if the owner also has a recovery key; otherwise the previous image returns (otap::trialStep).
+    static uint32_t lastTry = 0;
+    const bool healthy = !g_hold && net::wifiConnected() && radio::rxDiagnostics().rxState == 0;
+    switch (otap::trialStep(now, healthy, lastTry, CONFIRM_AFTER_MS, ROLLBACK_AFTER_MS)) {
+        case otap::Trial::TryConfirm:
+            if (ownerKeyRegistered() && esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
+                g_pending = false; note(rfcon::INFO, "nieuwe firmware bevestigd (gezond na %lu s)", (unsigned long)(now / 1000));
+            }
+            return;
+        case otap::Trial::Rollback:   // unhealthy, no owner key, or a confirmation that keeps failing: the previous image returns
+            note(rfcon::ERR, "nieuwe firmware niet bevestigd binnen %lu s: terug naar de vorige", (unsigned long)(ROLLBACK_AFTER_MS / 1000));
+            rollbackNow();
+            return;
+        case otap::Trial::Wait:
+            return;
     }
 }
 
@@ -524,7 +603,7 @@ bool previousIsOwnerModel() {
         if (esp_partition_read(p, off, buf, n) != ESP_OK) return false;
         s.feed(buf, n);
     }
-    return s.ownerModel && s.signedOta && !s.legacyOta;
+    return otap::ownerRecovery(s) && s.signedOta && !s.legacyOta;
 }
 
 }  // namespace ota

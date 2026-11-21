@@ -119,9 +119,9 @@ try:
         for v in seg: cs ^= v
         b += b'\x00' * (15 - len(b) % 16) + bytes([cs])
         return bytes(b + hashlib.sha256(b).digest())
-    def image(*parts, version=VERSION, commit=COMMIT, header=b'\xe9\x01\x02\x30', owner=True, signed=True, **kw):
+    def image(*parts, version=VERSION, commit=COMMIT, header=b'\xe9\x01\x02\x30', owner=True, owner_key=True, signed=True, **kw):
         body = []
-        for p in parts + ((b'ORCON-SIGNED-OTA v1',) if signed else ()) + ((b'ORCON-OWNER-MODEL v1',) if owner else ()):
+        for p in parts + ((b'ORCON-SIGNED-OTA v1',) if signed else ()) + ((b'ORCON-OWNER-MODEL v1',) if owner else ()) + ((b'ORCON-OWNER-KEY v1',) if owner_key else ()):
             body += [p, b'\x00' * 97]
         if version is not None: body += [f'ORCON-RELEASE {version};'.encode(), b'\x00' * 10]
         if commit: body += [commit.encode(), b'\x00' * 10]
@@ -157,6 +157,7 @@ try:
         ('control-plus-rx', image(CTL, b'SX1276 direct RX (TX disabled)'), {}, 'image-not-control'),
         ('legacy-ota', image(CTL, b'ArduinoOTA'), {}, 'image-has-unauthenticated-ota'),
         ('no-owner-model', image(CTL, owner=False), {}, 'image-predates-owner-model'),
+        ('no-owner-key', image(CTL, owner_key=False), {}, 'image-without-owner-key'),
         ('no-signed-ota', image(CTL, signed=False), {}, 'image-without-signed-ota'),
         ('bootloader', image(CTL), {'bootloader.bin': (real / 'bootloader.bin').read_bytes()[:-1] + b'\x00'}, 'bootloader.bin differs'),
         ('partitions', image(CTL), {'partitions.bin': (real / 'partitions.bin').read_bytes()[:-1] + b'\x00'}, 'partitions.bin differs'),

@@ -1,7 +1,6 @@
 #include "config.h"
 #if ORCON_WEB_AUTH
 #include "auth_store.h"
-#include "ota_signed.h"
 #include <Arduino.h>
 #include <Preferences.h>
 #include <esp_system.h>
@@ -62,8 +61,6 @@ bool kdf(const char* pw, size_t n, const uint8_t* salt, size_t saltLen, uint32_t
     return kdfReady() && pbkdf2((const uint8_t*)pw, n, salt, saltLen, it, out);
 }
 void random(uint8_t* out, size_t n) { esp_fill_random(out, n); }   // hardware RNG (RF/WiFi on)
-void ownMac(char out[18]) { ota::ownMac(out); }
-bool verifySignature(const char* text, size_t n, const char* sigHex) { return ota::verifySignature(text, n, sigHex); }
 
 static const char SIRI[] = "siri";
 Status siriKey(char out[33]) {
