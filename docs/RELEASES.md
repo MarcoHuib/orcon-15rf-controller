@@ -83,7 +83,7 @@ Daarnaast staat elke verplichte controle als exacte eigen regel. Alle besturings
 - geen secrets of token in `with:`;
 - git-replacement-objecten uitgeschakeld.
 
-Elke eigenschap heeft een mutatie die geweigerd moet worden (100 stuks), waaronder:
+Elke eigenschap heeft een mutatie die geweigerd moet worden (107 stuks), waaronder:
 - PR- en tagtriggers;
 - secret in een andere job;
 - `secrets: inherit`;
