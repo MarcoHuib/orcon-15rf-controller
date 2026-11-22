@@ -1,11 +1,11 @@
 # Productie-image voor dagelijks gebruik (`heltec_v2_sx1276_control`)
 
-Dit image bedient de Orcon via de webinterface. Je hebt er geen USB-kabel en geen originele afstandsbediening voor nodig.
+Dit image bedient de Orcon via de webinterface. Na de eenmalige installatie, het volledig uitlezen van een geschikte bestaande afstandsbediening en de RF-koppeling kun je dagelijks zonder USB-kabel of originele afstandsbediening bedienen.
 
 - **Bediening:** de vijf standen, plus koppelen met de eigen Heltec-ID.
 - **Begrenzing:** de RF-zendingen zijn begrensd door het doorlopende RF-budget. De testlimiet per opstart geldt hier niet.
 - **Toegang:** alleen na aanmelden.
-- **OTA:** het image is de ondertekende OTA-variant `control`. Het RX-only-image (`heltec_v2_sx1276`) blijft het rollbackdoel.
+- **OTA:** het image is de ondertekende OTA-variant `control`. Bij A/B-updates is het vorige geldige image de terugvaloptie; na opeenvolgende control-releases is dit doorgaans de vorige control-versie. RX-only blijft een afzonderlijke diagnosebuild.
 
 ## RF-budget (`src/tx_budget.*`)
 
