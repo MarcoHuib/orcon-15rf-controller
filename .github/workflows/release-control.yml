@@ -4,8 +4,8 @@ name: Release control firmware (Heltec V2)
 # published. Started by hand only: Actions > this workflow > Run workflow, branch main, a release type (patch, minor or
 # major); the version is the next one after every existing tag and release. No push, pull request, tag, release or
 # schedule starts it. Six jobs, each with the least it needs:
-#   history  every tag and release, drafts included (the API lists drafts only to a token with push access); runs no
-#            repository code and writes nothing                                                          contents: write
+#   history  the newest version among every tag and release, drafts included (the API lists drafts only to a token
+#            with push access), by the same awk rule as the publish floor; no repository code, writes nothing contents: write
 #   prepare  source checks (manual run, default branch, its head) and the next version from that history
 #            (patch 1.0.0 -> 1.0.1, minor 1.0.5 -> 1.1.1, major 1.4.8 -> 2.0.1)                          contents: read
 #   build    pinned toolchain, every host/safety/privacy test, the release build and its checks           contents: read
@@ -57,7 +57,7 @@ jobs:
     permissions:
       contents: write
     outputs:
-      tags: ${{ steps.list.outputs.tags }}
+      newest: ${{ steps.list.outputs.newest }}
     steps:
       - name: Every tag and every release, drafts included (no repository code)
         id: list
@@ -69,8 +69,8 @@ jobs:
             git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n 's#^refs/tags/##p' | sed 's/\^{}$//'
             gh api --paginate "repos/${REPO}/releases" --jq '.[].tag_name'
           } > "$RUNNER_TEMP/tags.txt"
-          b64="$(base64 -w0 "$RUNNER_TEMP/tags.txt")"
-          echo "tags=$b64" >> "$GITHUB_OUTPUT"
+          newest="$(awk '/^v?(0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)$/ { sub(/^v/, ""); split($0, p, "."); n = p[1] * 1000000 + p[2] * 1000 + p[3]; if (n > m) m = n } END { print m + 0 }' "$RUNNER_TEMP/tags.txt")"
+          echo "newest=$newest" >> "$GITHUB_OUTPUT"
 
   prepare:
     name: Version and source
@@ -105,10 +105,9 @@ jobs:
         env:
           RELEASE_TYPE: ${{ inputs.release_type }}
           NOTES: ${{ inputs.notes }}
-          HISTORY: ${{ needs.history.outputs.tags }}
+          NEWEST: ${{ needs.history.outputs.newest }}
         run: |
-          printf '%s' "$HISTORY" | base64 -d > "$RUNNER_TEMP/tags.txt"
-          python3 -I tools/release_ci.py next --tags "$RUNNER_TEMP/tags.txt" --notes="$NOTES" -- "$RELEASE_TYPE" >> "$GITHUB_OUTPUT"
+          python3 -I tools/release_ci.py next --newest "$NEWEST" --notes="$NOTES" -- "$RELEASE_TYPE" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build and test

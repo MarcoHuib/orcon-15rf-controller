@@ -617,11 +617,12 @@ REL_EXPR={'github.event.repository.default_branch','github.event_name','github.r
           'github.sha','github.token','inputs.notes','inputs.release_type','needs.build.outputs.firmware_sha256','needs.prepare.outputs.number',
           'needs.prepare.outputs.tag','needs.sign.outputs.bundle_name','needs.sign.outputs.bundle_sha256','runner.temp',
           'secrets.ORCON_OTA_SIGNING_KEY','steps.check.outputs.firmware_sha256','steps.package.outputs.bundle_name',
-          'steps.package.outputs.bundle_sha256','needs.history.outputs.tags','steps.list.outputs.tags','steps.version.outputs.name','steps.version.outputs.number','steps.version.outputs.tag',
+          'steps.package.outputs.bundle_sha256','needs.history.outputs.newest','steps.list.outputs.newest','steps.version.outputs.name','steps.version.outputs.number','steps.version.outputs.tag',
           'needs.verify.outputs.sums_sha256','needs.verify.outputs.notes_sha256','steps.final.outputs.sums_sha256','steps.final.outputs.notes_sha256'}
+REL_AWK='/^v?(0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)$/ { sub(/^v/, ""); split($0, p, "."); n = p[1] * 1000000 + p[2] * 1000 + p[3]; if (n > m) m = n } END { print m + 0 }'   # the version rule of the history job and of the publish floor
 # Every check the release depends on, as its own exact script line (Codex r4: a prefix let "--help" or a wrapper pass).
 REL_REQUIRED=(('prepare','python3 -I tools/release_ci.py source --repo "$REPO" --ref "$REF" --event "$EVENT" --default-branch "$DEFAULT_BRANCH" --sha "$SHA" --head "$head"'),
-    ('prepare','python3 -I tools/release_ci.py next --tags "$RUNNER_TEMP/tags.txt" --notes="$NOTES" -- "$RELEASE_TYPE" >> "$GITHUB_OUTPUT"'),
+    ('prepare','python3 -I tools/release_ci.py next --newest "$NEWEST" --notes="$NOTES" -- "$RELEASE_TYPE" >> "$GITHUB_OUTPUT"'),
     ('build','python -m venv "$RUNNER_TEMP/pio-venv"'),
     ('build','"$RUNNER_TEMP/pio-venv/bin/python" -m pip install --require-hashes --no-deps --only-binary=:all: --force-reinstall -r tools/release/requirements-platformio.txt'),
     ('build','"$RUNNER_TEMP/pio-venv/bin/python" -m pip check'),('build','echo "$RUNNER_TEMP/pio-venv/bin" >> "$GITHUB_PATH"'),
@@ -636,11 +637,11 @@ REL_REQUIRED=(('prepare','python3 -I tools/release_ci.py source --repo "$REPO" -
     ('verify','python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --release "$TAG" --official --notes="$NOTES"'),
     ('publish','test "$(sha256sum SHA256SUMS | cut -d\' \' -f1)" = "$SUMS"'),('publish','test "$(sha256sum RELEASE_NOTES.md | cut -d\' \' -f1)" = "$NOTES_SHA"'),
     ('publish','sha256sum -c SHA256SUMS'),('publish','if [ "$floor" -ge "$NUMBER" ]; then'),
-    ('publish','floor="$(awk \'/^v?(0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)$/ { sub(/^v/, ""); split($0, p, "."); n = p[1] * 1000000 + p[2] * 1000 + p[3]; if (n > m) m = n } END { print m + 0 }\' "$RUNNER_TEMP/tags.txt")"'),
+    ('publish','floor="$(awk \''+REL_AWK+'\' "$RUNNER_TEMP/tags.txt")"'),
     ('publish','cmp <(ls "$RUNNER_TEMP/check" | sort) <( (printf \'%s\\n\' "${files[@]}"; echo SHA256SUMS) | sort)'),
     ('history','git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n \'s#^refs/tags/##p\' | sed \'s/\\^{}$//\''),
-    ('history','gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\''),('history','b64="$(base64 -w0 "$RUNNER_TEMP/tags.txt")"'),
-    ('history','echo "tags=$b64" >> "$GITHUB_OUTPUT"'),('prepare','printf \'%s\' "$HISTORY" | base64 -d > "$RUNNER_TEMP/tags.txt"'),
+    ('history','gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\''),('history','newest="$(awk \''+REL_AWK+'\' "$RUNNER_TEMP/tags.txt")"'),
+    ('history','echo "newest=$newest" >> "$GITHUB_OUTPUT"'),
     ('publish','git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n \'s#^refs/tags/##p\' | sed \'s/\\^{}$//\''),
     ('publish','gh api -X POST "repos/${REPO}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${SHA}" > /dev/null'),
     ('publish','printf \'%s\' "$id" | grep -qxE \'[0-9]+\''),
@@ -657,11 +658,28 @@ REL_GH={'gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\'',
         'gh release create "$TAG" --repo "$REPO" --verify-tag --draft --title "Orcon control-firmware $TAG" --notes-file RELEASE_NOTES.md -- "${files[@]}" SHA256SUMS',
         'gh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/check"',
         'id="$(gh api --paginate "repos/${REPO}/releases" --jq ".[] | select(.draft and .tag_name == \\"$TAG\\") | .id")"'}   # every GitHub CLI call, exactly as reviewed (Codex r4: an extra 'gh release edit')
+REL_GH_JOB={'history':{'gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\''},'publish':REL_GH}   # read-only in history (Codex auto-version r2)
+REL_LIST='{\n  git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n \'s#^refs/tags/##p\' | sed \'s/\\^{}$//\'\n  gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\'\n} > "$RUNNER_TEMP/tags.txt"\n'
+REL_STEPS={   # the version hand-over and the publish floor, whole: script, environment and step id exactly as reviewed
+    ('history','list'):{'name':'Every tag and every release, drafts included (no repository code)','id':'list',
+        'env':{'REPO':'${{ github.repository }}','GH_TOKEN':'${{ github.token }}'},
+        'run':REL_LIST+'newest="$(awk \''+REL_AWK+'\' "$RUNNER_TEMP/tags.txt")"\necho "newest=$newest" >> "$GITHUB_OUTPUT"\n'},
+    ('prepare','version'):{'name':'The next version after every tag and release','id':'version',
+        'env':{'RELEASE_TYPE':'${{ inputs.release_type }}','NOTES':'${{ inputs.notes }}','NEWEST':'${{ needs.history.outputs.newest }}'},
+        'run':'python3 -I tools/release_ci.py next --newest "$NEWEST" --notes="$NOTES" -- "$RELEASE_TYPE" >> "$GITHUB_OUTPUT"\n'},
+    ('publish',None):{'name':'Still the newest version, then the tag at the released commit (fails when it already exists)',
+        'env':{'GH_TOKEN':'${{ github.token }}','REPO':'${{ github.repository }}','TAG':'${{ needs.prepare.outputs.tag }}','NUMBER':'${{ needs.prepare.outputs.number }}','SHA':'${{ github.sha }}'},
+        'run':REL_LIST+'floor="$(awk \''+REL_AWK+'\' "$RUNNER_TEMP/tags.txt")"\nif [ "$floor" -ge "$NUMBER" ]; then\n  echo "::error::$TAG is not newer than every tag and release (newest $floor): a rerun of an older release is refused"; exit 1\nfi\ngh api -X POST "repos/${REPO}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${SHA}" > /dev/null\n'}}
+REL_OUTPUTS={'history':{'newest':'${{ steps.list.outputs.newest }}'},
+             'prepare':{'number':'${{ steps.version.outputs.number }}','tag':'${{ steps.version.outputs.tag }}','name':'${{ steps.version.outputs.name }}'}}
+# A script never reassigns a variable that carries the version, its inputs or its target (the environment binds it).
+REL_BOUND='RELEASE_TYPE|NOTES|NEWEST|TAG|NUMBER|REPO|SHA|GH_TOKEN|WANT|BUNDLE|FW|SUMS|NOTES_SHA|RUN_URL|RELEASE_ENV'
+REL_ASSIGN=re.compile(r'(^|[\s;(])((export|declare|typeset|readonly|local)\s+(-\w+\s+)*)?('+REL_BOUND+r')\+?=|\b(read|mapfile|readarray)\b[^|;]*\b('+REL_BOUND+r')\b|\bprintf\s+-v\s*('+REL_BOUND+r')\b')
 REL_BANNED=('--help','()')
 REL_BANNED_CMD=re.compile(r'(^|[;|]\s*)(alias|shopt|enable|set|unset|trap|eval|source|exec|builtin|command|\.)(\s|$)')
 REL_PERMS={'history':{'contents':'write'},'prepare':{'contents':'read'},'build':{'contents':'read'},'sign':{'contents':'read'},'verify':{'contents':'read'},'publish':{'contents':'write'}}
 # Every variable that carries the version, its inputs or its target has exactly one source (Codex auto-version r1).
-REL_BIND={'RELEASE_TYPE':'${{ inputs.release_type }}','NOTES':'${{ inputs.notes }}','HISTORY':'${{ needs.history.outputs.tags }}',
+REL_BIND={'RELEASE_TYPE':'${{ inputs.release_type }}','NOTES':'${{ inputs.notes }}','NEWEST':'${{ needs.history.outputs.newest }}',
           'TAG':'${{ needs.prepare.outputs.tag }}','NUMBER':'${{ needs.prepare.outputs.number }}','REPO':'${{ github.repository }}','SHA':'${{ github.sha }}'}
 REL_NEEDS={'history':None,'prepare':'history','build':'prepare','sign':['prepare','build'],'verify':['prepare','build','sign'],'publish':['prepare','build','sign','verify']}
 def release_workflow_safe(text):
@@ -697,7 +715,8 @@ def release_workflow_safe(text):
                     l=line.strip()
                     assert not l.startswith(('#','!')) and not any(t in l for t in ('||','&&','exit 0')+REL_BANNED) and not REL_BANNED_CMD.search(l),(name,'a script construct that can hide a failure',l)
                     assert not REL_CTL_START.match(l) or l in REL_CONTROL,(name,'shell control line outside the reviewed set',l)
-                    assert not re.search(r'(^|[^\w-])gh\s',l) or l in REL_GH,(name,'GitHub CLI call outside the reviewed set',l)
+                    assert not re.search(r'(^|[^\w-])gh\s',l) or l in REL_GH_JOB.get(name,set()),(name,'GitHub CLI call outside the reviewed set of this job',l)
+                    assert not REL_ASSIGN.search(l),(name,'a script reassigns a bound variable',l)
             assert 'secrets' not in str(st.get('with')).lower() and 'github.token' not in str(st.get('with')),(name,'credential in an action input (Codex r5)')
             for k,v in (st.get('env') or {}).items():
                 assert ('secrets' in str(v).lower())==(name=='sign' and k=='ORCON_OTA_SIGNING_KEY'),(name,'secret outside the signing step',k)
@@ -728,9 +747,14 @@ def release_workflow_safe(text):
     assert [l.strip() for l in flat.split('\n') if 'pio run' in l]==['pio run -e "$RELEASE_ENV"'],'exactly one firmware build: the control env'
     assert not any('uses' in st and st['uses'].startswith('actions/checkout@') for st in jobs['publish']['steps']),'publish runs no repository code'
     assert all('run' in st for st in jobs['history']['steps']),'history (write token, for the drafts) runs no action and no repository code'
+    for job,want in REL_OUTPUTS.items(): assert jobs[job].get('outputs')==want,(job,'outputs: exactly the version hand-over',jobs[job].get('outputs'))
+    assert jobs['history']['steps']==[REL_STEPS[('history','list')]],('history: exactly the reviewed step',jobs['history']['steps'])
+    for (job,sid),want in REL_STEPS.items(): assert want in jobs[job]['steps'],(job,'the reviewed version step, whole',want['name'])
+    draft=[st for st in jobs['publish']['steps'] if st.get('name')=='Draft release, check its files, then publish']
+    assert len(draft)==1 and draft[0]['env']=={'GH_TOKEN':'${{ github.token }}','REPO':'${{ github.repository }}','TAG':'${{ needs.prepare.outputs.tag }}'},('publish draft step env',draft)
     assert all('run' in st or st['uses'].split('@')[0] in ('actions/checkout','actions/upload-artifact','actions/download-artifact') for st in jobs['sign']['steps']),'signing job: no setup actions'
 WORKFLOWS={'heltec-v2-rx-only.yml':'fbf3af64a87be3822246c0adc17ba3cb5ec42c1ddb725c455153f8fd4ea7a563',   # file -> sha256 of the reviewed content
-           'release-control.yml':'d2f615d9dd43fe48cb37ef4df4b8967bb8e810956be30e4bae0bc9a0d35b97e0'}
+           'release-control.yml':'3c903ee8c13c224629a61fe8620445a1859ec903bdbb346e2e3350c97b06a258'}
 def workflows_reviewed(files):   # files: name -> bytes (None: not a regular file) of every *.yml/*.yaml entry
     assert sorted(files)==sorted(WORKFLOWS),('workflow files differ from the reviewed list',sorted(files))
     for n,data in files.items():
@@ -849,11 +873,23 @@ REL_MUTATIONS={
   'release-type-extra-option': rel_mut('          - major\n','          - major\n          - 1.0.0\n'),
   'release-type-default-major': rel_mut('        default: patch\n','        default: major\n'),
   'release-type-optional': rel_mut('        required: true\n        type: choice\n','        required: false\n        type: choice\n'),
-  'version-not-from-history': rel_mut('next --tags "$RUNNER_TEMP/tags.txt"','next --tags /dev/null'),
+  'version-not-from-history': rel_mut('next --newest "$NEWEST"','next --newest 1000000'),
   'history-without-drafts': rel_mut('    timeout-minutes: 5\n    permissions:\n      contents: write\n','    timeout-minutes: 5\n    permissions:\n      contents: read\n'),
-  'history-fetch-removed': rel_mut('            gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\'\n          } > "$RUNNER_TEMP/tags.txt"\n          b64=','          } > "$RUNNER_TEMP/tags.txt"\n          b64='),
+  'history-fetch-removed': rel_mut('            gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\'\n          } > "$RUNNER_TEMP/tags.txt"\n          newest=','          } > "$RUNNER_TEMP/tags.txt"\n          newest='),
   'history-runs-code': rel_mut('      - name: Every tag and every release, drafts included (no repository code)\n','      - name: Code\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n        with:\n          ref: ${{ github.sha }}\n          persist-credentials: false\n      - name: Every tag and every release, drafts included (no repository code)\n'),
-  'history-unused': rel_mut('          printf \'%s\' "$HISTORY" | base64 -d > "$RUNNER_TEMP/tags.txt"\n','          echo v1.0.0 > "$RUNNER_TEMP/tags.txt"\n'),
+  'history-unused': rel_mut('          NEWEST: ${{ needs.history.outputs.newest }}\n','          NEWEST: 1000000\n'),
+  'history-writes-tag': rel_mut('          newest="$(awk','          gh api -X POST "repos/${REPO}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${SHA}" > /dev/null\n          newest="$(awk'),
+  'history-output-hardcoded': rel_mut('      newest: ${{ steps.list.outputs.newest }}\n',"      newest: '1000000'\n"),
+  'history-list-overwritten': rel_mut('          newest="$(awk','          echo v1.0.0 > "$RUNNER_TEMP/tags.txt"\n          newest="$(awk'),
+  'history-other-rule': rel_mut('          newest="$(awk \'/^v?','          newest="$(awk \'/^v'),
+  'type-overridden-in-script': rel_mut('          python3 -I tools/release_ci.py next --newest','          RELEASE_TYPE=major\n          python3 -I tools/release_ci.py next --newest'),
+  'publish-tag-overridden': rel_mut('          REPO: ${{ github.repository }}\n          TAG: ${{ needs.prepare.outputs.tag }}\n          NUMBER:','          REPO: ${{ github.repository }}\n          TAG: v9.9.9\n          NUMBER:'),
+  'publish-tag-in-script': rel_mut('          gh release create "$TAG"','          TAG=v9.9.9\n          gh release create "$TAG"'),
+  'publish-release-lookup-removed': rel_mut('            gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\'\n          } > "$RUNNER_TEMP/tags.txt"\n          floor=','          } > "$RUNNER_TEMP/tags.txt"\n          floor='),
+  'verify-tag-in-script': rel_mut('          python3 -I tools/release_ci.py verify-package','          TAG="v$(python3 -c \'import json;print(json.load(open("dist/BUILD_INFO.json"))["name"])\')"\n          python3 -I tools/release_ci.py verify-package'),
+  'build-number-in-script': rel_mut('          PLATFORMIO_BUILD_FLAGS=','          NUMBER=1000001\n          PLATFORMIO_BUILD_FLAGS='),
+  'export-tag': rel_mut('          gh release create "$TAG"','          export TAG=v9.9.9\n          gh release create "$TAG"'),
+  'read-number': rel_mut('          PLATFORMIO_BUILD_FLAGS=','          read -r NUMBER < /dev/null\n          PLATFORMIO_BUILD_FLAGS='),
   'release-type-hardcoded': rel_mut('          RELEASE_TYPE: ${{ inputs.release_type }}\n','          RELEASE_TYPE: major\n'),
   'verify-tag-rebound': rel_mut('          FW: ${{ needs.build.outputs.firmware_sha256 }}\n          TAG: ${{ needs.prepare.outputs.tag }}\n','          FW: ${{ needs.build.outputs.firmware_sha256 }}\n          TAG: v9.9.9\n'),
   'number-hardcoded': rel_mut('          NUMBER: ${{ needs.prepare.outputs.number }}\n','          NUMBER: 1000001\n'),

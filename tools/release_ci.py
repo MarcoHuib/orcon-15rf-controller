@@ -4,10 +4,11 @@
 Only the Heltec V2 control image (heltec_v2_sx1276_control) is ever published. Every step runs the same way on a
 developer machine; tools/test_release_ci.py runs them with throwaway keys and tampered inputs.
 
-  next patch|minor|major --tags FILE [--notes TEXT]
-                                         the number of the next release, one step above the newest version among every
-                                         tag and release in FILE (patch 1.0.0 -> 1.0.1; minor 1.0.5 -> 1.1.1; major
-                                         1.4.8 -> 2.0.1); refuses an empty history and a number outside 0..999 per part
+  next --newest N [--notes TEXT] -- patch|minor|major
+                                         the number of the next release, one step above N: the newest version among every
+                                         tag and release (the history job's awk rule, the same as the publish floor; 0 =
+                                         none). patch 1.0.0 -> 1.0.1; minor 1.0.5 -> 1.1.1; major 1.4.8 -> 2.0.1. Refuses
+                                         an empty history and a number outside 0..999 per part
   source --repo R --ref REF --event E --default-branch B --sha SHA --head SHA
                                          only a workflow_dispatch on the default branch of this repository, at its head
   packages --list FILE                   `pio pkg list -e heltec_v2_sx1276_control` must equal tools/release/platformio-packages.lock
@@ -88,18 +89,18 @@ def check_version(text, existing):
 BUMPS = ('patch', 'minor', 'major')
 
 
-def next_version(kind, existing):
-    """The number of the next release: one step above the newest version among every tag and release, published or not
-    (a draft, or a tag left by a failed publish, keeps its number: a number is never used twice). A new minor or major
-    starts its patches at 1. An empty history is refused: a failed lookup must never restart the count."""
+def next_version(kind, newest):
+    """The number of the next release: one step above `newest`, the newest version among every tag and release,
+    published or not (a draft, or a tag left by a failed publish, keeps its number: a number is never used twice). A new
+    minor or major starts its patches at 1. No history (0) is refused: a failed lookup must never restart the count."""
     if kind not in BUMPS: fail(f'release type {kind!r}: choose patch, minor or major')
-    seen = [x for x in map(version_of, existing) if x]
-    if not seen: fail('no earlier release in the tags and releases: refusing to start the count (did the lookup fail?)')
-    top = max(seen)
+    if not isinstance(newest, int) or not 0 <= newest <= 999999999: fail(f'newest version {newest!r}: not a release number')
+    if not newest: fail('no earlier release in the tags and releases: refusing to start the count (did the lookup fail?)')
+    top = newest
     a, b, c = top // 1000000, top // 1000 % 1000, top % 1000
     a, b, c = {'patch': (a, b, c + 1), 'minor': (a, b + 1, 1), 'major': (a + 1, 0, 1)}[kind]
     if max(a, b, c) > 999: fail(f'{kind} after v{semver_text(top)} leaves the range 0..999 per part: choose a bigger step')
-    return check_version(f'{a}.{b}.{c}', existing)
+    return check_version(f'{a}.{b}.{c}', [semver_text(top)])
 
 
 # ---- release source ------------------------------------------------------------------------------------------------------
@@ -437,7 +438,7 @@ def notes_md(dist, notes='', run=''):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     s = p.add_subparsers(dest='cmd', required=True)
-    nx = s.add_parser('next'); nx.add_argument('kind'); nx.add_argument('--tags', required=True); nx.add_argument('--notes', default='')
+    nx = s.add_parser('next'); nx.add_argument('kind'); nx.add_argument('--newest', required=True); nx.add_argument('--notes', default='')
     so = s.add_parser('source')
     for k in ('repo', 'ref', 'event', 'default-branch', 'sha', 'head'): so.add_argument('--' + k, required=True)
     pk = s.add_parser('packages'); pk.add_argument('--list', required=True)
@@ -456,12 +457,10 @@ def main(argv=None):
     a = p.parse_args(argv)
     try:
         if a.cmd == 'next':
-            # One name per LF, nothing stripped or decoded away: the same lines the awk floor in publish reads
-            # (splitlines() would also split at U+2028 and invent a version).
-            tags = Path(a.tags).read_bytes().decode('utf-8', 'surrogateescape').split('\n')
-            n = next_version(a.kind, tags)
+            if not re.fullmatch(r'0|[1-9][0-9]{0,8}', a.newest, re.ASCII): fail(f'newest version {a.newest!r}: not a release number')
+            n = next_version(a.kind, int(a.newest))
             clean_notes(a.notes)   # refused here, before anything is built
-            print(f'newest tag or release v{semver_text(max(map(version_of, tags)))}, {a.kind}: v{semver_text(n)}', file=sys.stderr)
+            print(f'newest tag or release v{semver_text(int(a.newest))}, {a.kind}: v{semver_text(n)}', file=sys.stderr)
             print(f'number={n}\ntag=v{semver_text(n)}\nname={semver_text(n)}')
         elif a.cmd == 'source':
             check_source(a.repo, a.ref, a.event, a.default_branch, a.sha, a.head); print('source OK')
