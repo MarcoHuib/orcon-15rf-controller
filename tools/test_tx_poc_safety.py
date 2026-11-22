@@ -614,14 +614,15 @@ REL_GUARD="github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads
 REL_ACTIONS={'actions/checkout':'3d3c42e5aac5ba805825da76410c181273ba90b1','actions/setup-python':'6d4fd22b20465ccc0f7354476588e8df7c9ca0e0',   # v7.0.1, v7.1.0
              'actions/upload-artifact':'cf430e030ddbb5b0abf93d22962f4752f3646cd9','actions/download-artifact':'9000827ccba6bdab643e8b6fd33ac0654aef8333'}   # v7.0.2, v8.0.2
 REL_EXPR={'github.event.repository.default_branch','github.event_name','github.ref','github.repository','github.run_id','github.server_url',
-          'github.sha','github.token','inputs.notes','inputs.version','needs.build.outputs.firmware_sha256','needs.prepare.outputs.number',
+          'github.sha','github.token','inputs.notes','inputs.release_type','needs.build.outputs.firmware_sha256','needs.prepare.outputs.number',
           'needs.prepare.outputs.tag','needs.sign.outputs.bundle_name','needs.sign.outputs.bundle_sha256','runner.temp',
           'secrets.ORCON_OTA_SIGNING_KEY','steps.check.outputs.firmware_sha256','steps.package.outputs.bundle_name',
-          'steps.package.outputs.bundle_sha256','steps.version.outputs.name','steps.version.outputs.number','steps.version.outputs.tag',
+          'steps.package.outputs.bundle_sha256','needs.history.outputs.newest','steps.list.outputs.newest','steps.version.outputs.name','steps.version.outputs.number','steps.version.outputs.tag',
           'needs.verify.outputs.sums_sha256','needs.verify.outputs.notes_sha256','steps.final.outputs.sums_sha256','steps.final.outputs.notes_sha256'}
+REL_AWK='/^v?(0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)$/ { sub(/^v/, ""); split($0, p, "."); n = p[1] * 1000000 + p[2] * 1000 + p[3]; if (n > m) m = n } END { print m + 0 }'   # the version rule of the history job and of the publish floor
 # Every check the release depends on, as its own exact script line (Codex r4: a prefix let "--help" or a wrapper pass).
 REL_REQUIRED=(('prepare','python3 -I tools/release_ci.py source --repo "$REPO" --ref "$REF" --event "$EVENT" --default-branch "$DEFAULT_BRANCH" --sha "$SHA" --head "$head"'),
-    ('prepare','python3 -I tools/release_ci.py version "$VERSION" --tags "$RUNNER_TEMP/tags.txt" --notes="$NOTES" >> "$GITHUB_OUTPUT"'),
+    ('prepare','python3 -I tools/release_ci.py next --newest "$NEWEST" --notes="$NOTES" -- "$RELEASE_TYPE" >> "$GITHUB_OUTPUT"'),
     ('build','python -m venv "$RUNNER_TEMP/pio-venv"'),
     ('build','"$RUNNER_TEMP/pio-venv/bin/python" -m pip install --require-hashes --no-deps --only-binary=:all: --force-reinstall -r tools/release/requirements-platformio.txt'),
     ('build','"$RUNNER_TEMP/pio-venv/bin/python" -m pip check'),('build','echo "$RUNNER_TEMP/pio-venv/bin" >> "$GITHUB_PATH"'),
@@ -633,12 +634,14 @@ REL_REQUIRED=(('prepare','python3 -I tools/release_ci.py source --repo "$REPO" -
     ('build','RELEASE_BUILD_DIR=".pio/build/$RELEASE_ENV" RELEASE_VERSION="$NUMBER" RELEASE_COMMIT="$SHA" python tools/test_release_ci.py'),
     ('build','python -I tools/release_ci.py manifest --dist dist'),('sign','python3 -I tools/release_ci.py manifest --dist dist'),
     ('sign','python3 -I tools/release_ci.py package --dist dist --notes="$NOTES"'),
-    ('verify','python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --official --notes="$NOTES"'),
+    ('verify','python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --release "$TAG" --official --notes="$NOTES"'),
     ('publish','test "$(sha256sum SHA256SUMS | cut -d\' \' -f1)" = "$SUMS"'),('publish','test "$(sha256sum RELEASE_NOTES.md | cut -d\' \' -f1)" = "$NOTES_SHA"'),
     ('publish','sha256sum -c SHA256SUMS'),('publish','if [ "$floor" -ge "$NUMBER" ]; then'),
-    ('publish','floor="$(awk \'/^v?(0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)$/ { sub(/^v/, ""); split($0, p, "."); n = p[1] * 1000000 + p[2] * 1000 + p[3]; if (n > m) m = n } END { print m + 0 }\' "$RUNNER_TEMP/tags.txt")"'),
+    ('publish','floor="$(awk \''+REL_AWK+'\' "$RUNNER_TEMP/tags.txt")"'),
     ('publish','cmp <(ls "$RUNNER_TEMP/check" | sort) <( (printf \'%s\\n\' "${files[@]}"; echo SHA256SUMS) | sort)'),
-    ('prepare','git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n \'s#^refs/tags/##p\' | sed \'s/\\^{}$//\''),
+    ('history','git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n \'s#^refs/tags/##p\' | sed \'s/\\^{}$//\''),
+    ('history','gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\''),('history','newest="$(awk \''+REL_AWK+'\' "$RUNNER_TEMP/tags.txt")"'),
+    ('history','echo "newest=$newest" >> "$GITHUB_OUTPUT"'),
     ('publish','git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n \'s#^refs/tags/##p\' | sed \'s/\\^{}$//\''),
     ('publish','gh api -X POST "repos/${REPO}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${SHA}" > /dev/null'),
     ('publish','printf \'%s\' "$id" | grep -qxE \'[0-9]+\''),
@@ -655,16 +658,43 @@ REL_GH={'gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\'',
         'gh release create "$TAG" --repo "$REPO" --verify-tag --draft --title "Orcon control-firmware $TAG" --notes-file RELEASE_NOTES.md -- "${files[@]}" SHA256SUMS',
         'gh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/check"',
         'id="$(gh api --paginate "repos/${REPO}/releases" --jq ".[] | select(.draft and .tag_name == \\"$TAG\\") | .id")"'}   # every GitHub CLI call, exactly as reviewed (Codex r4: an extra 'gh release edit')
+REL_GH_JOB={'history':{'gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\''},'publish':REL_GH}   # read-only in history (Codex auto-version r2)
+REL_LIST='{\n  git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n \'s#^refs/tags/##p\' | sed \'s/\\^{}$//\'\n  gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\'\n} > "$RUNNER_TEMP/tags.txt"\n'
+REL_JOBS={   # the jobs that hold a credential or decide the version, every step in order, whole (Codex auto-version r4)
+    'history':[{'name': 'Every tag and every release, drafts included (no repository code)', 'id': 'list', 'env': {'REPO': '${{ github.repository }}', 'GH_TOKEN': '${{ github.token }}'}, 'run': '{\n  git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n \'s#^refs/tags/##p\' | sed \'s/\\^{}$//\'\n  gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\'\n} > "$RUNNER_TEMP/tags.txt"\nnewest="$(awk \'/^v?(0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)$/ { sub(/^v/, ""); split($0, p, "."); n = p[1] * 1000000 + p[2] * 1000 + p[3]; if (n > m) m = n } END { print m + 0 }\' "$RUNNER_TEMP/tags.txt")"\necho "newest=$newest" >> "$GITHUB_OUTPUT"\n'}],
+    'prepare':[{'name': 'Check out the exact commit', 'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'with': {'ref': '${{ github.sha }}', 'persist-credentials': False}}, {'name': 'Only a manual run on the head of the default branch of this repository', 'env': {'REPO': '${{ github.repository }}', 'REF': '${{ github.ref }}', 'EVENT': '${{ github.event_name }}', 'DEFAULT_BRANCH': '${{ github.event.repository.default_branch }}', 'SHA': '${{ github.sha }}'}, 'run': 'head="$(git ls-remote "https://github.com/${REPO}.git" "refs/heads/${DEFAULT_BRANCH}" | cut -f1)"\npython3 -I tools/release_ci.py source --repo "$REPO" --ref "$REF" --event "$EVENT" --default-branch "$DEFAULT_BRANCH" --sha "$SHA" --head "$head"\n'}, {'name': 'The next version after every tag and release', 'id': 'version', 'env': {'RELEASE_TYPE': '${{ inputs.release_type }}', 'NOTES': '${{ inputs.notes }}', 'NEWEST': '${{ needs.history.outputs.newest }}'}, 'run': 'python3 -I tools/release_ci.py next --newest "$NEWEST" --notes="$NOTES" -- "$RELEASE_TYPE" >> "$GITHUB_OUTPUT"\n'}],
+    'sign':[{'name': 'Check out the exact commit (release tools only)', 'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'with': {'ref': '${{ github.sha }}', 'persist-credentials': False}}, {'name': 'The verified build', 'uses': 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333', 'with': {'name': 'release-build', 'path': 'dist'}}, {'name': 'Same image as the build job checked', 'env': {'WANT': '${{ needs.build.outputs.firmware_sha256 }}'}, 'run': 'test -n "$WANT"\ntest "$(sha256sum dist/firmware.bin | cut -d\' \' -f1)" = "$WANT"\npython3 -I tools/release_ci.py manifest --dist dist\n'}, {'name': 'Sign the release manifest (the only step that sees the key)', 'env': {'ORCON_OTA_SIGNING_KEY': '${{ secrets.ORCON_OTA_SIGNING_KEY }}'}, 'run': 'python3 -I tools/release_ci.py sign --dist dist'}, {'name': 'Bundle, update index and checksums', 'id': 'package', 'env': {'NOTES': '${{ inputs.notes }}'}, 'run': 'python3 -I tools/release_ci.py package --dist dist --notes="$NOTES"\nb="$(ls dist | grep -E \'[.]orconfw$\')"\necho "bundle_name=$b" >> "$GITHUB_OUTPUT"\necho "bundle_sha256=$(sha256sum "dist/$b" | cut -d\' \' -f1)" >> "$GITHUB_OUTPUT"\n'}, {'name': 'Hand the signed package to the verify job', 'uses': 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9', 'with': {'name': 'release-signed', 'path': 'dist/', 'if-no-files-found': 'error', 'retention-days': '3'}}],
+    'verify':[{'name': 'Check out the exact commit', 'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1', 'with': {'ref': '${{ github.sha }}', 'persist-credentials': False}}, {'name': 'The signed package', 'uses': 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333', 'with': {'name': 'release-signed', 'path': 'dist'}}, {'name': 'The device-policy harness', 'uses': 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333', 'with': {'name': 'release-harness', 'path': 'harness'}}, {'name': 'Signature, device policy, update index, checksums', 'id': 'final', 'env': {'WANT': '${{ needs.sign.outputs.bundle_sha256 }}', 'BUNDLE': '${{ needs.sign.outputs.bundle_name }}', 'FW': '${{ needs.build.outputs.firmware_sha256 }}', 'TAG': '${{ needs.prepare.outputs.tag }}', 'NOTES': '${{ inputs.notes }}', 'RUN_URL': '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'}, 'run': 'test "$(sha256sum "dist/$BUNDLE" | cut -d\' \' -f1)" = "$WANT"\ntest "$(sha256sum dist/firmware.bin | cut -d\' \' -f1)" = "$FW"\nchmod 0755 harness/release_accept\npython3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --release "$TAG" --official --notes="$NOTES"\npython3 -I tools/release_ci.py notes --dist dist --notes="$NOTES" --run "$RUN_URL" > "$RUNNER_TEMP/RELEASE_NOTES.md"\nmkdir -p publish\ncut -d\' \' -f3- dist/SHA256SUMS | while IFS= read -r f; do cp -- "dist/$f" publish/; done\ncp dist/SHA256SUMS "$RUNNER_TEMP/RELEASE_NOTES.md" publish/\necho "sums_sha256=$(sha256sum publish/SHA256SUMS | cut -d\' \' -f1)" >> "$GITHUB_OUTPUT"\necho "notes_sha256=$(sha256sum publish/RELEASE_NOTES.md | cut -d\' \' -f1)" >> "$GITHUB_OUTPUT"\n'}, {'name': 'Hand the verified files to the publish job', 'uses': 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9', 'with': {'name': 'release-verified', 'path': 'publish/', 'if-no-files-found': 'error', 'retention-days': '3'}}],
+    'publish':[{'name': 'The verified files', 'uses': 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333', 'with': {'name': 'release-verified', 'path': 'publish'}}, {'name': 'Exactly the verified files', 'env': {'WANT': '${{ needs.sign.outputs.bundle_sha256 }}', 'BUNDLE': '${{ needs.sign.outputs.bundle_name }}', 'SUMS': '${{ needs.verify.outputs.sums_sha256 }}', 'NOTES_SHA': '${{ needs.verify.outputs.notes_sha256 }}'}, 'run': 'cd publish\ntest "$(sha256sum SHA256SUMS | cut -d\' \' -f1)" = "$SUMS"\ntest "$(sha256sum RELEASE_NOTES.md | cut -d\' \' -f1)" = "$NOTES_SHA"\nsha256sum -c SHA256SUMS\ntest "$(sha256sum -- "$BUNDLE" | cut -d\' \' -f1)" = "$WANT"\ntest "$(ls | sort)" = "$( (cut -d\' \' -f3- SHA256SUMS; echo SHA256SUMS; echo RELEASE_NOTES.md) | sort)"\n'}, {'name': 'Still the newest version, then the tag at the released commit (fails when it already exists)', 'env': {'GH_TOKEN': '${{ github.token }}', 'REPO': '${{ github.repository }}', 'TAG': '${{ needs.prepare.outputs.tag }}', 'NUMBER': '${{ needs.prepare.outputs.number }}', 'SHA': '${{ github.sha }}'}, 'run': '{\n  git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n \'s#^refs/tags/##p\' | sed \'s/\\^{}$//\'\n  gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\'\n} > "$RUNNER_TEMP/tags.txt"\nfloor="$(awk \'/^v?(0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)$/ { sub(/^v/, ""); split($0, p, "."); n = p[1] * 1000000 + p[2] * 1000 + p[3]; if (n > m) m = n } END { print m + 0 }\' "$RUNNER_TEMP/tags.txt")"\nif [ "$floor" -ge "$NUMBER" ]; then\n  echo "::error::$TAG is not newer than every tag and release (newest $floor): a rerun of an older release is refused"; exit 1\nfi\ngh api -X POST "repos/${REPO}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${SHA}" > /dev/null\n'}, {'name': 'Draft release, check its files, then publish', 'env': {'GH_TOKEN': '${{ github.token }}', 'REPO': '${{ github.repository }}', 'TAG': '${{ needs.prepare.outputs.tag }}'}, 'run': 'cd publish\nmapfile -t files < <(cut -d\' \' -f3- SHA256SUMS)\ngh release create "$TAG" --repo "$REPO" --verify-tag --draft --title "Orcon control-firmware $TAG" --notes-file RELEASE_NOTES.md -- "${files[@]}" SHA256SUMS\nid="$(gh api --paginate "repos/${REPO}/releases" --jq ".[] | select(.draft and .tag_name == \\"$TAG\\") | .id")"\nprintf \'%s\' "$id" | grep -qxE \'[0-9]+\'\nmkdir -p "$RUNNER_TEMP/check"\ngh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/check"\ncmp <(ls "$RUNNER_TEMP/check" | sort) <( (printf \'%s\\n\' "${files[@]}"; echo SHA256SUMS) | sort)\nfor f in "${files[@]}" SHA256SUMS; do cmp -- "$f" "$RUNNER_TEMP/check/$f"; done\ngh api -X PATCH "repos/${REPO}/releases/${id}" -F draft=false -f make_latest=true -F "body=@RELEASE_NOTES.md" > /dev/null\n'}],
+}
+REL_PINNED={   # the build steps that turn the version into the image, whole (the build job itself is re-checked by verify)
+    ('build', 'Release build of the control firmware'):{'env': {'NUMBER': '${{ needs.prepare.outputs.number }}', 'SHA': '${{ github.sha }}'}, 'run': 'PLATFORMIO_BUILD_FLAGS="$(python -I tools/release_ci.py flags --version "$NUMBER" --commit "$SHA")"\nexport PLATFORMIO_BUILD_FLAGS\npio run -e "$RELEASE_ENV"\npio pkg list -e "$RELEASE_ENV" | tee "$RUNNER_TEMP/packages.txt"\npython -I tools/release_ci.py packages --list "$RUNNER_TEMP/packages.txt"\n'},
+    ('build', 'Check the image and prepare the signing input'):{'id': 'check', 'env': {'NUMBER': '${{ needs.prepare.outputs.number }}', 'SHA': '${{ github.sha }}'}, 'run': 'tc="$HOME/.platformio/packages/toolchain-xtensa-esp32/bin"\nmkdir -p "$RUNNER_TEMP/harness"\ng++ -std=c++17 -O1 -Wall -Wextra -Werror -I src -I ".pio/libdeps/$RELEASE_ENV/ArduinoJson/src" test/release_accept.cpp src/fw_update.cpp src/ota_policy.cpp -o "$RUNNER_TEMP/harness/release_accept"\npython -I tools/release_ci.py verify-build --build ".pio/build/$RELEASE_ENV" --version "$NUMBER" --commit "$SHA" --harness "$RUNNER_TEMP/harness/release_accept" --nm "$tc/xtensa-esp32-elf-nm" --out dist --esptool "$HOME/.platformio/packages/tool-esptoolpy/esptool.py"\npython -I tools/check_elf_tx.py ".pio/build/$RELEASE_ENV/firmware.elf" "$RELEASE_ENV" "$tc"\nRELEASE_BUILD_DIR=".pio/build/$RELEASE_ENV" RELEASE_VERSION="$NUMBER" RELEASE_COMMIT="$SHA" python tools/test_release_ci.py\npython -I tools/release_ci.py factory --dist dist --esptool "$HOME/.platformio/packages/tool-esptoolpy/esptool.py"\npython -I tools/release_ci.py manifest --dist dist\necho "firmware_sha256=$(sha256sum dist/firmware.bin | cut -d\' \' -f1)" >> "$GITHUB_OUTPUT"\n'},
+}
+REL_OUTPUTS={'history':{'newest':'${{ steps.list.outputs.newest }}'},
+             'prepare':{'number':'${{ steps.version.outputs.number }}','tag':'${{ steps.version.outputs.tag }}','name':'${{ steps.version.outputs.name }}'}}
+# A script never reassigns a variable that carries the version, its inputs or its target (the environment binds it).
+REL_BOUND='RELEASE_TYPE|NOTES|NEWEST|TAG|NUMBER|REPO|SHA|GH_TOKEN|WANT|BUNDLE|FW|SUMS|NOTES_SHA|RUN_URL|RELEASE_ENV'
+REL_ASSIGN=re.compile(r'(^|[\s;(])((export|declare|typeset|readonly|local)\s+(-\w+\s+)*)?('+REL_BOUND+r')(\[[^]]*\])?\+?=|\b(read|mapfile|readarray)\b[^|;]*\b('+REL_BOUND+r')\b|\bprintf\s+(-\S+\s+)*-v\b|\b(declare|typeset|local)\s+-\w*n|\blet\s')
+REL_ENV_BANNED={'BASH_ENV','ENV','SHELLOPTS','BASHOPTS','PROMPT_COMMAND','PS4','IFS','PATH','HOME','LD_PRELOAD','LD_LIBRARY_PATH','LD_AUDIT',
+                'PYTHONPATH','PYTHONSTARTUP','PYTHONHOME','PYTHONUSERBASE','GH_HOST','GH_REPO','GH_ENTERPRISE_TOKEN','GITHUB_TOKEN',
+                'GIT_CONFIG_GLOBAL','GIT_CONFIG_SYSTEM','GIT_CONFIG_PARAMETERS','GIT_CONFIG_COUNT','GIT_SSH_COMMAND','GIT_EXEC_PATH'}
 REL_BANNED=('--help','()')
 REL_BANNED_CMD=re.compile(r'(^|[;|]\s*)(alias|shopt|enable|set|unset|trap|eval|source|exec|builtin|command|\.)(\s|$)')
-REL_PERMS={'prepare':{'contents':'read'},'build':{'contents':'read'},'sign':{'contents':'read'},'verify':{'contents':'read'},'publish':{'contents':'write'}}
-REL_NEEDS={'prepare':None,'build':'prepare','sign':['prepare','build'],'verify':['prepare','build','sign'],'publish':['prepare','build','sign','verify']}
+REL_PERMS={'history':{'contents':'write'},'prepare':{'contents':'read'},'build':{'contents':'read'},'sign':{'contents':'read'},'verify':{'contents':'read'},'publish':{'contents':'write'}}
+# Every variable that carries the version, its inputs or its target has exactly one source (Codex auto-version r1).
+REL_BIND={'RELEASE_TYPE':'${{ inputs.release_type }}','NOTES':'${{ inputs.notes }}','NEWEST':'${{ needs.history.outputs.newest }}',
+          'TAG':'${{ needs.prepare.outputs.tag }}','NUMBER':'${{ needs.prepare.outputs.number }}','REPO':'${{ github.repository }}','SHA':'${{ github.sha }}'}
+REL_NEEDS={'history':None,'prepare':'history','build':'prepare','sign':['prepare','build'],'verify':['prepare','build','sign'],'publish':['prepare','build','sign','verify']}
 def release_workflow_safe(text):
     d=yaml_subset(text)
     assert set(d)=={'name','on','permissions','concurrency','defaults','env','jobs'},('top-level keys',sorted(d))
     assert list(d['on'])==['workflow_dispatch'],('trigger: manual workflow_dispatch only',d['on'])
     inputs=d['on']['workflow_dispatch']['inputs']
-    assert set(inputs)=={'version','notes'} and all(x['type']=='string' for x in inputs.values()),('inputs',inputs)
+    # Only the kind of release is chosen; the version itself follows from the tags and releases (release_ci.py next).
+    assert set(inputs)=={'release_type','notes'},('inputs: release type and notes only (no version)',sorted(inputs))
+    assert {k:v for k,v in inputs['release_type'].items() if k!='description'}=={'required':True,'type':'choice','default':'patch','options':['patch','minor','major']},('release type: patch (default), minor or major',inputs['release_type'])
+    assert {k:v for k,v in inputs['notes'].items() if k!='description'}=={'required':False,'type':'string','default':''},('notes: optional text',inputs['notes'])
     assert d['permissions']=={},'top-level permissions must be empty'
     assert d['concurrency']=={'group':'orcon-release-control','cancel-in-progress':False},'one release at a time, never cancelled midway'
     assert d['env']['RELEASE_ENV']=='heltec_v2_sx1276_control','only the control image is released'
@@ -677,7 +707,7 @@ def release_workflow_safe(text):
         assert j.get('needs')==REL_NEEDS[name],(name,'needs',j.get('needs'))
         assert ('environment' in j)==(name=='sign') and j.get('environment',name if name!='sign' else '')!='', (name,'environment only on the signing job')
         if name=='sign': assert j['environment']=='orcon-production-release',('signing environment',j['environment'])
-        assert j.get('if') in ((REL_GUARD,) if name in ('prepare','sign') else (None,)),(name,'job guard',j.get('if'))
+        assert j.get('if') in ((REL_GUARD,) if name in ('history','prepare','sign') else (None,)),(name,'job guard',j.get('if'))
         for st in j['steps']:
             assert set(st)<= {'name','id','uses','with','env','run'} and ('uses' in st)!=('run' in st),(name,'step keys',sorted(st))
             if 'uses' in st:
@@ -689,11 +719,14 @@ def release_workflow_safe(text):
                     l=line.strip()
                     assert not l.startswith(('#','!')) and not any(t in l for t in ('||','&&','exit 0')+REL_BANNED) and not REL_BANNED_CMD.search(l),(name,'a script construct that can hide a failure',l)
                     assert not REL_CTL_START.match(l) or l in REL_CONTROL,(name,'shell control line outside the reviewed set',l)
-                    assert not re.search(r'(^|[^\w-])gh\s',l) or l in REL_GH,(name,'GitHub CLI call outside the reviewed set',l)
+                    assert not re.search(r'(?<![\w./-])[\'"\\]*gh[\'"]*(\s|$|;|\))',l) or l in REL_GH_JOB.get(name,set()),(name,'GitHub CLI call outside the reviewed set of this job',l)
+                    assert not REL_ASSIGN.search(l),(name,'a script reassigns a bound variable',l)
             assert 'secrets' not in str(st.get('with')).lower() and 'github.token' not in str(st.get('with')),(name,'credential in an action input (Codex r5)')
             for k,v in (st.get('env') or {}).items():
                 assert ('secrets' in str(v).lower())==(name=='sign' and k=='ORCON_OTA_SIGNING_KEY'),(name,'secret outside the signing step',k)
-                assert 'github.token' not in str(v) or (k=='GH_TOKEN' and name in ('prepare','publish')),(name,'token outside prepare/publish',k)
+                assert 'github.token' not in str(v) or (k=='GH_TOKEN' and name in ('history','publish')),(name,'token outside history/publish',k)
+                assert k not in REL_BIND or v==REL_BIND[k],(name,'binding: one source for every version input and target',k,v)
+                assert k not in REL_ENV_BANNED,(name,'a variable that changes how a shell or tool starts',k)
             if name=='sign' and 'secrets.' in str(st.get('env')):
                 assert st['env']=={'ORCON_OTA_SIGNING_KEY':'${{ secrets.ORCON_OTA_SIGNING_KEY }}'} and st['run'].strip()=='python3 -I tools/release_ci.py sign --dist dist',('sign step',st)
     flat=text.replace('\r\n','\n')
@@ -718,9 +751,17 @@ def release_workflow_safe(text):
                for st in jobs['build']['steps']),'host tests with AddressSanitizer missing'
     assert [l.strip() for l in flat.split('\n') if 'pio run' in l]==['pio run -e "$RELEASE_ENV"'],'exactly one firmware build: the control env'
     assert not any('uses' in st and st['uses'].startswith('actions/checkout@') for st in jobs['publish']['steps']),'publish runs no repository code'
+    assert all('run' in st for st in jobs['history']['steps']),'history (write token, for the drafts) runs no action and no repository code'
+    for job,want in REL_OUTPUTS.items(): assert jobs[job].get('outputs')==want,(job,'outputs: exactly the version hand-over',jobs[job].get('outputs'))
+    for job,want in REL_JOBS.items(): assert jobs[job]['steps']==want,(job,'the reviewed job: every step in order, with its action, inputs, env and script')
+    assert not any('GITHUB_ENV' in st.get('run','') for j in jobs.values() for st in j['steps']),'no step sets the environment of later steps ($GITHUB_ENV)'
+    for (job,sname),want in REL_PINNED.items():
+        got=[{k:st[k] for k in ('id','env','run') if k in st} for st in jobs[job]['steps'] if st.get('name')==sname]
+        assert got==[want],(job,'the reviewed step, whole (id, environment, script)',sname)
+    assert d['env']=={'RELEASE_ENV':'heltec_v2_sx1276_control','PYTHONDONTWRITEBYTECODE':'1','PIP_DISABLE_PIP_VERSION_CHECK':'1'},('workflow env: exactly as reviewed',d['env'])
     assert all('run' in st or st['uses'].split('@')[0] in ('actions/checkout','actions/upload-artifact','actions/download-artifact') for st in jobs['sign']['steps']),'signing job: no setup actions'
 WORKFLOWS={'heltec-v2-rx-only.yml':'fbf3af64a87be3822246c0adc17ba3cb5ec42c1ddb725c455153f8fd4ea7a563',   # file -> sha256 of the reviewed content
-           'release-control.yml':'28e70cd6dd9f9bc132bc3681a15757987bae800bdfa7f67d274a84831e181f5f'}
+           'release-control.yml':'3c903ee8c13c224629a61fe8620445a1859ec903bdbb346e2e3350c97b06a258'}
 def workflows_reviewed(files):   # files: name -> bytes (None: not a regular file) of every *.yml/*.yaml entry
     assert sorted(files)==sorted(WORKFLOWS),('workflow files differ from the reviewed list',sorted(files))
     for n,data in files.items():
@@ -769,7 +810,7 @@ REL_MUTATIONS={
   'release-trigger': rel_mut('  workflow_dispatch:\n','  release:\n    types: [published]\n  workflow_dispatch:\n'),
   'schedule': rel_mut('  workflow_dispatch:\n','  schedule:\n    - cron: 0 3 * * *\n  workflow_dispatch:\n'),
   'secret-in-build': rel_mut('          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n','          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n          KEY: ${{ secrets.ORCON_OTA_SIGNING_KEY }}\n'),
-  'secret-in-prepare': rel_mut('          GH_TOKEN: ${{ github.token }}\n','          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n'),
+  'secret-in-history': rel_mut('          GH_TOKEN: ${{ github.token }}\n','          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n'),
   'secrets-inherit': rel_mut('    environment: orcon-production-release\n','    environment: orcon-production-release\n    secrets: inherit\n'),
   'environment-on-build': rel_mut('    timeout-minutes: 75\n','    timeout-minutes: 75\n    environment: orcon-production-release\n'),
   'other-environment': rel_mut('    environment: orcon-production-release\n','    environment: development\n'),
@@ -783,7 +824,7 @@ REL_MUTATIONS={
   'unpinned-action': rel_mut('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1','actions/checkout@v7'),
   'third-party-action': rel_mut('actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0','someone/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0'),
   'stored-credentials': rel_mut('          persist-credentials: false\n','          persist-credentials: true\n'),
-  'expression-in-script': rel_mut('python3 -I tools/release_ci.py version "$VERSION"','python3 -I tools/release_ci.py version "${{ inputs.version }}"'),
+  'expression-in-script': rel_mut('-- "$RELEASE_TYPE" >> "$GITHUB_OUTPUT"','-- "${{ inputs.release_type }}" >> "$GITHUB_OUTPUT"'),
   'continue-on-error': rel_mut('      - name: Host tests\n','      - name: Host tests\n        continue-on-error: true\n'),
   'dry-run-image': rel_mut('pio run -e "$RELEASE_ENV"','pio run -e heltec_v2_sx1276_tx_poc_dryrun'),
   'rf-test-image': rel_mut('  RELEASE_ENV: heltec_v2_sx1276_control\n','  RELEASE_ENV: heltec_v2_sx1276_rftest\n'),
@@ -791,7 +832,7 @@ REL_MUTATIONS={
   'second-build': rel_mut('          pio run -e "$RELEASE_ENV"\n','          pio run -e "$RELEASE_ENV"\n          pio run -e heltec_v2_sx1276\n'),
   'skip-build-checks': rel_mut('          python -I tools/release_ci.py verify-build','          true'),
   'skip-old-workflow-guards': rel_mut('          python tools/test_tx_poc_safety.py\n',''),
-  'skip-package-verify': rel_mut('          python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --official --notes="$NOTES"\n',''),
+  'skip-package-verify': rel_mut('          python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --release "$TAG" --official --notes="$NOTES"\n',''),
   'cache': rel_mut('      - name: Python\n','      - name: Cache\n        uses: actions/cache@0000000000000000000000000000000000000000\n      - name: Python\n'),
   'hardware': rel_mut('          pio run -e "$RELEASE_ENV"\n','          pio run -e "$RELEASE_ENV"\n          bash tools/heltec_v2.sh flash rollback\n'),
   'publish-runs-repo-code': rel_mut('      - name: The verified files\n','      - name: Code\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n        with:\n          ref: ${{ github.sha }}\n          persist-credentials: false\n      - name: The verified files\n'),
@@ -807,7 +848,7 @@ REL_MUTATIONS={
   'secrets-index': rel_mut('          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n','          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n          K: ${{ secrets[\'ORCON_OTA_SIGNING_KEY\'] }}\n'),
   'tojson-secrets': rel_mut('          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n','          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n          K: ${{ toJSON(SECRETS) }}\n'),
   'token-in-build': rel_mut('          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n','          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n          GH_TOKEN: ${{ github.token }}\n'),
-  'other-expression': rel_mut('          VERSION: ${{ inputs.version }}\n','          VERSION: ${{ github.event.inputs.version }}\n'),
+  'other-expression': rel_mut('          RELEASE_TYPE: ${{ inputs.release_type }}\n','          RELEASE_TYPE: ${{ github.event.inputs.release_type }}\n'),
   'no-asan': rel_mut('          CXXFLAGS: -fsanitize=address,undefined -fno-sanitize-recover=all\n','          CXXFLAGS: -fsanitize=undefined -fno-sanitize-recover=all\n'),
   'no-pip-check': rel_mut('          "$RUNNER_TEMP/pio-venv/bin/python" -m pip check\n',''),
   'bash-template-dropped': rel_mut('    shell: bash\n','    shell: bash {0}\n'),
@@ -826,13 +867,56 @@ REL_MUTATIONS={
   'no-version-floor': rel_mut('          if [ "$floor" -ge "$NUMBER" ]; then\n','          if [ "$floor" -gt "999999999" ]; then\n'),
   'publish-before-compare': rel_mut('          gh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/check"\n','          gh release edit "$TAG" --repo "$REPO" --draft=false --latest\n          gh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/check"\n'),
   'unchecked-sums': rel_mut('          test "$(sha256sum SHA256SUMS | cut -d\' \' -f1)" = "$SUMS"\n',''),
-  'quoted-apostrophe': rel_mut("        description: 'Versie: MAJOR.MINOR.PATCH, bijvoorbeeld 1.0.0'","        description: 'Versie''s: MAJOR.MINOR.PATCH'"),
+  'quoted-apostrophe': rel_mut("        description: 'Soort release (de versie volgt uit de bestaande tags en releases): patch, minor of major'","        description: 'Soort release''s: patch, minor of major'"),
   'floor-zero': rel_mut('END { print m + 0 }','END { print 0 }'),
   'no-asset-inventory': rel_mut('          cmp <(ls "$RUNNER_TEMP/check" | sort) <( (printf \'%s\\n\' "${files[@]}"; echo SHA256SUMS) | sort)\n',''),
   'no-break-space': rel_mut('    environment: orcon-production-release\n','    environment: orcon-production-release\u00a0\n'),
   'secret-as-action-input': rel_mut('        with:\n          name: release-signed\n','        with:\n          name: release-signed\n          token: ${{ secrets.ORCON_OTA_SIGNING_KEY }}\n').replace('          ORCON_OTA_SIGNING_KEY: ${{ secrets.ORCON_OTA_SIGNING_KEY }}\n','          ORCON_OTA_SIGNING_KEY: x\n'),
   'nested-tag-name': rel_mut("| cut -f2 | sed -n 's#^refs/tags/##p'","| sed -n 's#^.*refs/tags/##p'"),
   'duplicate-key': rel_mut('  PYTHONDONTWRITEBYTECODE: \'1\'\n','  PYTHONDONTWRITEBYTECODE: \'1\'\n  RELEASE_ENV: heltec_v2_sx1276_rftest\n'),
+  # The version is never typed in again, and only the three steps exist, patch by default.
+  'version-input-back': rel_mut('      notes:\n','      version:\n        description: \'Versie\'\n        required: false\n        type: string\n      notes:\n'),
+  'release-type-free-text': rel_mut('        type: choice\n        default: patch\n','        type: string\n        default: patch\n'),
+  'release-type-extra-option': rel_mut('          - major\n','          - major\n          - 1.0.0\n'),
+  'release-type-default-major': rel_mut('        default: patch\n','        default: major\n'),
+  'release-type-optional': rel_mut('        required: true\n        type: choice\n','        required: false\n        type: choice\n'),
+  'bash-env': rel_mut("  PIP_DISABLE_PIP_VERSION_CHECK: '1'\n","  PIP_DISABLE_PIP_VERSION_CHECK: '1'\n  BASH_ENV: /tmp/probe.sh\n"),
+  'step-bash-env': rel_mut('          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n','          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n          BASH_ENV: /tmp/probe.sh\n'),
+  'draft-id-reassigned': rel_mut("          printf '%s' \"$id\" | grep -qxE '[0-9]+'\n","          id=12345\n          printf '%s' \"$id\" | grep -qxE '[0-9]+'\n"),
+  'draft-assets-reduced': rel_mut("          mapfile -t files < <(cut -d' ' -f3- SHA256SUMS)\n","          files=(firmware.bin)\n"),
+  'tag-array-assign': rel_mut('          python3 -I tools/release_ci.py verify-package','          TAG[0]=v9.9.9\n          python3 -I tools/release_ci.py verify-package'),
+  'printf-v-indirect': rel_mut('          PLATFORMIO_BUILD_FLAGS=','          t=NUMBER\n          printf -v "$t" %s 1000001\n          PLATFORMIO_BUILD_FLAGS='),
+  'quoted-gh': rel_mut('          python tools/test_orcon_cli.py\n',"          python tools/test_orcon_cli.py\n          'gh' --version\n"),
+  'publish-extra-step': rel_mut('      - name: Exactly the verified files\n','      - name: Extra\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: gh --version\n      - name: Exactly the verified files\n'),
+  'github-env-bash-env': rel_mut('          python tools/test_orcon_cli.py\n','          python tools/test_orcon_cli.py\n          echo "BASH_ENV=/tmp/probe.sh" >> "$GITHUB_ENV"\n'),
+  'sign-tool-swapped': rel_mut('      - name: Sign the release manifest (the only step that sees the key)\n','      - name: Tools\n        run: cp /tmp/other.py tools/release_ci.py\n      - name: Sign the release manifest (the only step that sees the key)\n'),
+  'sign-hash-check-removed': rel_mut('          test -n "$WANT"\n          test "$(sha256sum dist/firmware.bin | cut -d\' \' -f1)" = "$WANT"\n','          test -n "$WANT"\n'),
+  'sums-truncated': rel_mut('      - name: Draft release, check its files, then publish\n','      - name: Sums\n        run: head -n 1 publish/SHA256SUMS > /tmp/s\n      - name: Draft release, check its files, then publish\n'),
+  'prepare-helper-edited': rel_mut('      - name: The next version after every tag and release\n','      - name: Helper\n        run: sed -i s/c + 1/c + 2/ tools/release_ci.py\n      - name: The next version after every tag and release\n'),
+  'version-not-from-history': rel_mut('next --newest "$NEWEST"','next --newest 1000000'),
+  'history-without-drafts': rel_mut('    timeout-minutes: 5\n    permissions:\n      contents: write\n','    timeout-minutes: 5\n    permissions:\n      contents: read\n'),
+  'history-fetch-removed': rel_mut('            gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\'\n          } > "$RUNNER_TEMP/tags.txt"\n          newest=','          } > "$RUNNER_TEMP/tags.txt"\n          newest='),
+  'history-runs-code': rel_mut('      - name: Every tag and every release, drafts included (no repository code)\n','      - name: Code\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n        with:\n          ref: ${{ github.sha }}\n          persist-credentials: false\n      - name: Every tag and every release, drafts included (no repository code)\n'),
+  'history-unused': rel_mut('          NEWEST: ${{ needs.history.outputs.newest }}\n','          NEWEST: 1000000\n'),
+  'history-writes-tag': rel_mut('          newest="$(awk','          gh api -X POST "repos/${REPO}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${SHA}" > /dev/null\n          newest="$(awk'),
+  'history-output-hardcoded': rel_mut('      newest: ${{ steps.list.outputs.newest }}\n',"      newest: '1000000'\n"),
+  'history-list-overwritten': rel_mut('          newest="$(awk','          echo v1.0.0 > "$RUNNER_TEMP/tags.txt"\n          newest="$(awk'),
+  'history-other-rule': rel_mut('          newest="$(awk \'/^v?','          newest="$(awk \'/^v'),
+  'type-overridden-in-script': rel_mut('          python3 -I tools/release_ci.py next --newest','          RELEASE_TYPE=major\n          python3 -I tools/release_ci.py next --newest'),
+  'publish-tag-overridden': rel_mut('          REPO: ${{ github.repository }}\n          TAG: ${{ needs.prepare.outputs.tag }}\n          NUMBER:','          REPO: ${{ github.repository }}\n          TAG: v9.9.9\n          NUMBER:'),
+  'publish-tag-in-script': rel_mut('          gh release create "$TAG"','          TAG=v9.9.9\n          gh release create "$TAG"'),
+  'publish-release-lookup-removed': rel_mut('            gh api --paginate "repos/${REPO}/releases" --jq \'.[].tag_name\'\n          } > "$RUNNER_TEMP/tags.txt"\n          floor=','          } > "$RUNNER_TEMP/tags.txt"\n          floor='),
+  'verify-tag-in-script': rel_mut('          python3 -I tools/release_ci.py verify-package','          TAG="v$(python3 -c \'import json;print(json.load(open("dist/BUILD_INFO.json"))["name"])\')"\n          python3 -I tools/release_ci.py verify-package'),
+  'build-number-in-script': rel_mut('          PLATFORMIO_BUILD_FLAGS=','          NUMBER=1000001\n          PLATFORMIO_BUILD_FLAGS='),
+  'export-tag': rel_mut('          gh release create "$TAG"','          export TAG=v9.9.9\n          gh release create "$TAG"'),
+  'read-number': rel_mut('          PLATFORMIO_BUILD_FLAGS=','          read -r NUMBER < /dev/null\n          PLATFORMIO_BUILD_FLAGS='),
+  'release-type-hardcoded': rel_mut('          RELEASE_TYPE: ${{ inputs.release_type }}\n','          RELEASE_TYPE: major\n'),
+  'verify-tag-rebound': rel_mut('          FW: ${{ needs.build.outputs.firmware_sha256 }}\n          TAG: ${{ needs.prepare.outputs.tag }}\n','          FW: ${{ needs.build.outputs.firmware_sha256 }}\n          TAG: v9.9.9\n'),
+  'number-hardcoded': rel_mut('          NUMBER: ${{ needs.prepare.outputs.number }}\n','          NUMBER: 1000001\n'),
+  'tag-at-other-commit': rel_mut('          NUMBER: ${{ needs.prepare.outputs.number }}\n          SHA: ${{ github.sha }}\n        run: |\n          {','          NUMBER: ${{ needs.prepare.outputs.number }}\n          SHA: ${{ needs.build.outputs.firmware_sha256 }}\n        run: |\n          {'),
+  'type-as-option': rel_mut('--notes="$NOTES" -- "$RELEASE_TYPE"','--notes="$NOTES" "$RELEASE_TYPE"'),
+  'history-other-repo': rel_mut('          REPO: ${{ github.repository }}\n          GH_TOKEN: ${{ github.token }}\n        run: |\n          {','          REPO: someone/orcon-15rf-controller\n          GH_TOKEN: ${{ github.token }}\n        run: |\n          {'),
+  'package-tag-unchecked': rel_mut(' --release "$TAG" --official',' --official'),
 }
 for name,txt in REL_MUTATIONS.items():
     assert txt!=rel,name

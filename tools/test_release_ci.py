@@ -76,6 +76,44 @@ try:
     assert rc.check_version('1.2.3', ['v1.\u0663.0']) == VERSION                        # nor do they count as a published version
     ok('versions: an existing tag or release, or one not newer than every published version, is refused')
 
+    # ---- the next version: one patch/minor/major step above the newest tag or release ----------------------------------
+    nv = rc.next_version
+    assert nv('patch', 1000000) == 1000001 and nv('patch', 1000001) == 1000002 and nv('patch', 1000002) == 1000003
+    assert nv('minor', 1000005) == 1001001 and nv('patch', 1001001) == 1001002
+    assert nv('major', 1004008) == 2000001 and nv('patch', 2000001) == 2000002 and nv('minor', 2000002) == 2001001
+    ok('next version: patch 1.0.0 -> 1.0.1 -> 1.0.2; minor 1.0.5 -> 1.1.1; major 1.4.8 -> 2.0.1; patches count on after each step')
+    for kind, newest, why in [('patch', 0, 'no earlier release'), ('patch', 1000999, 'range'), ('minor', 1999005, 'range'), ('major', 999000001, 'range'),
+                              ('patch', -1, 'not a release number'), ('patch', 1000000000, 'not a release number'), ('patch', '1000000', 'not a release number'),
+                              ('PATCH', 1000000, 'release type'), ('1.0.1', 1000000, 'release type'), ('', 1000000, 'release type'), ('build', 1000000, 'release type')]:
+        refused(nv, kind, newest, want=why)
+    ok('next version: no history, a step outside 0..999, a bad number or another release type is refused')
+    # The history job's newest version and the publish floor are one awk program over the same kind of list.
+    wf = (REPO / '.github/workflows/release-control.yml').read_text()
+    progs = re.findall(r"(newest|floor)=\"\$\(awk '(.*)' \"\$RUNNER_TEMP/tags.txt\"\)\"", wf)
+    assert [k for k, _ in progs] == ['newest', 'floor'] and progs[0][1] == progs[1][1], progs
+    def newest(names):
+        f = TMP / 'tags-list.txt'; f.write_bytes(('\n'.join(names) + '\n').encode())
+        return int(subprocess.run(['awk', progs[0][1], str(f)], capture_output=True, text=True, check=True).stdout)
+    junk = ['rx-only', 'v1.0', 'v1.0.9-rc1', 'v01.0.4', 'v0.0.0', '', 'v1.٣.0', 'refs/tags/v9.9.9']
+    assert newest(['v1.0.0', 'v1.0.3', '1.0.2'] + junk) == 1000003 and newest(['v1.0.0', 'v1.0.0', '1.0.0']) == 1000000 and newest(junk) == 0
+    assert nv('patch', newest(['v1.0.0', 'v1.0.1'])) == 1000002 and nv('minor', newest(['v1.0.0', 'v1.1.1'])) == 1002001   # a draft or an orphan tag keeps its number
+    ok('history: one awk rule for the newest version (history job) and the floor (publish); drafts, orphan tags, duplicates count; other names do not')
+    odd = ['maintenance v8.0.0', 'v1.0.1 ', 'v1.0.2 ', 'v1.0.3\r', ' v1.0.4', 'v1.0.5\t', 'v1 .0.6', 'v1.0.7\x85']
+    assert newest(['v1.0.0'] + odd) == 1000000 and all(rc.version_of(t) == 0 for t in odd)
+    ok('history: odd names (a Unicode line separator, a no-break or extra space, CR, tab) are no version, in the awk rule and in Python alike')
+    chosen = nv('patch', newest(['v1.0.0']))
+    assert all(newest(['v1.0.0', t]) >= chosen for t in ('v1.0.1', '1.0.1', 'v1.1.1', 'v2.0.1')) and newest(['v1.0.0']) < chosen
+    ok('publish: the floor over every tag and release (drafts included) refuses a number that a draft, a tag or a newer release took meanwhile')
+    out, err = io.StringIO(), io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err): code = rc.main(['next', '--newest', '1000000', '--notes=Kort', '--', 'patch'])   # the workflow's form
+    assert code == 0 and out.getvalue() == 'number=1000001\ntag=v1.0.1\nname=1.0.1\n' and 'v1.0.0' in err.getvalue() and 'v1.0.1' in err.getvalue()
+    for argv in (['--newest', '1000000', '--notes=' + 'x' * 401, '--', 'patch'], ['--newest', '1000000', '--', 'custom'], ['--newest', '1000000', '--', '--help'],
+                 ['--newest', '1000000', '--', '-h'], ['--newest', '1000000', '--', ''], ['--newest', '', '--', 'patch'], ['--newest', '0', '--', 'patch'],
+                 ['--newest', '01000000', '--', 'patch'], ['--newest', ' 1000000', '--', 'patch'], ['--newest', '1000000000', '--', 'patch'], ['--newest', '-1', '--', 'patch']):
+        o = io.StringIO()
+        with redirect_stdout(o), redirect_stderr(io.StringIO()): assert rc.main(['next'] + argv) == 1 and o.getvalue() == '', argv
+    ok('next (CLI): number, tag and name of one version for $GITHUB_OUTPUT, the step in the log; a bad number, notes or type (even "--help") is refused, nothing written')
+
     # ---- release source ----------------------------------------------------------------------------------------------
     good = dict(repo='MarcoHuib/orcon-15rf-controller', ref='refs/heads/main', event='workflow_dispatch', default_branch='main', sha=COMMIT, head=COMMIT)
     rc.check_source(**good)
@@ -203,6 +241,17 @@ try:
     assert rc.verify_package(D, harness) == bundle and rc.verify_package(D, harness, notes='Betere   WiFi-herverbinding.') == bundle
     refused(rc.verify_package, D, harness, False, 'Andere notes', want='notes differ')
     refused(rc.verify_package, D, harness, True, want='factory image')                   # official: the factory image is required
+    assert rc.verify_package(D, harness, release='v1.2.3') == bundle
+    for other in ('v1.2.4', '1.2.3', 'v1.2.3 ', 'v1.02.3', 'v1.2.2'): refused(rc.verify_package, D, harness, False, None, other, want='not the release')
+    for name, extra in (('two-stamps', b'ORCON-RELEASE 1002002;'), ('no-commit', None)):   # a build changed after its check, with a fresh record
+        dd = TMP / 'tamper' / name; shutil.copytree(D, dd)
+        fw = (dd / 'firmware.bin').read_bytes()
+        fw = fw + extra if extra else fw.replace(COMMIT.encode(), b'0' * 40)
+        (dd / 'firmware.bin').write_bytes(fw)
+        i = json.loads((dd / 'BUILD_INFO.json').read_text()); i['firmware'] = {'size': len(fw), 'sha256': rc.sha256(fw)}
+        (dd / 'BUILD_INFO.json').write_text(json.dumps(i)); rc.write_sums(dd)
+        refused(rc.verify_package, dd, harness, False, None, 'v1.2.3', want='release stamp or commit stamp')
+    ok('verify-package: the package carries exactly the version prepare chose (tag = build = manifest = bundle = update index)')
     ok('package: bundle + update index + SHA256SUMS verify (signature; device policy; a board on 1.2.3 sees "up to date"; a newer one refuses)')
     idx = json.loads((D / 'orcon-update.json').read_text())
     assert idx['notes'] == 'Betere WiFi-herverbinding.' and idx['manifest'] == text and len((D / 'orcon-update.json').read_bytes()) <= 2048
