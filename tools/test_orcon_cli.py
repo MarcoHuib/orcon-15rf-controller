@@ -200,4 +200,64 @@ with tempfile.TemporaryDirectory() as d:
     check(len(lines) == 2 and lines[0] == hashlib.sha256(b'\xe9image').hexdigest() + ' abc1234-heltec_v2_sx1276 ota t1',
           'install record: one line per install, hash of the exact image')
     check(rec.stat().st_mode & 0o077 == 0 and rec.parent.stat().st_mode & 0o077 == 0, 'install record: private (0600 in 0700)')
+
+# Trial-boot watch: preflight, the condition that held a trial back, the end of the watch, nothing secret in a log
+OK_OTA = {'running': 'app1', 'boot': 'app1', 'running_state': 'valid'}
+OK_DIAG = {'wifi': {'up': True, 'rssi': -70}, 'rx': {'state': 0}}
+DONE = {'setup': {'state': 'done'}}
+check(orcon.preflight(OK_OTA, OK_DIAG, DONE) == [], 'trial watch: preflight GO on a confirmed image with an owner key')
+pf = orcon.preflight(OK_OTA, OK_DIAG, {'setup': {'state': 'legacy'}})
+check(len(pf) == 1 and 'legacy' in pf[0], 'trial watch: a legacy board (no owner key) is NO-GO')
+check(len(orcon.preflight({**OK_OTA, 'boot': 'app0'}, OK_DIAG, DONE)) == 1, 'trial watch: running != boot is NO-GO (migration step 7)')
+check(len(orcon.preflight(OK_OTA, {'wifi': {'up': False}, 'rx': {'state': 1}}, DONE)) == 2, 'trial watch: WiFi down and RX recovering are NO-GO')
+check(len(orcon.preflight({}, {}, {})) == 5, 'trial watch: an unreadable board is NO-GO on every point')
+def tv(state, up, hold=False, wifi=True, rx=0, slot='app0'):
+    return {'fw': 'x', 'slot': slot, 'state': state, 'up_s': up, 'hold': hold, 'wifi': wifi, 'rssi': -80, 'rx': rx, 'owner': 'done', 'ap': False}
+OLD_V, BACK = tv('valid', 2000, slot='app1'), tv('valid', 5, slot='app1')
+KEY_NOTE = 'geen herstelsleutel geregistreerd: deze firmware wordt niet bevestigd en de vorige keert terug.'
+check(orcon.trial_verdict([OLD_V, tv('pending-verify', 20), tv('valid', 61)], [])[0] == 'confirmed', 'trial watch: valid in the trial slot = confirmed')
+check(orcon.trial_verdict([OLD_V, tv('pending-verify', 70), BACK], [KEY_NOTE])[0] == 'owner-key', 'trial watch: the key note names the owner key')
+check(orcon.trial_verdict([tv('pending-verify', t, wifi=False) for t in (70, 150, 290)], [])[0] == 'wifi', 'trial watch: never on WiFi after 60 s')
+check(orcon.trial_verdict([tv('pending-verify', 100, rx=1), tv('pending-verify', 200, wifi=False)], [])[0] == 'wifi+rx',
+      'trial watch: unhealthy for different reasons: both named')
+check(orcon.trial_verdict([tv('pending-verify', 100, hold=True, wifi=False)], [])[0] == 'hold', 'trial watch: a held trial is named first')
+check(orcon.trial_verdict([tv('pending-verify', 100), BACK], [])[0] == 'confirm-call', 'trial watch: healthy, no key note, rolled back = the ESP-IDF call')
+check(orcon.trial_verdict([tv('pending-verify', 100)], [], gaps=True)[0] == 'unknown', 'trial watch: with console gaps a missing key note proves nothing')
+check(orcon.trial_verdict([tv('pending-verify', 61), BACK], [])[0] == 'no-data', 'trial watch: a poll right at 60 s is no evidence yet')
+check(orcon.trial_verdict([tv('pending-verify', 70)], ['nieuwe firmware niet bevestigd binnen 300 s: terug naar de vorige'])[0] != 'confirmed',
+      'trial watch: "niet bevestigd" is never read as confirmed')
+check(orcon.settled([OLD_V]) is None and orcon.settled([OLD_V, tv('pending-verify', 9)]) is None, 'trial watch: no end before the trial settles')
+check(orcon.settled([OLD_V, tv('pending-verify', 9), BACK]) == 'rolled back' and orcon.settled([OLD_V, tv('pending-verify', 9), tv('valid', 61)]) == 'confirmed',
+      'trial watch: ends confirmed in the trial slot, rolled back in the other one')
+r = orcon.redact({'token': 'a' * 32, 'fw': 'c' * 40, 'Nonce': '1', 'nonce_active': False, 'ev': [{'m': 'sid ' + 'b' * 32 + ' ok'}], 'h': 'd' * 64})
+check(r == {'fw': 'c' * 40, 'nonce_active': False, 'ev': [{'m': 'sid <redacted> ok'}], 'h': '<redacted>'},
+      'trial watch: no token, nonce or 32/64-hex secret in a log; a 40-hex commit stays')
+# A whole trial boot against a fake board: GET only, no headers, private files, the verdict from the key note
+with tempfile.TemporaryDirectory() as d:
+    NEW = {'fw': 'e' * 40, 'running': 'app0', 'boot': 'app0', 'running_state': 'pending-verify', 'hold': False}
+    snaps = [(OK_OTA, 3000, {'next': 1, 'ev': []}),
+             (NEW, 20, {'next': 2, 'ev': [{'s': 1, 't': 1, 'k': 'INFO', 'm': 'opgestart: app0, proefstart na OTA'}]}),
+             (NEW, 70, {'next': 3, 'ev': [{'s': 2, 't': 2, 'k': 'ERR', 'm': KEY_NOTE}]}),
+             (OK_OTA, 5, {'next': 2, 'ev': [{'s': 1, 't': 1, 'k': 'INFO', 'm': 'opgestart: app1, reden software'}]})]
+    calls, pos = [], [-1]
+    def fake_http(h, path, body=None, timeout=10, ctype='application/json', headers=None):
+        calls.append((path, body, headers))
+        if path == '/api/ota': pos[0] = min(pos[0] + 1, len(snaps) - 1)
+        o, up, con = snaps[pos[0]]
+        if path == '/api/ota': return 200, o
+        if path == '/api/diag': return 200, {'uptime_s': up, **OK_DIAG}
+        if path == '/api/setup/state': return 200, {**DONE, 'token': 'f' * 32, 'wifi': {'ap': False}}
+        return 200, con
+    real_http, real_repo = orcon.http, orcon.REPO
+    orcon.http, orcon.REPO = fake_http, Path(d)
+    try: orcon.cmd_trial_watch(argparse.Namespace(host='b', minutes=1, every=0, serial=None, anyway=False))
+    finally: orcon.http, orcon.REPO = real_http, real_repo
+    run_dir = next((Path(d) / 'captures' / 'trial').iterdir())
+    verdict = json.loads((run_dir / 'verdict.json').read_text())
+    check(verdict['verdict'] == 'owner-key' and verdict['end'] == 'rolled back', 'trial watch: a whole rollback, named by the key note')
+    check(all(b is None and hd is None for _, b, hd in calls) and {p.split('?')[0] for p, _, _ in calls} ==
+          {'/api/ota', '/api/diag', '/api/setup/state', '/api/setup/console'}, 'trial watch: only GETs of the four read routes, no login headers')
+    logs = ''.join(p.read_text() for p in run_dir.iterdir())
+    check('f' * 32 not in logs and 'token' not in logs and KEY_NOTE in logs, 'trial watch: the logs hold the key note but no token')
+    check(all(p.stat().st_mode & 0o077 == 0 for p in run_dir.iterdir()) and run_dir.stat().st_mode & 0o077 == 0, 'trial watch: private files (0600 in 0700)')
 print(f'orcon cli: {ok} checks, {fail} failures'); sys.exit(1 if fail else 0)
