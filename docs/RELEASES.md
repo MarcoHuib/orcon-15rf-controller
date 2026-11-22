@@ -44,13 +44,15 @@ De workflow kiest het nummer zelf (`tools/release_ci.py next`), één stap boven
 - Een nummer wordt nooit hergebruikt. Een draft of een tag die een mislukte `publish` achterliet, telt mee: de volgende run neemt het nummer erna.
 - Een mislukte run vóór `publish` maakt geen tag of release aan. De volgende run kiest dus hetzelfde nummer opnieuw.
 - Een lege geschiedenis (geen enkele versietag of release, bijvoorbeeld omdat het opvragen mislukte) wordt geweigerd: de teller begint nooit opnieuw. Ook een stap buiten 0..999 per deel wordt geweigerd; kies dan een grotere stap.
-- **Drafts:** `prepare` heeft alleen leesrechten en ziet daardoor geen drafts. `publish` (schrijfrechten) haalt alle tags en releases, drafts inbegrepen, opnieuw op en stopt vóór de tag als het nummer intussen bezet of niet meer het hoogste is. De tag zelf wordt aangemaakt met een aanroep die faalt als hij al bestaat.
+- **Drafts:** de releases-API toont drafts alleen aan een token met schrijfrechten. Daarom haalt de aparte job `history` (contents: write, geen repositorycode, alleen `git ls-remote` en `gh api`) alle tags en releases op, drafts inbegrepen, en geeft de lijst aan `prepare`, dat zelf alleen leesrechten en geen token heeft. Een draft telt dus mee, ook een draft zonder tag. `publish` haalt alles vlak vóór de tag nog eens op en stopt als het nummer intussen bezet of niet meer het hoogste is. De tag zelf wordt aangemaakt met een aanroep die faalt als hij al bestaat.
+- **Namen:** alleen een naam die precies `MAJOR.MINOR.PATCH` is (met of zonder `v`) telt; `prepare` (Python) en de vloer in `publish` (awk) lezen de lijst regel voor regel op dezelfde manier, zonder iets weg te knippen.
 - **Gelijktijdige runs:** er draait er één tegelijk (`concurrency: orcon-release-control`, nooit halverwege afgebroken). Een tweede run wacht en berekent zijn nummer pas als de eerste klaar is. GitHub houdt maximaal één wachtende run aan; een derde annuleert de wachtende, en die heeft dan nog niets berekend.
 
 ## Wat de workflow doet (`.github/workflows/release-control.yml`)
 
 | Job | Rechten | Wat |
 |---|---|---|
+| `history` | contents: write | Alleen het ophalen van alle tags en releases, drafts inbegrepen (de API toont drafts alleen met schrijfrechten). Geen checkout, geen repositorycode, geen andere stap. |
 | `prepare` | contents: read | Alleen `workflow_dispatch`, alleen `refs/heads/main` van deze repository, en de commit moet nog de kop van `main` zijn. De versie: de volgende na de hoogste tag of release, volgens het gekozen soort (patch, minor of major). |
 | `build` | contents: read | Toolchain:<br>- PlatformIO 6.2.0 met hash-gepinde wheels (`tools/release/requirements-platformio.txt`) in een eigen venv (`--force-reinstall`), daarna `pip check`;<br>- na de build ook SCons van PlatformIO Core exact gelijk aan de lock;<br>- platform en bibliotheken gelijk aan `tools/release/platformio-packages.lock`.<br><br>Tests:<br>- alle host-suites, ook met AddressSanitizer + UndefinedBehaviorSanitizer;<br>- RF-veiligheidsguards en workflowpins;<br>- privacycontrole en CLI-tests.<br><br>Daarna de releasebuild met `FW_VERSION=<commit>` en `ORCON_RELEASE_VERSION=<nummer>`, en de controles daarop:<br>- het volledige ESP-image (segmenten, checksum, appended SHA-256, niets erachter), en het image byte voor byte gelijk aan wat de vastgepinde esptool van de gecontroleerde ELF maakt;
 - flashlayout;<br>- slotgrootte;<br>- precies één releasestempel;<br>- commitstempel;<br>- control-markers via de **eigen beleidscode van het apparaat** (`test/release_accept.cpp`);<br>- bootloader, partitietabel en `boot_app0` byte-gelijk aan de gepinde bestanden;<br>- rollback-hook en TX-bereikbaarheid in de ELF;<br>- de volledige pipeline-test op de echte build;<br>- factory-image. |
@@ -81,7 +83,7 @@ Daarnaast staat elke verplichte controle als exacte eigen regel. Alle besturings
 - geen secrets of token in `with:`;
 - git-replacement-objecten uitgeschakeld.
 
-Elke eigenschap heeft een mutatie die geweigerd moet worden (71 stuks), waaronder:
+Elke eigenschap heeft een mutatie die geweigerd moet worden (88 stuks), waaronder:
 - PR- en tagtriggers;
 - secret in een andere job;
 - `secrets: inherit`;

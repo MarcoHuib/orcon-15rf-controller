@@ -93,19 +93,27 @@ try:
     ok('next version: an empty or unreadable history, a step outside 0..999 or another release type is refused')
     tf = TMP / 'tags.txt'; tf.write_text('v1.0.0\nrx-only\nv1.0.0\n')
     out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err): code = rc.main(['next', 'patch', '--tags', str(tf), '--notes=Kort'])
+    with redirect_stdout(out), redirect_stderr(err): code = rc.main(['next', '--tags', str(tf), '--notes=Kort', '--', 'patch'])   # the workflow's form
     assert code == 0 and out.getvalue() == 'number=1000001\ntag=v1.0.1\nname=1.0.1\n' and 'v1.0.0' in err.getvalue() and 'v1.0.1' in err.getvalue()
-    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-        assert rc.main(['next', 'patch', '--tags', str(tf), '--notes=' + 'x' * 401]) == 1 and rc.main(['next', 'custom', '--tags', str(tf)]) == 1
-    ok('next (CLI): number, tag and name of one version for $GITHUB_OUTPUT, the step in the log; bad notes or type refused before the build')
+    for argv in (['--notes=' + 'x' * 401, '--', 'patch'], ['--', 'custom'], ['--', '--help'], ['--', '-h'], ['--', '']):
+        o = io.StringIO()
+        with redirect_stdout(o), redirect_stderr(io.StringIO()): assert rc.main(['next', '--tags', str(tf)] + argv) == 1 and o.getvalue() == '', argv
+    ok('next (CLI): number, tag and name of one version for $GITHUB_OUTPUT, the step in the log; bad notes or type (even "--help") refused, nothing written')
     wf = (REPO / '.github/workflows/release-control.yml').read_text()
     prog = re.search(r"floor=\"\$\(awk '(.*)' \"\$RUNNER_TEMP/tags.txt\"\)\"", wf).group(1)   # the publish job's own line
     def floor(names):
         f = TMP / 'floor.txt'; f.write_text('\n'.join(names) + '\n')
         return int(subprocess.run(['awk', prog, str(f)], capture_output=True, text=True, check=True).stdout)
-    chosen = nv('patch', ['v1.0.0'])                     # prepare: its read token lists no drafts
+    chosen = nv('patch', ['v1.0.0'])
     assert floor(['v1.0.0']) < chosen and all(floor(['v1.0.0', t]) >= chosen for t in ('v1.0.1', '1.0.1', 'v1.1.1', 'v2.0.1'))
     ok('publish: the floor over every tag and release (drafts included) refuses a number that a draft, a tag or a newer release took meanwhile')
+    odd = ['maintenance v8.0.0', 'v1.0.1 ', 'v1.0.2 ', 'v1.0.3\r', ' v1.0.4', 'v1.0.5\t', 'v1 .0.6', 'v1.0.7\x85']
+    assert all(rc.version_of(t) == 0 for t in odd) and nv('patch', ['v1.0.0'] + odd) == chosen and floor(['v1.0.0'] + odd) == 1000000
+    tf.write_bytes(('v1.0.0\n' + '\n'.join(odd) + '\n').encode())
+    o = io.StringIO()
+    with redirect_stdout(o), redirect_stderr(io.StringIO()): assert rc.main(['next', '--tags', str(tf), '--', 'patch']) == 0
+    assert o.getvalue() == 'number=1000001\ntag=v1.0.1\nname=1.0.1\n'
+    ok('history: odd names (a Unicode line separator, a no-break or extra space, CR, tab) are no version, in Python and in the awk floor alike')
 
     # ---- release source ----------------------------------------------------------------------------------------------
     good = dict(repo='MarcoHuib/orcon-15rf-controller', ref='refs/heads/main', event='workflow_dispatch', default_branch='main', sha=COMMIT, head=COMMIT)

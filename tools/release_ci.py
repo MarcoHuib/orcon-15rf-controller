@@ -69,8 +69,8 @@ def semver_text(n):
 
 def version_of(name):
     """The release number of a tag or release name, with or without "v"; 0 for anything else. 0.0.0 is reserved for
-    development builds and never counts as a release."""
-    m = SEMVER.fullmatch(name.strip())
+    development builds and never counts as a release. Matched exactly, as the publish job's awk floor does."""
+    m = SEMVER.fullmatch(name)
     return int(m.group(1)) * 1000000 + int(m.group(2)) * 1000 + int(m.group(3)) if m else 0
 
 
@@ -456,7 +456,9 @@ def main(argv=None):
     a = p.parse_args(argv)
     try:
         if a.cmd == 'next':
-            tags = Path(a.tags).read_text().splitlines()
+            # One name per LF, nothing stripped or decoded away: the same lines the awk floor in publish reads
+            # (splitlines() would also split at U+2028 and invent a version).
+            tags = Path(a.tags).read_bytes().decode('utf-8', 'surrogateescape').split('\n')
             n = next_version(a.kind, tags)
             clean_notes(a.notes)   # refused here, before anything is built
             print(f'newest tag or release v{semver_text(max(map(version_of, tags)))}, {a.kind}: v{semver_text(n)}', file=sys.stderr)

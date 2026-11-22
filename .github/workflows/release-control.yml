@@ -3,8 +3,10 @@ name: Release control firmware (Heltec V2)
 # The OFFICIAL release of the Heltec V2 control firmware (env heltec_v2_sx1276_control), the only variant that is
 # published. Started by hand only: Actions > this workflow > Run workflow, branch main, a release type (patch, minor or
 # major); the version is the next one after every existing tag and release. No push, pull request, tag, release or
-# schedule starts it. Five jobs, each with the least it needs:
-#   prepare  source checks (manual run, default branch, its head) and the next version from the tag/release history
+# schedule starts it. Six jobs, each with the least it needs:
+#   history  every tag and release, drafts included (the API lists drafts only to a token with push access); runs no
+#            repository code and writes nothing                                                          contents: write
+#   prepare  source checks (manual run, default branch, its head) and the next version from that history
 #            (patch 1.0.0 -> 1.0.1, minor 1.0.5 -> 1.1.1, major 1.4.8 -> 2.0.1)                          contents: read
 #   build    pinned toolchain, every host/safety/privacy test, the release build and its checks           contents: read
 #   sign     ONLY job with the OTA signing key: the secret of the protected environment orcon-production-release
@@ -47,8 +49,32 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: '1'
 
 jobs:
+  history:
+    name: Tag and release history
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'MarcoHuib/orcon-15rf-controller'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      tags: ${{ steps.list.outputs.tags }}
+    steps:
+      - name: Every tag and every release, drafts included (no repository code)
+        id: list
+        env:
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n 's#^refs/tags/##p' | sed 's/\^{}$//'
+            gh api --paginate "repos/${REPO}/releases" --jq '.[].tag_name'
+          } > "$RUNNER_TEMP/tags.txt"
+          b64="$(base64 -w0 "$RUNNER_TEMP/tags.txt")"
+          echo "tags=$b64" >> "$GITHUB_OUTPUT"
+
   prepare:
     name: Version and source
+    needs: history
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'MarcoHuib/orcon-15rf-controller'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -79,14 +105,10 @@ jobs:
         env:
           RELEASE_TYPE: ${{ inputs.release_type }}
           NOTES: ${{ inputs.notes }}
-          REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
+          HISTORY: ${{ needs.history.outputs.tags }}
         run: |
-          {
-            git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n 's#^refs/tags/##p' | sed 's/\^{}$//'
-            gh api --paginate "repos/${REPO}/releases" --jq '.[].tag_name'
-          } > "$RUNNER_TEMP/tags.txt"
-          python3 -I tools/release_ci.py next "$RELEASE_TYPE" --tags "$RUNNER_TEMP/tags.txt" --notes="$NOTES" >> "$GITHUB_OUTPUT"
+          printf '%s' "$HISTORY" | base64 -d > "$RUNNER_TEMP/tags.txt"
+          python3 -I tools/release_ci.py next --tags "$RUNNER_TEMP/tags.txt" --notes="$NOTES" -- "$RELEASE_TYPE" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build and test
