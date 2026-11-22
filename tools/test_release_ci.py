@@ -76,6 +76,37 @@ try:
     assert rc.check_version('1.2.3', ['v1.\u0663.0']) == VERSION                        # nor do they count as a published version
     ok('versions: an existing tag or release, or one not newer than every published version, is refused')
 
+    # ---- the next version: one patch/minor/major step above every tag and release ------------------------------------
+    nv = rc.next_version
+    assert nv('patch', ['v1.0.0']) == 1000001 and nv('patch', ['v1.0.0', 'v1.0.1']) == 1000002 and nv('patch', ['v1.0.1', 'v1.0.2', 'v1.0.0']) == 1000003
+    assert nv('minor', ['v1.0.5']) == 1001001 and nv('patch', ['v1.0.5', 'v1.1.1']) == 1001002
+    assert nv('major', ['v1.4.8']) == 2000001 and nv('patch', ['v1.4.8', 'v2.0.1']) == 2000002 and nv('minor', ['v2.0.2']) == 2001001
+    ok('next version: patch 1.0.0 -> 1.0.1 -> 1.0.2; minor 1.0.5 -> 1.1.1; major 1.4.8 -> 2.0.1; patches count on after each step')
+    junk = ['rx-only', 'v1.0', 'v1.0.9-rc1', 'v01.0.4', 'v0.0.0', '', 'v1.٣.0', 'refs/tags/v9.9.9']
+    assert nv('patch', ['v1.0.0', 'v1.0.3', '1.0.2'] + junk) == 1000004 and nv('patch', ['v1.0.0', 'v1.0.0', '1.0.0']) == 1000001
+    assert nv('patch', ['v1.0.0', 'v1.0.1']) == 1000002 and nv('minor', ['v1.0.0', 'v1.1.1']) == 1002001   # a draft or an orphan tag keeps its number
+    ok('next version: the newest of every tag and release counts (with or without "v", duplicates, drafts, a failed publish); other names are no version')
+    for kind, hist, why in [('patch', [], 'no earlier release'), ('patch', junk, 'no earlier release'), ('patch', ['v1.0.999'], 'range'),
+                            ('minor', ['v1.999.5'], 'range'), ('major', ['v999.0.1'], 'range'), ('PATCH', ['v1.0.0'], 'release type'),
+                            ('1.0.1', ['v1.0.0'], 'release type'), ('', ['v1.0.0'], 'release type'), ('build', ['v1.0.0'], 'release type')]:
+        refused(nv, kind, hist, want=why)
+    ok('next version: an empty or unreadable history, a step outside 0..999 or another release type is refused')
+    tf = TMP / 'tags.txt'; tf.write_text('v1.0.0\nrx-only\nv1.0.0\n')
+    out, err = io.StringIO(), io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err): code = rc.main(['next', 'patch', '--tags', str(tf), '--notes=Kort'])
+    assert code == 0 and out.getvalue() == 'number=1000001\ntag=v1.0.1\nname=1.0.1\n' and 'v1.0.0' in err.getvalue() and 'v1.0.1' in err.getvalue()
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert rc.main(['next', 'patch', '--tags', str(tf), '--notes=' + 'x' * 401]) == 1 and rc.main(['next', 'custom', '--tags', str(tf)]) == 1
+    ok('next (CLI): number, tag and name of one version for $GITHUB_OUTPUT, the step in the log; bad notes or type refused before the build')
+    wf = (REPO / '.github/workflows/release-control.yml').read_text()
+    prog = re.search(r"floor=\"\$\(awk '(.*)' \"\$RUNNER_TEMP/tags.txt\"\)\"", wf).group(1)   # the publish job's own line
+    def floor(names):
+        f = TMP / 'floor.txt'; f.write_text('\n'.join(names) + '\n')
+        return int(subprocess.run(['awk', prog, str(f)], capture_output=True, text=True, check=True).stdout)
+    chosen = nv('patch', ['v1.0.0'])                     # prepare: its read token lists no drafts
+    assert floor(['v1.0.0']) < chosen and all(floor(['v1.0.0', t]) >= chosen for t in ('v1.0.1', '1.0.1', 'v1.1.1', 'v2.0.1'))
+    ok('publish: the floor over every tag and release (drafts included) refuses a number that a draft, a tag or a newer release took meanwhile')
+
     # ---- release source ----------------------------------------------------------------------------------------------
     good = dict(repo='MarcoHuib/orcon-15rf-controller', ref='refs/heads/main', event='workflow_dispatch', default_branch='main', sha=COMMIT, head=COMMIT)
     rc.check_source(**good)
@@ -203,6 +234,9 @@ try:
     assert rc.verify_package(D, harness) == bundle and rc.verify_package(D, harness, notes='Betere   WiFi-herverbinding.') == bundle
     refused(rc.verify_package, D, harness, False, 'Andere notes', want='notes differ')
     refused(rc.verify_package, D, harness, True, want='factory image')                   # official: the factory image is required
+    assert rc.verify_package(D, harness, release='v1.2.3') == bundle
+    for other in ('v1.2.4', '1.2.3', 'v1.2.3 ', 'v1.02.3', 'v1.2.2'): refused(rc.verify_package, D, harness, False, None, other, want='not the release')
+    ok('verify-package: the package carries exactly the version prepare chose (tag = build = manifest = bundle = update index)')
     ok('package: bundle + update index + SHA256SUMS verify (signature; device policy; a board on 1.2.3 sees "up to date"; a newer one refuses)')
     idx = json.loads((D / 'orcon-update.json').read_text())
     assert idx['notes'] == 'Betere WiFi-herverbinding.' and idx['manifest'] == text and len((D / 'orcon-update.json').read_bytes()) <= 2048

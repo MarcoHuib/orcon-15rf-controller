@@ -614,14 +614,14 @@ REL_GUARD="github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads
 REL_ACTIONS={'actions/checkout':'3d3c42e5aac5ba805825da76410c181273ba90b1','actions/setup-python':'6d4fd22b20465ccc0f7354476588e8df7c9ca0e0',   # v7.0.1, v7.1.0
              'actions/upload-artifact':'cf430e030ddbb5b0abf93d22962f4752f3646cd9','actions/download-artifact':'9000827ccba6bdab643e8b6fd33ac0654aef8333'}   # v7.0.2, v8.0.2
 REL_EXPR={'github.event.repository.default_branch','github.event_name','github.ref','github.repository','github.run_id','github.server_url',
-          'github.sha','github.token','inputs.notes','inputs.version','needs.build.outputs.firmware_sha256','needs.prepare.outputs.number',
+          'github.sha','github.token','inputs.notes','inputs.release_type','needs.build.outputs.firmware_sha256','needs.prepare.outputs.number',
           'needs.prepare.outputs.tag','needs.sign.outputs.bundle_name','needs.sign.outputs.bundle_sha256','runner.temp',
           'secrets.ORCON_OTA_SIGNING_KEY','steps.check.outputs.firmware_sha256','steps.package.outputs.bundle_name',
           'steps.package.outputs.bundle_sha256','steps.version.outputs.name','steps.version.outputs.number','steps.version.outputs.tag',
           'needs.verify.outputs.sums_sha256','needs.verify.outputs.notes_sha256','steps.final.outputs.sums_sha256','steps.final.outputs.notes_sha256'}
 # Every check the release depends on, as its own exact script line (Codex r4: a prefix let "--help" or a wrapper pass).
 REL_REQUIRED=(('prepare','python3 -I tools/release_ci.py source --repo "$REPO" --ref "$REF" --event "$EVENT" --default-branch "$DEFAULT_BRANCH" --sha "$SHA" --head "$head"'),
-    ('prepare','python3 -I tools/release_ci.py version "$VERSION" --tags "$RUNNER_TEMP/tags.txt" --notes="$NOTES" >> "$GITHUB_OUTPUT"'),
+    ('prepare','python3 -I tools/release_ci.py next "$RELEASE_TYPE" --tags "$RUNNER_TEMP/tags.txt" --notes="$NOTES" >> "$GITHUB_OUTPUT"'),
     ('build','python -m venv "$RUNNER_TEMP/pio-venv"'),
     ('build','"$RUNNER_TEMP/pio-venv/bin/python" -m pip install --require-hashes --no-deps --only-binary=:all: --force-reinstall -r tools/release/requirements-platformio.txt'),
     ('build','"$RUNNER_TEMP/pio-venv/bin/python" -m pip check'),('build','echo "$RUNNER_TEMP/pio-venv/bin" >> "$GITHUB_PATH"'),
@@ -633,7 +633,7 @@ REL_REQUIRED=(('prepare','python3 -I tools/release_ci.py source --repo "$REPO" -
     ('build','RELEASE_BUILD_DIR=".pio/build/$RELEASE_ENV" RELEASE_VERSION="$NUMBER" RELEASE_COMMIT="$SHA" python tools/test_release_ci.py'),
     ('build','python -I tools/release_ci.py manifest --dist dist'),('sign','python3 -I tools/release_ci.py manifest --dist dist'),
     ('sign','python3 -I tools/release_ci.py package --dist dist --notes="$NOTES"'),
-    ('verify','python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --official --notes="$NOTES"'),
+    ('verify','python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --release "$TAG" --official --notes="$NOTES"'),
     ('publish','test "$(sha256sum SHA256SUMS | cut -d\' \' -f1)" = "$SUMS"'),('publish','test "$(sha256sum RELEASE_NOTES.md | cut -d\' \' -f1)" = "$NOTES_SHA"'),
     ('publish','sha256sum -c SHA256SUMS'),('publish','if [ "$floor" -ge "$NUMBER" ]; then'),
     ('publish','floor="$(awk \'/^v?(0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)$/ { sub(/^v/, ""); split($0, p, "."); n = p[1] * 1000000 + p[2] * 1000 + p[3]; if (n > m) m = n } END { print m + 0 }\' "$RUNNER_TEMP/tags.txt")"'),
@@ -664,7 +664,10 @@ def release_workflow_safe(text):
     assert set(d)=={'name','on','permissions','concurrency','defaults','env','jobs'},('top-level keys',sorted(d))
     assert list(d['on'])==['workflow_dispatch'],('trigger: manual workflow_dispatch only',d['on'])
     inputs=d['on']['workflow_dispatch']['inputs']
-    assert set(inputs)=={'version','notes'} and all(x['type']=='string' for x in inputs.values()),('inputs',inputs)
+    # Only the kind of release is chosen; the version itself follows from the tags and releases (release_ci.py next).
+    assert set(inputs)=={'release_type','notes'},('inputs: release type and notes only (no version)',sorted(inputs))
+    assert {k:v for k,v in inputs['release_type'].items() if k!='description'}=={'required':True,'type':'choice','default':'patch','options':['patch','minor','major']},('release type: patch (default), minor or major',inputs['release_type'])
+    assert {k:v for k,v in inputs['notes'].items() if k!='description'}=={'required':False,'type':'string','default':''},('notes: optional text',inputs['notes'])
     assert d['permissions']=={},'top-level permissions must be empty'
     assert d['concurrency']=={'group':'orcon-release-control','cancel-in-progress':False},'one release at a time, never cancelled midway'
     assert d['env']['RELEASE_ENV']=='heltec_v2_sx1276_control','only the control image is released'
@@ -720,7 +723,7 @@ def release_workflow_safe(text):
     assert not any('uses' in st and st['uses'].startswith('actions/checkout@') for st in jobs['publish']['steps']),'publish runs no repository code'
     assert all('run' in st or st['uses'].split('@')[0] in ('actions/checkout','actions/upload-artifact','actions/download-artifact') for st in jobs['sign']['steps']),'signing job: no setup actions'
 WORKFLOWS={'heltec-v2-rx-only.yml':'fbf3af64a87be3822246c0adc17ba3cb5ec42c1ddb725c455153f8fd4ea7a563',   # file -> sha256 of the reviewed content
-           'release-control.yml':'28e70cd6dd9f9bc132bc3681a15757987bae800bdfa7f67d274a84831e181f5f'}
+           'release-control.yml':'c269673ccfa77ead7af09d5514cc945de5945126336974b8de5658e486d47d7e'}
 def workflows_reviewed(files):   # files: name -> bytes (None: not a regular file) of every *.yml/*.yaml entry
     assert sorted(files)==sorted(WORKFLOWS),('workflow files differ from the reviewed list',sorted(files))
     for n,data in files.items():
@@ -783,7 +786,7 @@ REL_MUTATIONS={
   'unpinned-action': rel_mut('actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1','actions/checkout@v7'),
   'third-party-action': rel_mut('actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0','someone/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0'),
   'stored-credentials': rel_mut('          persist-credentials: false\n','          persist-credentials: true\n'),
-  'expression-in-script': rel_mut('python3 -I tools/release_ci.py version "$VERSION"','python3 -I tools/release_ci.py version "${{ inputs.version }}"'),
+  'expression-in-script': rel_mut('python3 -I tools/release_ci.py next "$RELEASE_TYPE"','python3 -I tools/release_ci.py next "${{ inputs.release_type }}"'),
   'continue-on-error': rel_mut('      - name: Host tests\n','      - name: Host tests\n        continue-on-error: true\n'),
   'dry-run-image': rel_mut('pio run -e "$RELEASE_ENV"','pio run -e heltec_v2_sx1276_tx_poc_dryrun'),
   'rf-test-image': rel_mut('  RELEASE_ENV: heltec_v2_sx1276_control\n','  RELEASE_ENV: heltec_v2_sx1276_rftest\n'),
@@ -791,7 +794,7 @@ REL_MUTATIONS={
   'second-build': rel_mut('          pio run -e "$RELEASE_ENV"\n','          pio run -e "$RELEASE_ENV"\n          pio run -e heltec_v2_sx1276\n'),
   'skip-build-checks': rel_mut('          python -I tools/release_ci.py verify-build','          true'),
   'skip-old-workflow-guards': rel_mut('          python tools/test_tx_poc_safety.py\n',''),
-  'skip-package-verify': rel_mut('          python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --official --notes="$NOTES"\n',''),
+  'skip-package-verify': rel_mut('          python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --release "$TAG" --official --notes="$NOTES"\n',''),
   'cache': rel_mut('      - name: Python\n','      - name: Cache\n        uses: actions/cache@0000000000000000000000000000000000000000\n      - name: Python\n'),
   'hardware': rel_mut('          pio run -e "$RELEASE_ENV"\n','          pio run -e "$RELEASE_ENV"\n          bash tools/heltec_v2.sh flash rollback\n'),
   'publish-runs-repo-code': rel_mut('      - name: The verified files\n','      - name: Code\n        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n        with:\n          ref: ${{ github.sha }}\n          persist-credentials: false\n      - name: The verified files\n'),
@@ -807,7 +810,7 @@ REL_MUTATIONS={
   'secrets-index': rel_mut('          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n','          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n          K: ${{ secrets[\'ORCON_OTA_SIGNING_KEY\'] }}\n'),
   'tojson-secrets': rel_mut('          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n','          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n          K: ${{ toJSON(SECRETS) }}\n'),
   'token-in-build': rel_mut('          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n','          HOST_TEST_OUTPUT_DIR: ${{ runner.temp }}/host-plain\n          GH_TOKEN: ${{ github.token }}\n'),
-  'other-expression': rel_mut('          VERSION: ${{ inputs.version }}\n','          VERSION: ${{ github.event.inputs.version }}\n'),
+  'other-expression': rel_mut('          RELEASE_TYPE: ${{ inputs.release_type }}\n','          RELEASE_TYPE: ${{ github.event.inputs.release_type }}\n'),
   'no-asan': rel_mut('          CXXFLAGS: -fsanitize=address,undefined -fno-sanitize-recover=all\n','          CXXFLAGS: -fsanitize=undefined -fno-sanitize-recover=all\n'),
   'no-pip-check': rel_mut('          "$RUNNER_TEMP/pio-venv/bin/python" -m pip check\n',''),
   'bash-template-dropped': rel_mut('    shell: bash\n','    shell: bash {0}\n'),
@@ -826,13 +829,21 @@ REL_MUTATIONS={
   'no-version-floor': rel_mut('          if [ "$floor" -ge "$NUMBER" ]; then\n','          if [ "$floor" -gt "999999999" ]; then\n'),
   'publish-before-compare': rel_mut('          gh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/check"\n','          gh release edit "$TAG" --repo "$REPO" --draft=false --latest\n          gh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/check"\n'),
   'unchecked-sums': rel_mut('          test "$(sha256sum SHA256SUMS | cut -d\' \' -f1)" = "$SUMS"\n',''),
-  'quoted-apostrophe': rel_mut("        description: 'Versie: MAJOR.MINOR.PATCH, bijvoorbeeld 1.0.0'","        description: 'Versie''s: MAJOR.MINOR.PATCH'"),
+  'quoted-apostrophe': rel_mut("        description: 'Soort release (de versie volgt uit de bestaande tags en releases): patch, minor of major'","        description: 'Soort release''s: patch, minor of major'"),
   'floor-zero': rel_mut('END { print m + 0 }','END { print 0 }'),
   'no-asset-inventory': rel_mut('          cmp <(ls "$RUNNER_TEMP/check" | sort) <( (printf \'%s\\n\' "${files[@]}"; echo SHA256SUMS) | sort)\n',''),
   'no-break-space': rel_mut('    environment: orcon-production-release\n','    environment: orcon-production-release\u00a0\n'),
   'secret-as-action-input': rel_mut('        with:\n          name: release-signed\n','        with:\n          name: release-signed\n          token: ${{ secrets.ORCON_OTA_SIGNING_KEY }}\n').replace('          ORCON_OTA_SIGNING_KEY: ${{ secrets.ORCON_OTA_SIGNING_KEY }}\n','          ORCON_OTA_SIGNING_KEY: x\n'),
   'nested-tag-name': rel_mut("| cut -f2 | sed -n 's#^refs/tags/##p'","| sed -n 's#^.*refs/tags/##p'"),
   'duplicate-key': rel_mut('  PYTHONDONTWRITEBYTECODE: \'1\'\n','  PYTHONDONTWRITEBYTECODE: \'1\'\n  RELEASE_ENV: heltec_v2_sx1276_rftest\n'),
+  # The version is never typed in again, and only the three steps exist, patch by default.
+  'version-input-back': rel_mut('      notes:\n','      version:\n        description: \'Versie\'\n        required: false\n        type: string\n      notes:\n'),
+  'release-type-free-text': rel_mut('        type: choice\n        default: patch\n','        type: string\n        default: patch\n'),
+  'release-type-extra-option': rel_mut('          - major\n','          - major\n          - 1.0.0\n'),
+  'release-type-default-major': rel_mut('        default: patch\n','        default: major\n'),
+  'release-type-optional': rel_mut('        required: true\n        type: choice\n','        required: false\n        type: choice\n'),
+  'version-not-from-history': rel_mut('python3 -I tools/release_ci.py next "$RELEASE_TYPE" --tags "$RUNNER_TEMP/tags.txt"','python3 -I tools/release_ci.py next "$RELEASE_TYPE" --tags /dev/null'),
+  'package-tag-unchecked': rel_mut(' --release "$TAG" --official',' --official'),
 }
 for name,txt in REL_MUTATIONS.items():
     assert txt!=rel,name

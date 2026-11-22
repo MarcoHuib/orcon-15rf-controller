@@ -1,9 +1,11 @@
 name: Release control firmware (Heltec V2)
 
 # The OFFICIAL release of the Heltec V2 control firmware (env heltec_v2_sx1276_control), the only variant that is
-# published. Started by hand only: Actions > this workflow > Run workflow, branch main, a version number. No push, pull
-# request, tag, release or schedule starts it. Five jobs, each with the least it needs:
-#   prepare  version and source checks (manual run, default branch, its head, a new and newer version)   contents: read
+# published. Started by hand only: Actions > this workflow > Run workflow, branch main, a release type (patch, minor or
+# major); the version is the next one after every existing tag and release. No push, pull request, tag, release or
+# schedule starts it. Five jobs, each with the least it needs:
+#   prepare  source checks (manual run, default branch, its head) and the next version from the tag/release history
+#            (patch 1.0.0 -> 1.0.1, minor 1.0.5 -> 1.1.1, major 1.4.8 -> 2.0.1)                          contents: read
 #   build    pinned toolchain, every host/safety/privacy test, the release build and its checks           contents: read
 #   sign     ONLY job with the OTA signing key: the secret of the protected environment orcon-production-release
 #            (deployments from main only); signs the manifest of the build's verified image                  contents: read
@@ -14,10 +16,15 @@ name: Release control firmware (Heltec V2)
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Versie: MAJOR.MINOR.PATCH, bijvoorbeeld 1.0.0'
+      release_type:
+        description: 'Soort release (de versie volgt uit de bestaande tags en releases): patch, minor of major'
         required: true
-        type: string
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
       notes:
         description: 'Korte releasenotes voor de controller (optioneel, maximaal 400 bytes)'
         required: false
@@ -67,10 +74,10 @@ jobs:
         run: |
           head="$(git ls-remote "https://github.com/${REPO}.git" "refs/heads/${DEFAULT_BRANCH}" | cut -f1)"
           python3 -I tools/release_ci.py source --repo "$REPO" --ref "$REF" --event "$EVENT" --default-branch "$DEFAULT_BRANCH" --sha "$SHA" --head "$head"
-      - name: A valid, new and newer version
+      - name: The next version after every tag and release
         id: version
         env:
-          VERSION: ${{ inputs.version }}
+          RELEASE_TYPE: ${{ inputs.release_type }}
           NOTES: ${{ inputs.notes }}
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
@@ -79,7 +86,7 @@ jobs:
             git ls-remote --tags "https://github.com/${REPO}.git" | cut -f2 | sed -n 's#^refs/tags/##p' | sed 's/\^{}$//'
             gh api --paginate "repos/${REPO}/releases" --jq '.[].tag_name'
           } > "$RUNNER_TEMP/tags.txt"
-          python3 -I tools/release_ci.py version "$VERSION" --tags "$RUNNER_TEMP/tags.txt" --notes="$NOTES" >> "$GITHUB_OUTPUT"
+          python3 -I tools/release_ci.py next "$RELEASE_TYPE" --tags "$RUNNER_TEMP/tags.txt" --notes="$NOTES" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build and test
@@ -249,13 +256,14 @@ jobs:
           WANT: ${{ needs.sign.outputs.bundle_sha256 }}
           BUNDLE: ${{ needs.sign.outputs.bundle_name }}
           FW: ${{ needs.build.outputs.firmware_sha256 }}
+          TAG: ${{ needs.prepare.outputs.tag }}
           NOTES: ${{ inputs.notes }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           test "$(sha256sum "dist/$BUNDLE" | cut -d' ' -f1)" = "$WANT"
           test "$(sha256sum dist/firmware.bin | cut -d' ' -f1)" = "$FW"
           chmod 0755 harness/release_accept
-          python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --official --notes="$NOTES"
+          python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --release "$TAG" --official --notes="$NOTES"
           python3 -I tools/release_ci.py notes --dist dist --notes="$NOTES" --run "$RUN_URL" > "$RUNNER_TEMP/RELEASE_NOTES.md"
           mkdir -p publish
           cut -d' ' -f3- dist/SHA256SUMS | while IFS= read -r f; do cp -- "dist/$f" publish/; done

@@ -1,14 +1,14 @@
 # Officiële releases (GitHub Actions) en updates
 
-> Stand 2026-11-19, branch `feature/github-releases-control-ota`. Gebouwd en lokaal getest. **Nog niet live**: de workflow kan pas draaien zodra hij op `main` staat (GitHub start `workflow_dispatch` alleen voor workflows op de standaardbranch). Daarnaast ontbreekt nog het secret met de ondertekeningssleutel; zie [Sleutel](#sleutel-wat-nog-ontbreekt). Er is nog geen enkele release gepubliceerd.
+> Stand 2026-11-22. De workflow staat op `main` en v1.0.0 is de eerste gepubliceerde release. Branch `feature/release-auto-version`: bij **Run workflow** kies je alleen nog het soort release; het versienummer volgt uit de tags en releases.
 
 Alleen de **control-firmware** (`heltec_v2_sx1276_control`) wordt gepubliceerd. De RX-only-, RF-test- en dry-run-images blijven lokale diagnose- of herstelbuilds en worden door de workflow geweigerd.
 
 ## Zo maak je een release
 
 1. Zorg dat `main` de code bevat die je wilt uitbrengen.
-2. GitHub → **Actions** → *Release control firmware (Heltec V2)* → **Run workflow**. Kies branch `main` en vul in:
-   - **versie**, bijvoorbeeld `1.0.0`;
+2. GitHub → **Actions** → *Release control firmware (Heltec V2)* → **Run workflow**. Kies branch `main` en:
+   - het **soort release**: `patch` (standaard), `minor` of `major`. Het versienummer zelf bepaalt de workflow (zie [Automatische versie](#automatische-versie));
    - eventueel **korte releasenotes**: maximaal 400 bytes, zichtbaar op de controller.
 3. De workflow controleert en bouwt (zie hieronder). Bij de job *Sign (protected environment)* vraagt GitHub om **goedkeuring** (*Review deployments* → *Approve*). Dat is de enige extra klik. Zonder goedkeuring wordt er niets ondertekend of gepubliceerd.
 4. Na de goedkeuring tekent de workflow, verifieert het pakket opnieuw met de regels van het apparaat en publiceert de GitHub Release.
@@ -30,15 +30,28 @@ Daardoor is de getalvolgorde gelijk aan de SemVer-volgorde. Het hoogste nummer i
 
 De huidige controller (b75fad3) is een ontwikkelbuild met nummer 0. Hij accepteert dus elke release, en `v1.0.0` is een geldige eerste release.
 
-De workflow weigert een versie:
-- als de tag of release al bestaat;
-- als ze niet hoger is dan elke gepubliceerde versie.
+### Automatische versie
+
+De workflow kiest het nummer zelf (`tools/release_ci.py next`), één stap boven de **hoogste versie onder alle tags en releases** van de repository. Niet de laatste workflow-run telt, maar de echte tag- en releasegeschiedenis:
+
+| Soort | Regel | Voorbeeld |
+|---|---|---|
+| `patch` (standaard) | patch + 1 | v1.0.0 → v1.0.1 → v1.0.2 → … |
+| `minor` | minor + 1, patch begint weer op 1 | v1.0.5 → v1.1.1, daarna v1.1.2 |
+| `major` | major + 1, minor 0, patch begint weer op 1 | v1.4.8 → v2.0.1, daarna v2.0.2 |
+
+- Eén berekening in `prepare`; firmware (`ORCON_RELEASE_VERSION` en de releasestempel), manifest, bundel- en factorynaam, update-index en GitHub-tag gebruiken alle dat ene getal. `verify` controleert vóór het publiceren dat het pakket precies die versie draagt (`verify-package --release`).
+- Een nummer wordt nooit hergebruikt. Een draft of een tag die een mislukte `publish` achterliet, telt mee: de volgende run neemt het nummer erna.
+- Een mislukte run vóór `publish` maakt geen tag of release aan. De volgende run kiest dus hetzelfde nummer opnieuw.
+- Een lege geschiedenis (geen enkele versietag of release, bijvoorbeeld omdat het opvragen mislukte) wordt geweigerd: de teller begint nooit opnieuw. Ook een stap buiten 0..999 per deel wordt geweigerd; kies dan een grotere stap.
+- **Drafts:** `prepare` heeft alleen leesrechten en ziet daardoor geen drafts. `publish` (schrijfrechten) haalt alle tags en releases, drafts inbegrepen, opnieuw op en stopt vóór de tag als het nummer intussen bezet of niet meer het hoogste is. De tag zelf wordt aangemaakt met een aanroep die faalt als hij al bestaat.
+- **Gelijktijdige runs:** er draait er één tegelijk (`concurrency: orcon-release-control`, nooit halverwege afgebroken). Een tweede run wacht en berekent zijn nummer pas als de eerste klaar is. GitHub houdt maximaal één wachtende run aan; een derde annuleert de wachtende, en die heeft dan nog niets berekend.
 
 ## Wat de workflow doet (`.github/workflows/release-control.yml`)
 
 | Job | Rechten | Wat |
 |---|---|---|
-| `prepare` | contents: read | Alleen `workflow_dispatch`, alleen `refs/heads/main` van deze repository, en de commit moet nog de kop van `main` zijn. Versie geldig, nieuw en hoger dan alle tags en releases. |
+| `prepare` | contents: read | Alleen `workflow_dispatch`, alleen `refs/heads/main` van deze repository, en de commit moet nog de kop van `main` zijn. De versie: de volgende na de hoogste tag of release, volgens het gekozen soort (patch, minor of major). |
 | `build` | contents: read | Toolchain:<br>- PlatformIO 6.2.0 met hash-gepinde wheels (`tools/release/requirements-platformio.txt`) in een eigen venv (`--force-reinstall`), daarna `pip check`;<br>- na de build ook SCons van PlatformIO Core exact gelijk aan de lock;<br>- platform en bibliotheken gelijk aan `tools/release/platformio-packages.lock`.<br><br>Tests:<br>- alle host-suites, ook met AddressSanitizer + UndefinedBehaviorSanitizer;<br>- RF-veiligheidsguards en workflowpins;<br>- privacycontrole en CLI-tests.<br><br>Daarna de releasebuild met `FW_VERSION=<commit>` en `ORCON_RELEASE_VERSION=<nummer>`, en de controles daarop:<br>- het volledige ESP-image (segmenten, checksum, appended SHA-256, niets erachter), en het image byte voor byte gelijk aan wat de vastgepinde esptool van de gecontroleerde ELF maakt;
 - flashlayout;<br>- slotgrootte;<br>- precies één releasestempel;<br>- commitstempel;<br>- control-markers via de **eigen beleidscode van het apparaat** (`test/release_accept.cpp`);<br>- bootloader, partitietabel en `boot_app0` byte-gelijk aan de gepinde bestanden;<br>- rollback-hook en TX-bereikbaarheid in de ELF;<br>- de volledige pipeline-test op de echte build;<br>- factory-image. |
 | `sign` | contents: read, **environment `orcon-production-release`** | De enige job die de sleutel kan lezen, en alleen in één stap:<br>- controleert dat het artifact het geteste image is;<br>- maakt het v2-manifest opnieuw uit dat image;<br>- tekent.<br><br>De sleutel bestaat alleen tijdens die stap, als 0600-bestand in een 0700-map, en wordt altijd verwijderd. Een sleutel die niet bij `src/ota_pubkey.h` hoort, wordt geweigerd. |
@@ -142,8 +155,8 @@ Zonder secret faalt de job `sign` met `signing key missing`. Er wordt dan niets 
 
 ## Herstel bij een mislukte release
 
-- **Mislukt vóór `publish`.** Er is niets aangemaakt. Los de oorzaak op en start opnieuw. Dezelfde versie mag, want er bestaat nog geen tag.
-- **Mislukt in `publish`.** Er kunnen een tag en/of een draft-release bestaan, en de workflow weigert die versie dan (*already exists*). Herstel met de hand:
+- **Mislukt vóór `publish`.** Er is niets aangemaakt. Los de oorzaak op en start opnieuw met hetzelfde soort release: de workflow kiest dan hetzelfde nummer, want er bestaat nog geen tag.
+- **Mislukt in `publish`.** Er kunnen een tag en/of een draft-release bestaan. Een volgende run slaat dat nummer over (na een mislukte v1.0.1 wordt het v1.0.2); er gaat niets mis, het nummer ontbreekt alleen in de reeks. Wil je het nummer toch gebruiken, ruim dan eerst met de hand op:
   1. Controleer in GitHub of de release een **draft** is. Een gepubliceerde release verwijder je niet; geef dan een nieuwe versie uit.
   2. Verwijder de draft en de tag:
      ```

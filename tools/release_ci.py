@@ -4,8 +4,10 @@
 Only the Heltec V2 control image (heltec_v2_sx1276_control) is ever published. Every step runs the same way on a
 developer machine; tools/test_release_ci.py runs them with throwaway keys and tampered inputs.
 
-  version SEMVER [--tags FILE]           the release number for SEMVER (MAJOR.MINOR.PATCH, each 0..999); refuses an
-                                         existing tag/release and anything not newer than every published version
+  next patch|minor|major --tags FILE [--notes TEXT]
+                                         the number of the next release, one step above the newest version among every
+                                         tag and release in FILE (patch 1.0.0 -> 1.0.1; minor 1.0.5 -> 1.1.1; major
+                                         1.4.8 -> 2.0.1); refuses an empty history and a number outside 0..999 per part
   source --repo R --ref REF --event E --default-branch B --sha SHA --head SHA
                                          only a workflow_dispatch on the default branch of this repository, at its head
   packages --list FILE                   `pio pkg list -e heltec_v2_sx1276_control` must equal tools/release/platformio-packages.lock
@@ -65,20 +67,39 @@ def semver_text(n):
     return f'{n // 1000000}.{n // 1000 % 1000}.{n % 1000}'
 
 
+def version_of(name):
+    """The release number of a tag or release name, with or without "v"; 0 for anything else. 0.0.0 is reserved for
+    development builds and never counts as a release."""
+    m = SEMVER.fullmatch(name.strip())
+    return int(m.group(1)) * 1000000 + int(m.group(2)) * 1000 + int(m.group(3)) if m else 0
+
+
 def check_version(text, existing):
     """The number for text; refused when its tag already exists or a published version is not older."""
     n = semver_number(text)
     tag = 'v' + semver_text(n)
-    seen = []
-    for t in existing:   # tags and release names, with or without "v"; anything else is not a version
-        m = SEMVER.fullmatch(t.strip())
-        if not m: continue
-        x = int(m.group(1)) * 1000000 + int(m.group(2)) * 1000 + int(m.group(3))
-        if x == n: fail(f'{tag} already exists (tag or release): a version is published once; see docs/RELEASES.md "herstel"')
-        if x: seen.append(x)   # 0.0.0 is reserved for development builds and never a release floor
+    seen = [x for x in map(version_of, existing) if x]   # tags and release names; anything else is not a version
+    if n in seen: fail(f'{tag} already exists (tag or release): a version is published once; see docs/RELEASES.md "herstel"')
     if seen and n <= max(seen):
         fail(f'{tag} is not newer than the newest published version v{semver_text(max(seen))}: boards refuse older releases')
     return n
+
+
+BUMPS = ('patch', 'minor', 'major')
+
+
+def next_version(kind, existing):
+    """The number of the next release: one step above the newest version among every tag and release, published or not
+    (a draft, or a tag left by a failed publish, keeps its number: a number is never used twice). A new minor or major
+    starts its patches at 1. An empty history is refused: a failed lookup must never restart the count."""
+    if kind not in BUMPS: fail(f'release type {kind!r}: choose patch, minor or major')
+    seen = [x for x in map(version_of, existing) if x]
+    if not seen: fail('no earlier release in the tags and releases: refusing to start the count (did the lookup fail?)')
+    top = max(seen)
+    a, b, c = top // 1000000, top // 1000 % 1000, top % 1000
+    a, b, c = {'patch': (a, b, c + 1), 'minor': (a, b + 1, 1), 'major': (a + 1, 0, 1)}[kind]
+    if max(a, b, c) > 999: fail(f'{kind} after v{semver_text(top)} leaves the range 0..999 per part: choose a bigger step')
+    return check_version(f'{a}.{b}.{c}', existing)
 
 
 # ---- release source ------------------------------------------------------------------------------------------------------
@@ -315,11 +336,14 @@ def write_sums(dist):
     (Path(dist) / 'SHA256SUMS').write_text('\n'.join(rows) + '\n')
 
 
-def verify_package(dist, harness_bin, official=False, notes=None):
+def verify_package(dist, harness_bin, official=False, notes=None, release=None):
     """official: the workflow's run, where the factory image must be there. notes: the dispatch input, which the
-    update index must carry exactly (normalised)."""
+    update index must carry exactly (normalised). release: the tag prepare chose; the build, and through it the manifest,
+    the bundle and factory names and the update index checked below, must carry exactly that version."""
     dist = Path(dist)
     info = load_info(dist)
+    if release is not None and (release != f"v{info['name']}" or semver_number(release) != info['version']):
+        fail(f"the package is v{info['name']}, not the release {release} that prepare chose")
     check_esp_image((dist / 'firmware.bin').read_bytes())
     bundles = sorted(dist.glob('*.orconfw'))
     if len(bundles) != 1: fail('exactly one .orconfw expected')
@@ -413,7 +437,7 @@ def notes_md(dist, notes='', run=''):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     s = p.add_subparsers(dest='cmd', required=True)
-    v = s.add_parser('version'); v.add_argument('semver'); v.add_argument('--tags'); v.add_argument('--notes', default='')
+    nx = s.add_parser('next'); nx.add_argument('kind'); nx.add_argument('--tags', required=True); nx.add_argument('--notes', default='')
     so = s.add_parser('source')
     for k in ('repo', 'ref', 'event', 'default-branch', 'sha', 'head'): so.add_argument('--' + k, required=True)
     pk = s.add_parser('packages'); pk.add_argument('--list', required=True)
@@ -425,14 +449,17 @@ def main(argv=None):
         x = s.add_parser(name); x.add_argument('--dist', required=True)
         if name in ('package', 'notes'): x.add_argument('--notes', default='')
         if name == 'notes': x.add_argument('--run', default='')
-        if name == 'verify-package': x.add_argument('--harness', required=True); x.add_argument('--official', action='store_true'); x.add_argument('--notes')
+        if name == 'verify-package':
+            x.add_argument('--harness', required=True); x.add_argument('--official', action='store_true'); x.add_argument('--notes')
+            x.add_argument('--release')
         if name == 'factory': x.add_argument('--esptool', required=True); x.add_argument('--python', default=sys.executable)
     a = p.parse_args(argv)
     try:
-        if a.cmd == 'version':
-            tags = Path(a.tags).read_text().splitlines() if a.tags else []
-            n = check_version(a.semver, tags)
+        if a.cmd == 'next':
+            tags = Path(a.tags).read_text().splitlines()
+            n = next_version(a.kind, tags)
             clean_notes(a.notes)   # refused here, before anything is built
+            print(f'newest tag or release v{semver_text(max(map(version_of, tags)))}, {a.kind}: v{semver_text(n)}', file=sys.stderr)
             print(f'number={n}\ntag=v{semver_text(n)}\nname={semver_text(n)}')
         elif a.cmd == 'source':
             check_source(a.repo, a.ref, a.event, a.default_branch, a.sha, a.head); print('source OK')
@@ -447,7 +474,7 @@ def main(argv=None):
             sign(a.dist, secret); secret = None
             print('signed (key matches src/ota_pubkey.h; key file removed)')
         elif a.cmd == 'package': print('package OK:', package(a.dist, a.notes).name)
-        elif a.cmd == 'verify-package': print('package VERIFIED:', verify_package(a.dist, a.harness, a.official, a.notes).name)
+        elif a.cmd == 'verify-package': print('package VERIFIED:', verify_package(a.dist, a.harness, a.official, a.notes, a.release).name)
         elif a.cmd == 'factory': print('factory image:', factory(a.dist, a.esptool, a.python).name)
         elif a.cmd == 'notes': sys.stdout.write(notes_md(a.dist, a.notes, a.run))
     except (Refused, ValueError, KeyError, OSError) as e:
