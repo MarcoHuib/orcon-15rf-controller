@@ -22,16 +22,16 @@
                                         it in the web page (Systeem > Firmware); the board checks the
                                         signature, the version and its own owner's session
   orcon.py keygen                       create the signing key (once) and src/ota_pubkey.h
-  orcon.py trial-watch --key-proven FINGERPRINT [--minutes N] [--every S] [--serial PORT] [--anyway]
+  orcon.py trial-watch --key-proven FINGERPRINT [--minutes N] [--every S] [--anyway]
                                         read-only record of one trial boot, started BEFORE installing: a
-                                        preflight (running == boot, valid, owner state done, WiFi, RX, and the
-                                        owner key proven by hand: the board's fingerprint after a recovery with
-                                        the key file, because no home-network route shows the key), then
-                                        /api/ota, /api/diag, /api/setup/state and the RF console every S s (2..60,
-                                        default 3) for up to N min (6..120, default 12), per boot, until the new
-                                        image confirms itself or rolls back, then the condition that held it back
-                                        (optionally the USB log, opened and closed without a reset). GET only, on a
-                                        direct connection (no proxy, no redirect, no login); logs keep no secrets
+                                        preflight (running == boot, valid, a distinct target slot, owner state
+                                        done, WiFi, RX, and the owner key attested by hand: the board's
+                                        fingerprint after a recovery with the key file, because no home-network
+                                        route shows the key), then /api/diag, the RF console, /api/ota and
+                                        /api/diag again every S s (2..60, default 3) for up to N min (6..120,
+                                        default 12), boot by boot, until the trial ends; then the facts per
+                                        boot, no conclusions. GET only, direct (no proxy, redirect or login);
+                                        logs keep no secrets. USB log: tools/rxmon.py in a second window
 
 Owner-model firmware (it reports "owner_model" in /api/ota) only installs with the owner's session:
 ota-install then asks for the web password. Older firmware installs as before.
@@ -40,7 +40,7 @@ Host: --host, $ORCON_HOST, ~/.orcon/config.json {"host": ...}, else orcon15rf.lo
 Captures hold real device IDs: they go to captures/ (git-ignored), directories 0700, files 0600.
 Nothing here uses GitHub or the network beyond the board itself.
 """
-import argparse, getpass, hashlib, json, os, re, subprocess, sys, tempfile, threading, time, urllib.error, urllib.request, uuid, zlib
+import argparse, getpass, hashlib, json, os, re, subprocess, sys, tempfile, time, urllib.error, urllib.request, uuid, zlib
 from datetime import datetime, timezone
 from http.client import HTTPConnection, HTTPException   # trial-watch: a direct connection (no proxy, no redirect)
 from pathlib import Path
@@ -229,11 +229,11 @@ def cmd_capture(args):
 
 
 # ---- trial-boot watch (read only; tested by tools/test_orcon_cli.py) ---------------------------------------------
-# The control image confirms its own trial boot (ota_signed.cpp tick): from 60 s after boot, at most once a second,
-# while not held (/api/ota hold), on the home network (/api/diag wifi.up) and receiving (rx.state 0), and only with a
-# usable owner key (a console note, once per boot, when it is not). At 300 s an unconfirmed image rolls back. The board
-# does not report the result of esp_ota_mark_app_valid_cancel_rollback, so a healthy image that stays unconfirmed is
-# "unknown" here, never a proven cause (Codex trial-watch r1).
+# Records what the board reports during one OTA trial boot, boot by boot, and draws no conclusion (Codex trial-watch
+# r1-r3: every inferred cause or outcome was a way to be wrong). The control image confirms its own trial boot
+# (ota_signed.cpp tick): from 60 s after boot, at most once a second, when not held (/api/ota hold), on the home network
+# (/api/diag wifi.up) and receiving (rx.state 0), and only with a usable owner key (a console note, once per boot, when
+# it is not); at 300 s an unconfirmed image rolls back. For the USB log, run tools/rxmon.py in a second window.
 CONFIRM_FROM_S, ROLLBACK_AT_S, MIN_EVERY_S, MIN_MINUTES, MAX_MINUTES = 60, 300, 2.0, 6.0, 120.0
 FINGERPRINT = re.compile(r'[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}')   # ownerkey::fingerprint: SHA-256 of the public key, 6 bytes
 LABEL = r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
@@ -241,9 +241,9 @@ TRIAL_HOST = re.compile(rf'({LABEL}(?:\.{LABEL})*)(?::([0-9]{{1,5}}))?', re.ASCI
 HEX_SECRET = re.compile(r'(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{64}|[0-9A-Fa-f]{32})(?![0-9A-Fa-f])')
 SESSION_NO = re.compile(r'\b(sessie|session|sid)(\W{1,3})[0-9]+', re.I)   # the RF read session number in console texts
 IPV4 = re.compile(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b')                    # e.g. "WiFi: weer verbonden ... (adres <IP>)"
-# The USB lines a log keeps: the board's own status lines. RF frame lines ([rx ...], [sync ...]: ids, payloads) are counted only.
-SERIAL_KEEP = ('[ota]', '[owner]', '[radio]', '[wifi]', '[reset]', '[FATAL]', '[rxstat]', 'Orcon 15RF emulator starting', 'Ready.', 'rst:', 'ets ')
-# Of each reply only these fields reach a log (allowlist): states and counters, no address, name, id or token.
+RF_FRAME = re.compile(r'#[0-9]+ -?[0-9]+ dBm ')   # a received frame in the console (rf_console.cpp): ids and payload, never kept
+NOTES = {'owner_key_failed': 'geen herstelsleutel', 'confirmed': 'nieuwe firmware bevestigd', 'not_confirmed': 'niet bevestigd binnen'}
+# Of each reply only these fields reach a log (allowlist), and only as booleans, numbers or short texts.
 KEEP = {'ota': ('fw', 'variant', 'running', 'running_state', 'boot', 'next', 'next_state', 'session', 'last_error', 'hold', 'release'),
         'diag': ('fw', 'variant', 'uptime_s', 'reset_reason', 'boots', 'previous_uptime_s', 'heap_free', 'heap_min', 'running', 'running_state',
                  'rx', 'wifi', 'coredump'),
@@ -252,7 +252,7 @@ KEEP_SUB = {'wifi': ('up', 'rssi', 'outages', 'retries', 'down_s', 'last_outage_
                      'restart_block', 'ap'),
             'setup': ('state', 'via_ap', 'physical', 'key'), 'auth': ('enabled', 'logged_in', 'password_set', 'login_wait_s'),
             'rx': ('state', 'frames', 'recoveries', 'lost', 'uart_overflows', 'queue_drops')}
-ROUTES = (('ota', '/api/ota'), ('diag', '/api/diag'), ('state', '/api/setup/state'))   # the preflight
+ROUTES = (('ota', '/api/ota'), ('diag', '/api/diag'), ('state', '/api/setup/state'))
 TRIAL_SLEEP = time.sleep
 
 
@@ -264,55 +264,87 @@ def redact(v):
     return IPV4.sub('<address>', SESSION_NO.sub(r'\1\2<redacted>', HEX_SECRET.sub('<redacted>', v))) if isinstance(v, str) else v
 
 
+def scalar(v):
+    return v if isinstance(v, (bool, int, float)) or (isinstance(v, str) and len(v) <= 80) else None
+
+
 def keep(route, j):
-    """Only the fields the watch needs from one reply (allowlist), redacted; None for no reply."""
+    """Only allowlisted fields of one reply, as booleans, numbers or short texts, redacted; None for no reply."""
     if not isinstance(j, dict): return None
-    out = {k: j[k] for k in KEEP[route] if k in j}
-    for k, allowed in KEEP_SUB.items():
-        if isinstance(out.get(k), dict): out[k] = {x: y for x, y in out[k].items() if x in allowed}
-    if 'coredump' in out: out['coredump'] = out['coredump'] is not None   # present or not; its contents stay on the board
+    out = {}
+    for k in KEEP[route]:
+        if k not in j: continue
+        v = j[k]
+        if k == 'coredump': out[k] = v is not None                           # present or not; its contents stay on the board
+        elif k in KEEP_SUB: out[k] = {x: scalar(y) for x, y in v.items() if x in KEEP_SUB[k]} if isinstance(v, dict) else None
+        else: out[k] = scalar(v)
     return redact(out)
 
 
-def trial_get(host, port):
-    """GET on a direct connection to the board: no proxy, no redirect, no header but Host (Codex trial-watch r1).
-    (status, JSON object or None); network and protocol errors raise."""
+def trial_get(host, port, deadline):
+    """GET on a direct connection to the board (no proxy, no redirect, no header but Host), within the watch's time:
+    each request gets the rest of it, at most 4 s. (status, JSON object) for a complete 200 reply of the firmware's fixed
+    length, else (status or reason, None)."""
     def get(path):
-        c = HTTPConnection(host, port, timeout=4)
+        left = deadline - time.monotonic()
+        if left <= 0: raise TimeoutError('the watch time is over')
+        c = HTTPConnection(host, port, timeout=min(4.0, left))
         try:
             c.putrequest('GET', path, skip_host=True, skip_accept_encoding=True)
             c.putheader('Host', host if port == 80 else f'{host}:{port}')
             c.endheaders()
             r = c.getresponse()
-            body, length = r.read(65537), r.getheader('Content-Length')
-            if r.status != 200 or len(body) > 65536 or length is None or not length.isdigit() or int(length) != len(body):
-                return r.status, None           # only a complete 200 reply is evidence (the board always sends a length)
+            if r.status != 200: return r.status, None                       # before the body: a slow body never hides it
+            length = r.getheader('Content-Length') or ''
+            if r.getheader('Transfer-Encoding') or not length.isdigit() or int(length) > 65536: return 'bad-framing', None
+            body = r.read(int(length))
+            if len(body) != int(length): return 'short-reply', None
             try: j = json.loads(body)
-            except ValueError: j = None
-            return r.status, j if isinstance(j, dict) else None
+            except ValueError: return 'bad-json', None
+            return (200, j) if isinstance(j, dict) else ('bad-json', None)
         finally:
             c.close()
     return get
 
 
 def one(get, path):
-    """(status, body); the error's name as status when the request failed."""
     try: return get(path)
     except (OSError, HTTPException) as e: return type(e).__name__, None
 
 
-def read_preflight(get):
-    return {name: one(get, path) for name, path in ROUTES}
+def boot_id(d):
+    """What identifies the boot a /api/diag reply describes (counter, slot, image), or None when a field is missing."""
+    ok = isinstance(d, dict) and isinstance(d.get('uptime_s'), int) and isinstance(d.get('boots'), int) and \
+        isinstance(d.get('running'), str) and isinstance(d.get('fw'), str)
+    return (d['boots'], d['running'], d['fw']) if ok else None
 
 
-def read_round(get, cursor):
-    """One round in a fixed order: /api/diag, the console from `cursor` (up to 4 pages of 16), /api/ota, /api/diag
-    again. The two diag readings bracket the rest: when both show one boot, the pages and the OTA reply are of it."""
+def same_boot(a, b):
+    """Two /api/diag replies of one boot: the same counter, slot and image, and an uptime that did not go back. (A power
+    cut resets the counter to 1: the slot or image still tells a trial boot apart. A restart of the same image with the
+    same counter that stays unseen for longer than its previous uptime cannot be told apart.)"""
+    return boot_id(a) is not None and boot_id(a) == boot_id(b) and b['uptime_s'] >= a['uptime_s']
+
+
+def read_bracket(get, middle):
+    """/api/diag, then the routes in `middle`, then /api/diag again: when both diag replies show one boot, so do the rest."""
+    r = {'diag1': one(get, '/api/diag')}
+    for name, path in middle: r[name] = one(get, path)
+    r['diag2'] = one(get, '/api/diag')
+    return r
+
+
+def read_round(get, w):
+    """/api/diag, the console from the boot's cursor (0 when that first reply already shows a new boot; up to 4 pages of
+    16), /api/ota, /api/diag."""
     r = {'diag1': one(get, '/api/diag'), 'pages': []}
+    d1 = r['diag1'][1]
+    cursor = 0 if w['last'] is not None and boot_id(d1) is not None and not same_boot(w['last'], d1) else w['cursor']
+    r['cursor'] = cursor
     for _ in range(4):
         st, page = one(get, f'/api/setup/console?after={cursor}')
         r['pages'].append((st, page))
-        if st != 200 or page is None or not page.get('more') or not isinstance(page.get('next'), int) or page['next'] < 1: break
+        if st != 200 or not page.get('more') or not isinstance(page.get('next'), int) or page['next'] < 1: break
         cursor = page['next'] - 1
     r['ota'], r['diag2'] = one(get, '/api/ota'), one(get, '/api/diag')
     return r
@@ -323,153 +355,114 @@ def preflight(ota, diag, state, key_proof=None):
     No home-network route shows the owner key: /api/setup/state says 'done' also for an unreadable key, its logged-in
     'key' is no proof either (b75fad3 checks length and prefix only), and the fingerprint and crypto_ok are served on the
     setup AP only (/api/provision/state). So GO needs the owner's attestation by hand (key_proof)."""
-    p, rx = [], (diag.get('rx') or {}).get('state')
+    p, rx = [], (diag.get('rx') or {}).get('state') if isinstance(diag.get('rx'), dict) else None
     if not FINGERPRINT.fullmatch(key_proof or ''):
         p.append("owner key not provable from the home network ('done' also covers an unreadable key; the fingerprint is "
                  "on the setup AP only): attest it on this board by hand (migration steps 1-5: a password recovery with the "
                  "key file in the PRG recovery mode, and the board's fingerprint equal to the file's 'Vingerafdruk'), then "
                  "--key-proven xxxx-xxxx-xxxx")
-    if not ota.get('next') or ota.get('next') == ota.get('running'): p.append(f"no other slot to install into (next {ota.get('next')})")
-    if not ota.get('running') or ota.get('running') != ota.get('boot'):
+    if ota.get('running') not in ('app0', 'app1') or ota.get('next') not in ('app0', 'app1') or ota.get('next') == ota.get('running'):
+        p.append(f"no other slot to install into (running {ota.get('running')}, next {ota.get('next')})")
+    if ota.get('running') != ota.get('boot'):
         p.append(f"running {ota.get('running')} != boot {ota.get('boot')}: the old updater would write the selected slot")
     if ota.get('running_state') != 'valid': p.append(f"running_state {ota.get('running_state')}: not a confirmed image")
-    owner = (state.get('setup') or {}).get('state')
+    if (ota.get('running'), ota.get('fw')) != (diag.get('running'), diag.get('fw')): p.append('/api/ota and /api/diag describe different images')
+    owner = (state.get('setup') or {}).get('state') if isinstance(state.get('setup'), dict) else None
     if owner != 'done':
         p.append(f"owner state {owner}: register the recovery key in the PRG recovery mode first (legacy = no key)")
-    if not (diag.get('wifi') or {}).get('up'): p.append('WiFi not joined')
+    if not ((diag.get('wifi') or {}).get('up') if isinstance(diag.get('wifi'), dict) else False): p.append('WiFi not joined')
     if rx != 0: p.append(f'RX state {rx}: not receiving')
     return p
-
-
-def same_boot(a, b):
-    """Two /api/diag readings of one boot: the same boot counter, slot and firmware, and an uptime that did not go back.
-    (A power cut resets the counter to 1; the slot and firmware still tell a trial boot apart. A restart of the same
-    image with the same counter, unseen for longer than its previous uptime, cannot be told apart.)"""
-    return (isinstance(a, dict) and isinstance(b, dict) and isinstance(a.get('uptime_s'), int) and isinstance(b.get('uptime_s'), int)
-            and (a.get('boots'), a.get('running'), a.get('fw')) == (b.get('boots'), b.get('running'), b.get('fw')) and b['uptime_s'] >= a['uptime_s'])
 
 
 def trial_view(diag, ota):
     """One reading: slot, state, uptime and health from /api/diag; hold and the other slot from /api/ota only when that
     reply is of the same image (otherwise unknown)."""
-    w, rx = diag.get('wifi') or {}, diag.get('rx') or {}
+    w = diag.get('wifi') if isinstance(diag.get('wifi'), dict) else {}
+    rx = diag.get('rx') if isinstance(diag.get('rx'), dict) else {}
     o = ota if isinstance(ota, dict) and (ota.get('running'), ota.get('fw')) == (diag.get('running'), diag.get('fw')) else {}
-    return {'fw': (diag.get('fw') or '')[:7], 'slot': diag.get('running'), 'state': diag.get('running_state'), 'up_s': diag['uptime_s'],
-            'boots': diag.get('boots'), 'hold': o.get('hold'), 'next_state': o.get('next_state'),
-            'wifi': w.get('up') if isinstance(w.get('up'), bool) else None, 'rssi': w.get('rssi'),
-            'rx': rx.get('state') if isinstance(rx.get('state'), int) else None}
+    return {'fw': diag['fw'][:7], 'slot': diag['running'], 'state': scalar(diag.get('running_state')), 'up_s': diag['uptime_s'],
+            'boots': diag['boots'], 'hold': o.get('hold') if isinstance(o.get('hold'), bool) else None,
+            'next_state': scalar(o.get('next_state')), 'wifi': w.get('up') if isinstance(w.get('up'), bool) else None,
+            'rssi': w.get('rssi') if isinstance(w.get('rssi'), int) else None, 'rx': rx.get('state') if isinstance(rx.get('state'), int) else None}
 
 
 def new_watch():
-    return {'epoch': 0, 'last': None, 'cursor': 0, 'rounds': [], 'events': [], 'gaps': [], 'incomplete': set()}
+    return {'epoch': 0, 'last': None, 'cursor': 0, 'rounds': [], 'events': [], 'gaps': [], 'incomplete': set(), 'unread': set()}
 
 
 def take_page(w, con, epoch, now):
-    """One console page into boot `epoch`; a page that lost or skipped events marks that boot's console incomplete."""
+    """One console page into boot `epoch`. RF frame texts (ids, payloads) are kept as a marker only. A page that lost or
+    skipped events marks that boot's console incomplete; one that says more is waiting marks it unread until read."""
     ev = [e for e in con.get('ev') or [] if isinstance(e, dict)]
     if con.get('lost') or (ev and ev[0].get('s') != w['cursor'] + 1): w['incomplete'].add(epoch)
-    for e in ev: w['events'].append({'host_t': now, 'epoch': epoch, 's': e.get('s'), 't': e.get('t'), 'k': e.get('k'), 'm': redact(str(e.get('m', '')))})
+    for e in ev:
+        m = str(e.get('m', ''))
+        w['events'].append({'host_t': now, 'epoch': epoch, 's': scalar(e.get('s')), 't': scalar(e.get('t')), 'k': scalar(e.get('k')),
+                            'm': '<rf frame>' if RF_FRAME.match(m) else redact(m[:200])})
     if isinstance(con.get('next'), int) and con['next'] > 0: w['cursor'] = con['next'] - 1
+    (w['unread'].add if con.get('more') else w['unread'].discard)(epoch)
 
 
 def fold(w, r, now):
-    """One round into the watch. A new boot: another boot counter, slot or firmware than the last reading, or its uptime
-    went back. The pages and the OTA reply count only when the round's two /api/diag readings show one boot, and pages
-    only when that boot is the one the cursor belongs to. Returns the reading, or None."""
+    """One round into the watch. A new boot: another counter, slot or image than the last reading, or an uptime that
+    went back. Pages count only when both /api/diag replies show one boot, each page's own clock lies between them, and
+    the cursor was this boot's. A restart inside the round keeps the first reading for the old boot and nothing else."""
     for name in ('diag1', 'ota', 'diag2'):
-        if r[name][0] != 200 or r[name][1] is None: w['gaps'].append({'t': now, 'epoch': w['epoch'], 'route': name, 'status': r[name][0]})
+        if r[name][0] != 200: w['gaps'].append({'t': now, 'epoch': w['epoch'], 'route': name, 'status': r[name][0]})
     d1, d2 = r['diag1'][1], r['diag2'][1]
-    first = d1 if same_boot(d1, d2) else d2 if isinstance(d2, dict) and isinstance(d2.get('uptime_s'), int) else None
-    if first is None: w['incomplete'].add(w['epoch']); return None
-    restarted = w['last'] is not None and not same_boot(w['last'], first)
-    if restarted: w['incomplete'].add(w['epoch'])   # its last events may not have been read
-    w['epoch'] += restarted
+    if boot_id(d2) is None: w['incomplete'].add(w['epoch']); return None
+    inside = not same_boot(d1, d2)
+    if w['last'] is not None and not same_boot(w['last'], d2):
+        old = w['epoch']
+        if same_boot(w['last'], d1): v = trial_view(d1, None); v['epoch'] = old; w['rounds'].append(v)   # the old boot's last reading
+        if inside or old in w['unread']: w['incomplete'].add(old)   # its pages of this round, or a page it still had, went unread
+        w['unread'].discard(old); w['epoch'] += 1
     w['last'] = d2
-    if not same_boot(d1, d2):                       # a restart inside the round: none of it is used, the new boot is read from 0
-        w['gaps'].append({'t': now, 'epoch': w['epoch'], 'route': 'round', 'status': 'restart-inside'}); w['cursor'] = 0
-        return None
-    if restarted: w['cursor'] = 0                   # pages read with the old boot's cursor may skip the new boot's first events
+    if inside or r['cursor'] != w['cursor'] and r['cursor'] != 0:   # a restart inside the round, or a cursor of another boot
+        w['gaps'].append({'t': now, 'epoch': w['epoch'], 'route': 'console', 'status': 'restart-inside' if inside else 'other-cursor'})
+        w['cursor'] = 0
     else:
+        if r['cursor'] == 0: w['cursor'] = 0
+        lo, hi = d1['uptime_s'] * 1000 - 1500, d2['uptime_s'] * 1000 + 1500
         for st, page in r['pages']:
-            if st != 200 or page is None:
-                w['incomplete'].add(w['epoch']); w['gaps'].append({'t': now, 'epoch': w['epoch'], 'route': 'console', 'status': st}); break
+            if st != 200 or not isinstance(page.get('now'), int) or not lo <= page['now'] <= hi:
+                w['incomplete'].add(w['epoch']); w['gaps'].append({'t': now, 'epoch': w['epoch'], 'route': 'console', 'status': st if st != 200 else 'unowned-page'}); break
             take_page(w, page, w['epoch'], now)
-    v = trial_view(d2, r['ota'][1]); v['epoch'] = w['epoch']
+    v = trial_view(d2, r['ota'][1] if not inside else None); v['epoch'] = w['epoch']
     w['rounds'].append(v)
     return v
 
 
-def trial_outcome(start, rounds):
-    """'confirmed': the target slot runs, valid. 'rolled back': after the trial boot the start slot runs again, valid.
-    None while open, and when the trial boot itself was never read: slots and restarts alone cannot tell a rollback from
-    an install that never started (the target may be invalid from an earlier attempt)."""
-    seen = next((r['epoch'] for r in rounds if r['slot'] == start.get('target')), None)
-    for r in rounds if seen is not None else []:
-        if r['epoch'] < seen: continue
-        if r['slot'] == start['target'] and r['state'] == 'valid': return 'confirmed'
-        if r['slot'] == start.get('slot') and r['state'] == 'valid' and r['epoch'] > seen: return 'rolled back'
+def trial_end(start, rounds):
+    """Only to stop early, and only on what the board itself showed: the target slot first read as pending-verify, then
+    read as valid ('target valid after its trial'), or a later boot running the start slot again ('back on the start
+    slot'). A target seen valid without a pending-verify reading before it is no end: that boot was no trial."""
+    trial = next((r for r in rounds if r['slot'] == start['target'] and r['state'] == 'pending-verify'), None)
+    if trial is None: return None
+    for r in rounds[rounds.index(trial):]:
+        if r['epoch'] == trial['epoch'] and r['slot'] == start['target'] and r['state'] == 'valid': return 'target valid after its trial'
+        if r['epoch'] > trial['epoch'] and r['slot'] == start['slot'] and r['state'] == 'valid': return 'back on the start slot'
     return None
 
 
-def blockers(r):
-    """The confirmation inputs that were false in one reading, in the firmware's order; None when one was not read."""
-    if r['hold'] is None or r['wifi'] is None or r['rx'] is None: return None
-    return [k for k, bad in (('hold', r['hold']), ('wifi', not r['wifi']), ('rx', r['rx'] != 0)) if bad]
-
-
-def trial_verdict(start, w):
-    """(code, why) from the trial boot's own readings and console events only: an earlier boot never counts."""
-    if trial_outcome(start, w['rounds']) == 'confirmed': return 'confirmed', 'the new image confirmed itself'
-    seen = next((r['epoch'] for r in w['rounds'] if r['slot'] == start.get('target')), None)
-    if seen is None: return 'no-data', f"the trial boot was never read ({w['epoch']} restarts seen): the outcome is open"
-    notes = [e['m'] for e in w['events'] if e['epoch'] == seen]
-    if any('nieuwe firmware bevestigd' in n for n in notes): return 'confirmed', 'the trial boot noted its own confirmation'
-    if any('geen herstelsleutel' in n for n in notes):
-        return 'owner-key', ('the owner-key check failed at least once (the firmware notes it once per boot) and the image was not '
-                             'confirmed: most likely no usable owner key on this board')
-    due = [r for r in w['rounds'] if r['epoch'] == seen and r['state'] == 'pending-verify' and CONFIRM_FROM_S <= r['up_s'] < ROLLBACK_AT_S]
-    known = [(r, b) for r, b in ((r, blockers(r)) for r in due) if b is not None]
-    if not known: return 'no-data', f'no complete reading of the trial boot between {CONFIRM_FROM_S} and {ROLLBACK_AT_S} s'
-    due, why = [r for r, _ in known], [b for _, b in known]
-    if any('hold' in b for b in why): return 'hold', 'the trial boot was held (a rollback test)'
-    if all(why):
-        n = {k: sum(k in b for b in why) for k in ('wifi', 'rx') if any(k in b for b in why)}
-        return '+'.join(n), f'not healthy in any of {len(due)} readings after {CONFIRM_FROM_S} s: ' + ', '.join(f'{k} {c}x' for k, c in n.items())
-    ok_at = [r['up_s'] for r, b in zip(due, why) if not b]
-    lost = seen in w['incomplete'] or any(g['epoch'] == seen and g['route'] == 'console' for g in w['gaps'])
-    return 'unknown', (f'healthy in {len(ok_at)} of {len(due)} readings (first at {ok_at[0]} s) and no owner-key note'
-                       + (', but the console of that boot is incomplete' if lost else '')
-                       + ': the firmware does not say why it stayed unconfirmed (the ESP-IDF call, or a condition that changed between readings)')
-
-
-def serial_close(port):
-    """RTS first, then DTR, then close: EN is pulled low only while RTS is held and DTR is not (rxmon.py), and a reset
-    in a trial boot is a rollback."""
-    try:
-        port.rts = False
-        port.dtr = False
-    finally:
-        port.close()
-
-
-def serial_tee(port, path, stop, seen):
-    """The USB log until `stop`: the board's own status lines only (SERIAL_KEEP), redacted, with UTC times; RF frame
-    lines are counted, not kept. It never closes the port: the caller owns it (serial_close)."""
-    try:
-        with path.open('a') as f:
-            os.chmod(path, 0o600)
-            buf = b''
-            while not stop.is_set():
-                buf += port.read(512)
-                while b'\n' in buf:
-                    raw, buf = buf.split(b'\n', 1)
-                    line = raw.decode('utf-8', 'replace').rstrip('\r')
-                    if not line.startswith(SERIAL_KEEP): seen['dropped'] += 1; continue
-                    line = redact(line)
-                    f.write(f'{datetime.now(timezone.utc).isoformat()} {line}\n'); f.flush()
-                    if line.startswith(('[ota]', '[owner]', '[radio]', '[wifi]', '[FATAL]')): print('  usb:', line)
-    except Exception as e:   # a lost port ends the USB log, never the watch
-        seen['error'] = type(e).__name__
+def summary(w):
+    """The facts per boot: slot, image, states and uptimes read, the confirmation inputs in the 60-300 s window (counted
+    per reading; a reading with an input unknown is counted apart), the console notes, and whether its console was read
+    without a gap. (The last events before a restart can always be missed: nobody reads a board while it restarts.)"""
+    out = []
+    for e in sorted({r['epoch'] for r in w['rounds']}):
+        rs, ev = [r for r in w['rounds'] if r['epoch'] == e], [x for x in w['events'] if x['epoch'] == e]
+        win = [r for r in rs if r['state'] == 'pending-verify' and CONFIRM_FROM_S <= r['up_s'] < ROLLBACK_AT_S]
+        out.append({'boot': e, 'slot': rs[0]['slot'], 'fw': rs[0]['fw'], 'states': sorted({str(r['state']) for r in rs}),
+                    'uptime_s': [rs[0]['up_s'], rs[-1]['up_s']], 'readings': len(rs),
+                    'window_60_300_s': {'readings': len(win), 'unknown_input': sum(None in (r['hold'], r['wifi'], r['rx']) for r in win),
+                                        'held': sum(r['hold'] is True for r in win), 'wifi_down': sum(r['wifi'] is False for r in win),
+                                        'rx_not_receiving': sum(r['rx'] is not None and r['rx'] != 0 for r in win),
+                                        'healthy': sum(r['hold'] is False and r['wifi'] is True and r['rx'] == 0 for r in win)},
+                    'notes': {k: any(t in x['m'] for x in ev) for k, t in NOTES.items()},
+                    'console_complete': e not in w['incomplete'] and e not in w['unread']})
+    return out
 
 
 def cmd_trial_watch(args):
@@ -478,34 +471,27 @@ def cmd_trial_watch(args):
     hp = TRIAL_HOST.fullmatch(host(args) or '')
     port = int(hp.group(2) or 80) if hp else 0
     if not 0 < port < 65536: raise SystemExit('trial-watch needs a host name or IPv4 address, optionally with :port, and nothing else')
-    get = trial_get(hp.group(1), port)
-    pre = read_preflight(get)
-    if any(st != 200 or body is None for st, body in pre.values()):
-        raise SystemExit('board not readable (try again): ' + ', '.join(f'{k} {st}' for k, (st, _) in pre.items()))
-    ota, diag, state = (pre[k][1] for k in ('ota', 'diag', 'state'))
+    pre = read_bracket(trial_get(hp.group(1), port, time.monotonic() + 30), ROUTES)
+    if any(st != 200 for st, _ in pre.values()) or not same_boot(pre['diag1'][1], pre['diag2'][1]):
+        raise SystemExit('board not readable as one boot (try again): ' + ', '.join(f'{k} {st}' for k, (st, _) in pre.items()))
+    ota, diag, state = pre['ota'][1], pre['diag2'][1], pre['state'][1]
     problems = preflight(ota, diag, state, args.key_proven)
     proof = ({'fingerprint': args.key_proven, 'by': 'owner, by hand (migration steps 1-5)', 'utc': datetime.now(timezone.utc).isoformat()}
              if FINGERPRINT.fullmatch(args.key_proven or '') else {'rejected': 'not a fingerprint, not stored'} if args.key_proven else None)
     d = private_dir(REPO / 'captures' / 'trial' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ'))
-    write_private(d / 'preflight.json', json.dumps({**{k: keep(k, pre[k][1]) for k, _ in ROUTES}, 'key_proof': proof, 'problems': problems}, indent=1))
+    write_private(d / 'preflight.json', json.dumps({'ota': keep('ota', ota), 'diag': keep('diag', diag), 'state': keep('state', state),
+                                                    'key_proof': proof, 'problems': problems}, indent=1))
     for p in problems: print('PREFLIGHT NO-GO:', p)
     if problems and not args.anyway: raise SystemExit(f'do not install now (saved {d}); --anyway watches all the same')
-    start, w, stop, serial = {'slot': ota.get('running'), 'target': ota.get('next')}, new_watch(), threading.Event(), {'dropped': 0, 'error': None}
+    deadline = time.monotonic() + args.minutes * 60
+    get, start, w = trial_get(hp.group(1), port, deadline), {'slot': ota['running'], 'target': ota['next']}, new_watch()
+    w['last'], told, end, done_ev, done_gap = diag, False, None, 0, 0
     out = {n: (d / f'{n}.jsonl').open('a') for n in ('polls', 'console', 'gaps')}
     for f in out.values(): os.chmod(f.name, 0o600)
-    usb = tee = None
     try:
-        if args.serial:
-            sys.path.insert(0, str(Path(__file__).resolve().parent))
-            from rxmon import open_serial
-            try: usb = open_serial(args.serial)   # now, before the install: DTR and RTS held, so opening never resets the board
-            except ImportError: raise SystemExit('the USB log needs pyserial: run with .flashtools/venv/bin/python')
-            tee = threading.Thread(target=serial_tee, args=(usb, d / 'serial.log', stop, serial), daemon=True)
-            tee.start()
-        deadline, told, done_ev, done_gap = time.monotonic() + args.minutes * 60, False, 0, 0
         while time.monotonic() < deadline:
             now = datetime.now(timezone.utc).isoformat()
-            r = read_round(get, w['cursor'])
+            r = read_round(get, w)
             v = fold(w, r, now)
             for e in w['events'][done_ev:]: out['console'].write(json.dumps(e) + '\n'); print('  console:', e['k'], e['m'])
             for g in w['gaps'][done_gap:]: out['gaps'].write(json.dumps(g) + '\n')
@@ -514,28 +500,27 @@ def cmd_trial_watch(args):
                 out['polls'].write(json.dumps({'host_t': now, 'view': v, 'ota': keep('ota', r['ota'][1]), 'diag': keep('diag', r['diag2'][1])}) + '\n')
                 print(f"{now[11:19]} boot {v['epoch']} {v['slot']} {v['fw']} {v['state']} up {v['up_s']} s | hold {v['hold']} | "
                       f"wifi {v['wifi']} ({v['rssi']} dBm) | rx {v['rx']}")
-                if not told:
-                    told = True
-                    if not same_boot(diag, r['diag1'][1]):   # the board restarted or changed since the preflight: no GO on old facts
-                        print('the board changed since the preflight: no GO, run trial-watch again'); break
-                    if not problems: print(f'preflight GO (owner key attested by hand: {args.key_proven}); recording now: install in the web page (Systeem > Firmware)')
             else: print(now[11:19], 'no consistent reading this round (a restart, or the board is away)')
             for f in out.values(): f.flush()
-            if trial_outcome(start, w['rounds']): break
+            if not told and v is not None:   # GO only on fresh facts: the first round is still the preflight's boot and slots
+                told = True
+                o = r['ota'][1] if isinstance(r['ota'][1], dict) else {}
+                if v['epoch'] or (o.get('running'), o.get('boot'), o.get('next')) != (ota['running'], ota['boot'], ota['next']) or v['rx'] != 0 or v['wifi'] is not True:
+                    print('the board changed since the preflight: no GO, run trial-watch again'); break
+                if not problems: print(f'preflight GO (owner key attested by hand: {args.key_proven}); recording now: install in the web page (Systeem > Firmware)')
+            end = trial_end(start, w['rounds'])
+            if end: break
             TRIAL_SLEEP(max(0.0, min(args.every if v is not None else max(args.every, 5.0), deadline - time.monotonic())))   # back off while away
     except KeyboardInterrupt:
         pass
     finally:
-        stop.set()
-        try:
-            if tee is not None and tee.ident is not None: tee.join(5)
-        finally:
-            if usb is not None: serial_close(usb)   # the one owner of the port closes it, on every path
-            for f in out.values(): f.close()
-            code, why = trial_verdict(start, w)
-            write_private(d / 'verdict.json', json.dumps({'verdict': code, 'why': why, 'end': trial_outcome(start, w['rounds']), 'restarts_seen': w['epoch'],
-                                                          'incomplete_console_boots': sorted(w['incomplete']), 'usb': serial if args.serial else None}, indent=1))
-            print(f'VERDICT {code}: {why}\nsaved: {d}')
+        for f in out.values(): f.close()
+        facts = summary(w)
+        write_private(d / 'summary.json', json.dumps({'start': start, 'end': end, 'restarts_seen': w['epoch'], 'boots': facts}, indent=1))
+        print(f"END: {end or 'not reached'}")
+        for b in facts: print(f"  boot {b['boot']}: {b['slot']} {b['fw']} {'/'.join(b['states'])} up {b['uptime_s'][0]}-{b['uptime_s'][1]} s, "
+                              f"window {b['window_60_300_s']}, notes {[k for k, x in b['notes'].items() if x]}, console {'complete' if b['console_complete'] else 'INCOMPLETE'}")
+        print(f'saved: {d}')
 
 
 def cmd_status(args):
@@ -719,7 +704,7 @@ def main(argv=None):
     rl.add_argument('--tx-ack', dest='tx_ack', default=''); rl.add_argument('--out')
     sub.add_parser('backup-check').add_argument('--nvs', required=True)
     tw = sub.add_parser('trial-watch'); tw.add_argument('--minutes', type=float, default=12)
-    tw.add_argument('--every', type=float, default=3); tw.add_argument('--serial'); tw.add_argument('--anyway', action='store_true')
+    tw.add_argument('--every', type=float, default=3); tw.add_argument('--anyway', action='store_true')
     tw.add_argument('--key-proven', metavar='FINGERPRINT')
     a = p.parse_args(argv)
     {'status': cmd_status, 'logs': cmd_logs, 'capture': cmd_capture, 'ota-install': cmd_ota_install, 'keygen': cmd_keygen,
