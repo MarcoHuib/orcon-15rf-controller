@@ -243,6 +243,14 @@ try:
     refused(rc.verify_package, D, harness, True, want='factory image')                   # official: the factory image is required
     assert rc.verify_package(D, harness, release='v1.2.3') == bundle
     for other in ('v1.2.4', '1.2.3', 'v1.2.3 ', 'v1.02.3', 'v1.2.2'): refused(rc.verify_package, D, harness, False, None, other, want='not the release')
+    for name, extra in (('two-stamps', b'ORCON-RELEASE 1002002;'), ('no-commit', None)):   # a build changed after its check, with a fresh record
+        dd = TMP / 'tamper' / name; shutil.copytree(D, dd)
+        fw = (dd / 'firmware.bin').read_bytes()
+        fw = fw + extra if extra else fw.replace(COMMIT.encode(), b'0' * 40)
+        (dd / 'firmware.bin').write_bytes(fw)
+        i = json.loads((dd / 'BUILD_INFO.json').read_text()); i['firmware'] = {'size': len(fw), 'sha256': rc.sha256(fw)}
+        (dd / 'BUILD_INFO.json').write_text(json.dumps(i)); rc.write_sums(dd)
+        refused(rc.verify_package, dd, harness, False, None, 'v1.2.3', want='release stamp or commit stamp')
     ok('verify-package: the package carries exactly the version prepare chose (tag = build = manifest = bundle = update index)')
     ok('package: bundle + update index + SHA256SUMS verify (signature; device policy; a board on 1.2.3 sees "up to date"; a newer one refuses)')
     idx = json.loads((D / 'orcon-update.json').read_text())

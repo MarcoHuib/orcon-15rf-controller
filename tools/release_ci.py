@@ -343,8 +343,13 @@ def verify_package(dist, harness_bin, official=False, notes=None, release=None):
     the bundle and factory names and the update index checked below, must carry exactly that version."""
     dist = Path(dist)
     info = load_info(dist)
-    if release is not None and (release != f"v{info['name']}" or semver_number(release) != info['version']):
-        fail(f"the package is v{info['name']}, not the release {release} that prepare chose")
+    if release is not None:
+        if release != f"v{info['name']}" or semver_number(release) != info['version']:
+            fail(f"the package is v{info['name']}, not the release {release} that prepare chose")
+        # The image itself, as published, not only its build record (Codex auto-version r5: a build changed after its check).
+        fw = (dist / 'firmware.bin').read_bytes()
+        if set(re.findall(rb'ORCON-RELEASE (\d+);', fw)) != {str(info['version']).encode()} or info['commit'].encode() not in fw:
+            fail(f"the image itself is not release {release} of commit {info['commit'][:7]} (release stamp or commit stamp)")
     check_esp_image((dist / 'firmware.bin').read_bytes())
     bundles = sorted(dist.glob('*.orconfw'))
     if len(bundles) != 1: fail('exactly one .orconfw expected')
