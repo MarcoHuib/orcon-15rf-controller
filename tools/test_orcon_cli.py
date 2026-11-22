@@ -204,8 +204,8 @@ with tempfile.TemporaryDirectory() as d:
 # Trial-boot watch: preflight, transport, boots and console pages, the facts per boot, no secrets in a log
 import http.client, http.server, io, threading
 from contextlib import redirect_stdout
-OK_OTA = {'fw': 'b' * 40, 'running': 'app1', 'boot': 'app1', 'next': 'app0', 'running_state': 'valid'}
-OK_DIAG = {'fw': 'b' * 40, 'running': 'app1', 'wifi': {'up': True, 'rssi': -70}, 'rx': {'state': 0}}
+OK_OTA = {'fw': 'b' * 40, 'running': 'app1', 'boot': 'app1', 'next': 'app0', 'running_state': 'valid', 'session': 'idle'}
+OK_DIAG = {'fw': 'b' * 40, 'running': 'app1', 'running_state': 'valid', 'wifi': {'up': True, 'rssi': -70}, 'rx': {'state': 0}}
 DONE, FP = {'setup': {'state': 'done'}}, '1a2b-3c4d-5e6f'
 check(orcon.preflight(OK_OTA, OK_DIAG, DONE, FP) == [], 'trial watch: preflight GO on a confirmed image with an owner key attested by hand')
 pf = orcon.preflight(OK_OTA, OK_DIAG, DONE)
@@ -217,7 +217,9 @@ check(len(orcon.preflight({**OK_OTA, 'boot': 'app0'}, OK_DIAG, DONE, FP)) == 1, 
 check(all(len(orcon.preflight({**OK_OTA, 'next': n}, OK_DIAG, DONE, FP)) == 1 for n in (None, '?', 'app1')), 'trial watch: no real, distinct target slot is NO-GO')
 check(len(orcon.preflight(OK_OTA, {**OK_DIAG, 'fw': 'e' * 40}, DONE, FP)) == 1, 'trial watch: /api/ota and /api/diag of different images are NO-GO')
 check(len(orcon.preflight(OK_OTA, {**OK_DIAG, 'wifi': {'up': False}, 'rx': {'state': 1}}, DONE, FP)) == 2, 'trial watch: WiFi down and RX recovering are NO-GO')
-check(len(orcon.preflight({}, {'wifi': [], 'rx': 'x'}, {'setup': []})) == 6, 'trial watch: an unreadable or ill-typed board is NO-GO, not a crash')
+check(len(orcon.preflight({}, {'wifi': [], 'rx': 'x'}, {'setup': []})) == 7, 'trial watch: an unreadable or ill-typed board is NO-GO, not a crash')
+check(len(orcon.preflight({**OK_OTA, 'session': 'download'}, OK_DIAG, DONE, FP)) == 1 and len(orcon.preflight(OK_OTA, {**OK_DIAG, 'rx': {'state': False}}, DONE, FP)) == 1,
+      'trial watch: an active OTA writer, or RX state False instead of 0, is NO-GO')
 check(orcon.keep('diag', {'fw': 'c' * 40, 'wifi': {'up': True, 'ip': '192.0.2.7'}, 'rx': ['x'], 'coredump': {'pc': 1}, 'reset_reason': 'x' * 300, 'other': 1})
       == {'fw': 'c' * 40, 'wifi': {'up': True}, 'rx': None, 'coredump': True, 'reset_reason': None}, 'trial watch: a log keeps only allowlisted fields, typed and short')
 check(orcon.keep('state', {'token': 'a' * 32, 'wifi': {'ap': False, 'ssid': 'Thuisnet'}, 'setup': {'state': 'done'}}) == {'wifi': {'ap': False}, 'setup': {'state': 'done'}},
@@ -262,14 +264,15 @@ def dg(slot, state, up, boots, fw, wifi=True, rx=0):
     return {'fw': fw * 40, 'running': slot, 'running_state': state, 'uptime_s': up, 'boots': boots, 'wifi': {'up': wifi, 'rssi': -80, 'ip': '192.0.2.7'}, 'rx': {'state': rx}}
 def st(diag, ring=(), per=16, nxt='app0', now=None, **ota):
     o = {'fw': diag['fw'], 'running': diag['running'], 'boot': diag['running'], 'next': nxt if diag['running'] != nxt else 'app1',
-         'running_state': diag['running_state'], 'next_state': 'invalid', 'hold': False, **ota}
+         'running_state': diag['running_state'], 'next_state': 'invalid', 'hold': False, 'session': 'idle', **ota}
     return {'diag': diag, 'ota': o, 'ring': list(ring), 'per': per, 'now': now}
 class FakeBoard:
-    def __init__(self, states, switch_at=()): self.states, self.i, self.n, self.at, self.calls = states, 0, 0, set(switch_at), []
+    def __init__(self, states, switch_at=(), fail_at=()): self.states, self.i, self.n, self.at, self.fail, self.calls = states, 0, 0, set(switch_at), set(fail_at), []
     def get(self, path):
         self.n += 1
         if self.n in self.at: self.i = min(self.i + 1, len(self.states) - 1)
         self.calls.append(path); s = self.states[self.i]
+        if self.n in self.fail: return 503, None
         if path == '/api/diag': return 200, s['diag']
         if path == '/api/ota': return 200, s['ota']
         if path == '/api/setup/state': return 200, {**DONE, 'token': 'f' * 32, 'wifi': {'ap': False, 'ssid': 'Thuisnet'}}
@@ -291,11 +294,19 @@ check(w['epoch'] == 2 and [x['boot'] for x in f] == [0, 1, 2] and orcon.trial_en
       'trial watch: three boots read through the actual round path; the end is what the board showed (back on the start slot)')
 check(f[0]['notes']['confirmed'] and not f[1]['notes']['confirmed'] and f[1]['notes']['owner_key_failed'] and f[1]['console_complete'],
       'trial watch: notes stay with their boot (the old boot\'s "bevestigd", the trial boot\'s key note), over several pages, complete')
-check(f[1]['window_60_300_s'] == {'readings': 1, 'unknown_input': 0, 'held': 0, 'wifi_down': 0, 'rx_not_receiving': 0, 'healthy': 1}, 'trial watch: the 60-300 s inputs counted per reading')
+check(f[1]['window_60_300_s'] == {'readings': 2, 'unknown_input': 1, 'held': 0, 'wifi_down': 0, 'rx_not_receiving': 0, 'healthy': 1},
+      'trial watch: the 60-300 s inputs counted per reading (hold only from the bracketed /api/ota, so the first reading is unknown)')
 b = FakeBoard([st(T70, ['opgestart: app0']), st(BACK, ['opgestart: app1, reden software'])], switch_at=(6,))   # a restart between the console and /api/ota
 w = rounds(b, 2)
-check(w['epoch'] == 1 and [r['epoch'] for r in w['rounds']] == [0, 0, 1] and 0 in w['incomplete'] and any(g['status'] == 'restart-inside' for g in w['gaps']),
-      'trial watch: a restart inside a round keeps its first reading for the old boot and uses none of its pages')
+check(w['epoch'] == 1 and [r['epoch'] for r in w['rounds']] == [0, 0, 0, 1] and len(w['events']) == 1 and any(g['status'] == 'unbracketed' for g in w['gaps']),
+      'trial watch: a restart inside a round keeps both boots\' readings and uses none of its pages')
+P299 = dg('app0', 'pending-verify', 299, 4, 'e')
+w = rounds(FakeBoard([st(OLD), st(P299, [KEY]), st(BACK)], switch_at=(5, 8)), 2)
+check([(r['slot'], r['epoch']) for r in w['rounds']] == [('app1', 0), ('app1', 0), ('app0', 1), ('app1', 2)] and orcon.trial_end(START, w['rounds']) == 'back on the start slot',
+      'trial watch: a trial seen only in a round\'s first /api/diag reply is kept as its own boot')
+w = rounds(FakeBoard([st(T70, ['a', 'b']), st(T70, ['a', 'b', 'c'])], switch_at=(5,), fail_at=(5,)), 3)
+check([e['s'] for e in w['events']] == [1, 2, 3] and w['epoch'] == 0, 'trial watch: a missed /api/diag on an unchanged boot keeps the cursor (no event twice)')
+check(orcon.redact('druk 29:****56 in') == 'druk <id> in', 'trial watch: masked device ids in command and session notes are redacted too')
 b = FakeBoard([st(dg('app1', 'valid', 62, 1, 'b'), ['nieuwe firmware bevestigd (gezond na 61 s)']), st(dg('app0', 'pending-verify', 70, 1, 'e'), [KEY])], switch_at=(5,))
 w = rounds(b, 2)
 check(w['epoch'] == 1 and orcon.summary(w)[1]['notes'] == {'owner_key_failed': True, 'confirmed': False, 'not_confirmed': False},
@@ -309,10 +320,10 @@ check(orcon.trial_end(START, w['rounds']) is None, 'trial watch: the target seen
 w = rounds(FakeBoard([st(dg('app0', 'pending-verify', 61, 4, 'e')), st(dg('app0', 'valid', 62, 4, 'e'))], switch_at=(5,)), 2)
 check(orcon.trial_end(START, w['rounds']) == 'target valid after its trial', 'trial watch: pending-verify, then valid, in the same boot: the end the board showed')
 w = rounds(FakeBoard([st(dg('app0', 'pending-verify', 100, 4, 'e', wifi=False), hold=True)]), 1)
-check(orcon.summary(w)[0]['window_60_300_s'] == {'readings': 1, 'unknown_input': 0, 'held': 1, 'wifi_down': 1, 'rx_not_receiving': 0, 'healthy': 0},
+check(orcon.summary(w)[0]['window_60_300_s'] == {'readings': 2, 'unknown_input': 1, 'held': 1, 'wifi_down': 2, 'rx_not_receiving': 0, 'healthy': 0},
       'trial watch: a held and offline reading is counted as such, nothing is concluded')
 w = rounds(FakeBoard([st(dg('app0', 'pending-verify', 100, 4, 'e', rx=None))]), 1)
-check(orcon.summary(w)[0]['window_60_300_s']['unknown_input'] == 1, 'trial watch: a missing input is counted as unknown, never as a cause')
+check(orcon.summary(w)[0]['window_60_300_s']['unknown_input'] == 2, 'trial watch: a missing input is counted as unknown, never as a cause')
 check(orcon.take_page(orcon.new_watch(), {'next': 2, 'ev': [{'s': 1, 'm': '#12 -80 dBm I 22F1 29:****56>--:------ pl=000304'}]}, 0, 't') is None, 'trial watch: take_page returns nothing')
 w = orcon.new_watch(); orcon.take_page(w, {'next': 2, 'ev': [{'s': 1, 'm': '#12 -80 dBm I 1FC9 29:****56>32:****21 pl=0022F1123456'}]}, 0, 't')
 check(w['events'][0]['m'] == '<rf frame>', 'trial watch: an RF frame in the console (ids, payload) is kept as a marker only')
@@ -346,7 +357,9 @@ with tempfile.TemporaryDirectory() as d:
         check(mixed, 'trial watch: a preflight whose replies span a restart is refused')
         txt, _ = run(FakeBoard([st(OLD), st(T20)], switch_at=(6,)))
         check('changed since the preflight' in txt and 'preflight GO' not in txt, 'trial watch: no GO when the board restarted after the preflight')
-        b = FakeBoard(FULL, switch_at=(6, 10, 14, 18)); txt, run_dir = run(b)
+        txt, _ = run(FakeBoard([st(OLD), st(OLD, session='download')], switch_at=(10,)))
+        check('writer is not idle' in txt and 'preflight GO' not in txt, 'trial watch: no GO when the fresh preflight right before it sees a download')
+        b = FakeBoard(FULL, switch_at=(6, 15, 19, 23)); txt, run_dir = run(b)
         check('preflight GO' in txt and 'END: back on the start slot' in txt, 'trial watch: GO on fresh facts, then recorded to the end the board showed')
     finally: orcon.trial_get, orcon.REPO, orcon.TRIAL_SLEEP = real
     s = json.loads((run_dir / 'summary.json').read_text())

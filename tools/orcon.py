@@ -242,6 +242,7 @@ HEX_SECRET = re.compile(r'(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{64}|[0-9A-Fa-f]{32})(?!
 SESSION_NO = re.compile(r'\b(sessie|session|sid)(\W{1,3})[0-9]+', re.I)   # the RF read session number in console texts
 IPV4 = re.compile(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b')                    # e.g. "WiFi: weer verbonden ... (adres <IP>)"
 RF_FRAME = re.compile(r'#[0-9]+ -?[0-9]+ dBm ')   # a received frame in the console (rf_console.cpp): ids and payload, never kept
+MASKED_ID = re.compile(r'\b[0-9]{2}:\*{4}[0-9]{2}\b')   # rfcon::maskId: device class and last serial digits, in command and session notes
 NOTES = {'owner_key_failed': 'geen herstelsleutel', 'confirmed': 'nieuwe firmware bevestigd', 'not_confirmed': 'niet bevestigd binnen'}
 # Of each reply only these fields reach a log (allowlist), and only as booleans, numbers or short texts.
 KEEP = {'ota': ('fw', 'variant', 'running', 'running_state', 'boot', 'next', 'next_state', 'session', 'last_error', 'hold', 'release'),
@@ -261,7 +262,7 @@ def redact(v):
     address. 40-hex commits stay."""
     if isinstance(v, dict): return {k: redact(x) for k, x in v.items()}
     if isinstance(v, list): return [redact(x) for x in v]
-    return IPV4.sub('<address>', SESSION_NO.sub(r'\1\2<redacted>', HEX_SECRET.sub('<redacted>', v))) if isinstance(v, str) else v
+    return MASKED_ID.sub('<id>', IPV4.sub('<address>', SESSION_NO.sub(r'\1\2<redacted>', HEX_SECRET.sub('<redacted>', v)))) if isinstance(v, str) else v
 
 
 def scalar(v):
@@ -296,7 +297,8 @@ def trial_get(host, port, deadline):
             r = c.getresponse()
             if r.status != 200: return r.status, None                       # before the body: a slow body never hides it
             length = r.getheader('Content-Length') or ''
-            if r.getheader('Transfer-Encoding') or not length.isdigit() or int(length) > 65536: return 'bad-framing', None
+            if r.getheader('Transfer-Encoding') is not None or not (length.isascii() and length.isdigit() and len(length) <= 5) or int(length) > 65536:
+                return 'bad-framing', None
             body = r.read(int(length))
             if len(body) != int(length): return 'short-reply', None
             try: j = json.loads(body)
@@ -362,16 +364,18 @@ def preflight(ota, diag, state, key_proof=None):
                  "key file in the PRG recovery mode, and the board's fingerprint equal to the file's 'Vingerafdruk'), then "
                  "--key-proven xxxx-xxxx-xxxx")
     if ota.get('running') not in ('app0', 'app1') or ota.get('next') not in ('app0', 'app1') or ota.get('next') == ota.get('running'):
-        p.append(f"no other slot to install into (running {ota.get('running')}, next {ota.get('next')})")
+        p.append(f"no other slot to install into (running {scalar(ota.get('running'))}, next {scalar(ota.get('next'))})")
+    if ota.get('session') != 'idle': p.append(f"the OTA writer is not idle (session {scalar(ota.get('session'))})")
     if ota.get('running') != ota.get('boot'):
-        p.append(f"running {ota.get('running')} != boot {ota.get('boot')}: the old updater would write the selected slot")
-    if ota.get('running_state') != 'valid': p.append(f"running_state {ota.get('running_state')}: not a confirmed image")
+        p.append(f"running {scalar(ota.get('running'))} != boot {scalar(ota.get('boot'))}: the old updater would write the selected slot")
+    if ota.get('running_state') != 'valid' or diag.get('running_state') != 'valid':
+        p.append(f"running_state {scalar(ota.get('running_state'))}/{scalar(diag.get('running_state'))}: not a confirmed image")
     if (ota.get('running'), ota.get('fw')) != (diag.get('running'), diag.get('fw')): p.append('/api/ota and /api/diag describe different images')
     owner = (state.get('setup') or {}).get('state') if isinstance(state.get('setup'), dict) else None
     if owner != 'done':
-        p.append(f"owner state {owner}: register the recovery key in the PRG recovery mode first (legacy = no key)")
-    if not ((diag.get('wifi') or {}).get('up') if isinstance(diag.get('wifi'), dict) else False): p.append('WiFi not joined')
-    if rx != 0: p.append(f'RX state {rx}: not receiving')
+        p.append(f"owner state {scalar(owner)}: register the recovery key in the PRG recovery mode first (legacy = no key)")
+    if not (isinstance(diag.get('wifi'), dict) and diag['wifi'].get('up') is True): p.append('WiFi not joined')
+    if not (type(rx) is int and rx == 0): p.append(f'RX state {scalar(rx)}: not receiving')
     return p
 
 
@@ -394,8 +398,10 @@ def new_watch():
 def take_page(w, con, epoch, now):
     """One console page into boot `epoch`. RF frame texts (ids, payloads) are kept as a marker only. A page that lost or
     skipped events marks that boot's console incomplete; one that says more is waiting marks it unread until read."""
-    ev = [e for e in con.get('ev') or [] if isinstance(e, dict)]
-    if con.get('lost') or (ev and ev[0].get('s') != w['cursor'] + 1): w['incomplete'].add(epoch)
+    ev = con.get('ev') if isinstance(con.get('ev'), list) else None
+    if ev is None or not all(isinstance(e, dict) and type(e.get('s')) is int for e in ev):
+        w['incomplete'].add(epoch); return
+    if con.get('lost') or (ev and ev[0]['s'] != w['cursor'] + 1) or any(b['s'] != a['s'] + 1 for a, b in zip(ev, ev[1:])): w['incomplete'].add(epoch)
     for e in ev:
         m = str(e.get('m', ''))
         w['events'].append({'host_t': now, 'epoch': epoch, 's': scalar(e.get('s')), 't': scalar(e.get('t')), 'k': scalar(e.get('k')),
@@ -405,33 +411,36 @@ def take_page(w, con, epoch, now):
 
 
 def fold(w, r, now):
-    """One round into the watch. A new boot: another counter, slot or image than the last reading, or an uptime that
-    went back. Pages count only when both /api/diag replies show one boot, each page's own clock lies between them, and
-    the cursor was this boot's. A restart inside the round keeps the first reading for the old boot and nothing else."""
+    """One round into the watch. Each /api/diag reply with a full identity is a reading of its own boot, in request order
+    (a restart inside the round keeps both boots' readings). A new boot: another counter, slot or image than the last
+    reading, or an uptime that went back. Pages and the /api/ota reply count only when both diag replies show one boot,
+    each page's own clock lies between them, and the cursor was this boot's; an unbracketed round keeps the cursor unless
+    a new boot was seen. Returns the round's last reading, or None."""
     for name in ('diag1', 'ota', 'diag2'):
         if r[name][0] != 200: w['gaps'].append({'t': now, 'epoch': w['epoch'], 'route': name, 'status': r[name][0]})
-    d1, d2 = r['diag1'][1], r['diag2'][1]
-    if boot_id(d2) is None: w['incomplete'].add(w['epoch']); return None
-    inside = not same_boot(d1, d2)
-    if w['last'] is not None and not same_boot(w['last'], d2):
-        old = w['epoch']
-        if same_boot(w['last'], d1): v = trial_view(d1, None); v['epoch'] = old; w['rounds'].append(v)   # the old boot's last reading
-        if inside or old in w['unread']: w['incomplete'].add(old)   # its pages of this round, or a page it still had, went unread
-        w['unread'].discard(old); w['epoch'] += 1
-    w['last'] = d2
-    if inside or r['cursor'] != w['cursor'] and r['cursor'] != 0:   # a restart inside the round, or a cursor of another boot
-        w['gaps'].append({'t': now, 'epoch': w['epoch'], 'route': 'console', 'status': 'restart-inside' if inside else 'other-cursor'})
-        w['cursor'] = 0
-    else:
-        if r['cursor'] == 0: w['cursor'] = 0
-        lo, hi = d1['uptime_s'] * 1000 - 1500, d2['uptime_s'] * 1000 + 1500
+    start_epoch, views = w['epoch'], []
+    for d in (r['diag1'][1], r['diag2'][1]):
+        if boot_id(d) is None: views.append(None); continue
+        if w['last'] is not None and not same_boot(w['last'], d):
+            if w['epoch'] in w['unread']: w['incomplete'].add(w['epoch'])
+            w['unread'].discard(w['epoch']); w['epoch'] += 1
+        w['last'] = d
+        v = trial_view(d, None); v['epoch'] = w['epoch']; w['rounds'].append(v); views.append(v)
+    v1, v2 = views
+    bracketed = v1 is not None and v2 is not None and same_boot(r['diag1'][1], r['diag2'][1])
+    if w['epoch'] != start_epoch: w['cursor'] = 0
+    if not bracketed:
+        w['gaps'].append({'t': now, 'epoch': w['epoch'], 'route': 'console', 'status': 'unbracketed'})
+        return v2 or v1
+    if v1['epoch'] == start_epoch or r['cursor'] == 0:
+        lo, hi = r['diag1'][1]['uptime_s'] * 1000, r['diag2'][1]['uptime_s'] * 1000 + 999   # the diag uptimes are whole seconds
         for st, page in r['pages']:
-            if st != 200 or not isinstance(page.get('now'), int) or not lo <= page['now'] <= hi:
+            if st != 200 or not isinstance(page, dict) or type(page.get('now')) is not int or not lo <= page['now'] <= hi:
                 w['incomplete'].add(w['epoch']); w['gaps'].append({'t': now, 'epoch': w['epoch'], 'route': 'console', 'status': st if st != 200 else 'unowned-page'}); break
             take_page(w, page, w['epoch'], now)
-    v = trial_view(d2, r['ota'][1] if not inside else None); v['epoch'] = w['epoch']
-    w['rounds'].append(v)
-    return v
+    o = trial_view(r['diag2'][1], r['ota'][1])   # hold and the other slot, from an /api/ota reply inside this bracket
+    v2['hold'], v2['next_state'] = o['hold'], o['next_state']
+    return v2
 
 
 def trial_end(start, rounds):
@@ -502,12 +511,16 @@ def cmd_trial_watch(args):
                       f"wifi {v['wifi']} ({v['rssi']} dBm) | rx {v['rx']}")
             else: print(now[11:19], 'no consistent reading this round (a restart, or the board is away)')
             for f in out.values(): f.flush()
-            if not told and v is not None:   # GO only on fresh facts: the first round is still the preflight's boot and slots
+            if not told and v is not None and not problems:   # GO only on a fresh, complete, bracketed preflight of the same boot
                 told = True
-                o = r['ota'][1] if isinstance(r['ota'][1], dict) else {}
-                if v['epoch'] or (o.get('running'), o.get('boot'), o.get('next')) != (ota['running'], ota['boot'], ota['next']) or v['rx'] != 0 or v['wifi'] is not True:
+                again = read_bracket(get, ROUTES)
+                fresh = [] if all(s == 200 for s, _ in again.values()) and same_boot(again['diag1'][1], again['diag2'][1]) and \
+                    same_boot(diag, again['diag1'][1]) else ['the board changed or did not answer as one boot']
+                fresh = fresh or preflight(again['ota'][1], again['diag2'][1], again['state'][1], args.key_proven)
+                if fresh:
+                    for p in fresh: print('NO GO NOW:', p)
                     print('the board changed since the preflight: no GO, run trial-watch again'); break
-                if not problems: print(f'preflight GO (owner key attested by hand: {args.key_proven}); recording now: install in the web page (Systeem > Firmware)')
+                print(f'preflight GO (a snapshot of the board, plus the owner key attested by hand: {args.key_proven}); recording now: install in the web page (Systeem > Firmware)')
             end = trial_end(start, w['rounds'])
             if end: break
             TRIAL_SLEEP(max(0.0, min(args.every if v is not None else max(args.every, 5.0), deadline - time.monotonic())))   # back off while away
