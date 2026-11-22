@@ -50,7 +50,7 @@ class Head {
 public:
     // 0: need more, 1: complete (the next byte is body), <0: refused (see error()).
     int push(char c);
-    void reset() { status = 0; length = -1; chunked = encoded = done_ = hasLocation_ = false; location[0] = 0; n_ = total_ = lines_ = 0; err_ = nullptr; }
+    void reset() { status = 0; length = -1; chunked = encoded = done_ = hasLocation_ = cr_ = skip_ = named_ = false; location[0] = 0; n_ = total_ = lines_ = 0; err_ = nullptr; }
     int status = 0;
     int64_t length = -1;          // Content-Length; -1 when absent
     bool chunked = false;         // any Transfer-Encoding other than identity (refused for bodies)
@@ -59,9 +59,14 @@ public:
     const char* error() const { return err_; }
 private:
     int line();
+    // One line at a time: the status line, a field name, and the value of the four fields read below (a longer one is
+    // refused, never cut). Any other field's value is checked byte by byte and not kept (GitHub sends a 4,203-byte CSP).
     char buf_[PATH_MAX_LEN + 48]; size_t n_ = 0;
     size_t total_ = 0, lines_ = 0;
     bool done_ = false, hasLocation_ = false;
+    bool cr_ = false;      // the previous byte was a CR: only an LF may follow
+    bool skip_ = false;    // this line's field is not read: its value is checked, not stored
+    bool named_ = false;   // this line's field name (up to the first colon) has been checked
     const char* err_ = nullptr;
 };
 

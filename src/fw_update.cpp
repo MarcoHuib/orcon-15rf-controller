@@ -88,10 +88,15 @@ bool resolveLocation(const char* loc, const Url& base, Url& out) {
 // ---- response head ------------------------------------------------------------------------------------------------
 static const size_t HEAD_TOTAL_MAX = 16384, HEAD_LINES_MAX = 64;
 static bool ieq(const char* a, const char* b) { return !strcasecmp(a, b); }
+static bool tchar(char ch) { return isalnum((unsigned char)ch) || strchr("!#$%&'*+-.^_`|~", ch); }   // RFC 9110 token
+// The only fields this client reads; every other one is checked and skipped.
+static bool wanted(const char* name, size_t n) {
+    for (const char* w : {"Content-Length", "Transfer-Encoding", "Content-Encoding", "Location"})
+        if (strlen(w) == n && !strncasecmp(name, w, n)) return true;
+    return false;
+}
 int Head::line() {
     buf_[n_] = 0;
-    if (n_ && buf_[n_ - 1] == '\r') buf_[--n_] = 0;
-    if (memchr(buf_, '\r', n_)) { err_ = "bad-response"; return -1; }   // a bare CR inside a line (Codex r6)
     if (lines_++ == 0) {   // status line: HTTP/1.x NNN [reason]
         if ((strncmp(buf_, "HTTP/1.1 ", 9) && strncmp(buf_, "HTTP/1.0 ", 9)) || !isdigit((unsigned char)buf_[9]) ||
             !isdigit((unsigned char)buf_[10]) || !isdigit((unsigned char)buf_[11]) || (buf_[12] && buf_[12] != ' ')) {
@@ -100,12 +105,15 @@ int Head::line() {
         status = (buf_[9] - '0') * 100 + (buf_[10] - '0') * 10 + (buf_[11] - '0');
         n_ = 0; return 0;
     }
+    const bool skipped = skip_;
+    skip_ = named_ = false;
+    if (skipped) { n_ = 0; return 0; }   // a field nobody reads: name and every value byte were checked in push()
     if (!n_) { done_ = true; return 1; }
     if (buf_[0] == ' ' || buf_[0] == '\t') { err_ = "bad-response"; return -1; }   // obsolete line folding
     char* colon = strchr(buf_, ':');
     if (!colon || colon == buf_) { err_ = "bad-response"; return -1; }
     for (const char* p = buf_; p < colon; ++p)   // an RFC 9110 token: no space before the colon, no odd characters
-        if (!isalnum((unsigned char)*p) && !strchr("!#$%&'*+-.^_`|~", *p)) { err_ = "bad-response"; return -1; }
+        if (!tchar(*p)) { err_ = "bad-response"; return -1; }
     *colon = 0;
     char* v = colon + 1;
     while (*v == ' ' || *v == '\t') ++v;
@@ -132,10 +140,24 @@ int Head::push(char c) {
     if (err_) return -1;
     if (done_) return 1;
     if (++total_ > HEAD_TOTAL_MAX || lines_ > HEAD_LINES_MAX) { err_ = "bad-response"; return -1; }
+    if (cr_) {   // a CR only as part of CRLF: a bare CR inside a line is refused (Codex r6), also in a skipped field
+        cr_ = false;
+        if (c != '\n') { err_ = "bad-response"; return -1; }
+    }
     if (c == '\n') return line();
-    const unsigned char u = (unsigned char)c;   // no control octets except HTAB (and the CR of CRLF); no DEL (Codex r7)
-    if ((u < 0x20 && u != '\t' && u != '\r') || u == 0x7F || n_ + 1 >= sizeof(buf_)) { err_ = "bad-response"; return -1; }
+    if (c == '\r') { cr_ = true; return 0; }
+    const unsigned char u = (unsigned char)c;   // no control octets except HTAB; no DEL (Codex r7)
+    if ((u < 0x20 && u != '\t') || u == 0x7F) { err_ = "bad-response"; return -1; }
+    if (skip_) return 0;                        // the value of a field nobody reads: checked above, not kept
+    if (n_ + 1 >= sizeof(buf_)) { err_ = "bad-response"; return -1; }   // a status line, a name or a read value is never cut
     buf_[n_++] = c;
+    if (c == ':' && lines_ && !named_) {        // the field name is complete: check it now, then keep or skip its value
+        named_ = true;
+        if (n_ == 1 || buf_[0] == ' ' || buf_[0] == '\t') { err_ = "bad-response"; return -1; }   // no name, or line folding
+        for (size_t i = 0; i + 1 < n_; ++i)
+            if (!tchar(buf_[i])) { err_ = "bad-response"; return -1; }
+        skip_ = !wanted(buf_, n_ - 1);
+    }
     return 0;
 }
 

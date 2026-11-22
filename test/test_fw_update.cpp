@@ -62,6 +62,19 @@ struct Mock : Transport {
     void stop() override { open = false; ++stops; }
     const char* connectError() override { return cerr; }
 };
+// GitHub's response fields around a release download (2026-11-22): its Content-Security-Policy alone is 4,203 bytes.
+static std::string csp() {
+    std::string v = "default-src 'none'; base-uri 'self'; child-src github.com/assets-cdn/worker/ gist.github.com/assets-cdn/worker/; ";
+    while (v.size() < 4203) v += "connect-src 'self' uploads.github.com www.githubstatus.com collector.github.com raw.githubusercontent.com api.github.com; ";
+    v.resize(4203);
+    return "Content-Security-Policy: " + v + "\r\n";
+}
+static std::string gh() {
+    return "Server: github.com\r\nDate: Sun, 22 Nov 2026 12:00:00 GMT\r\nContent-Type: text/html; charset=utf-8\r\nVary: X-PJAX, X-PJAX-Container, Turbo-Visit, Turbo-Frame, Accept-Encoding, Accept, X-Requested-With\r\n"
+           "Cache-Control: no-cache\r\nStrict-Transport-Security: max-age=31536000; includeSubdomains; preload\r\nX-Frame-Options: deny\r\nX-Content-Type-Options: nosniff\r\n"
+           "X-XSS-Protection: 0\r\nReferrer-Policy: no-referrer-when-downgrade\r\nX-GitHub-Request-Id: C0DE:1234:56789A:BCDEF0:6740A2B0\r\n";
+}
+static std::string ghRedirect(const std::string& to) { return "HTTP/1.1 302 Found\r\n" + gh() + csp() + "Location: " + to + "\r\nContent-Length: 0\r\n\r\n"; }
 static std::string ok(const std::string& body, const std::string& extra = "") {
     return "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n" + extra + "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
 }
@@ -205,7 +218,9 @@ int main() {
     CHECK(eq(headOf("HTTP/1.1 200 OK\r\nX: a\x01b\r\n\r\n"), "bad-response") && eq(headOf("HTTP/1.1 200 OK\r\nX: a\x7f\r\n\r\n"), "bad-response"),
           "control octets and DEL in a header refused (Codex r7)");
     CHECK(eq(headOf("HTTP/1.1 200 OK\r\nX: a\tb\r\n\r\n"), "done"), "a tab in a header value is fine");
-    CHECK(eq(headOf("HTTP/1.1 200 OK\r\nX: " + std::string(PATH_MAX_LEN + 100, 'a') + "\r\n\r\n"), "bad-response"), "overlong header refused");
+    CHECK(eq(headOf("HTTP/1.1 200 OK\r\nX: " + std::string(PATH_MAX_LEN + 100, 'a') + "\r\n\r\n"), "done"), "an overlong field nobody reads is skipped, not buffered");
+    for (const char* f : {"Content-Encoding", "Transfer-Encoding", "Content-Length"})
+        CHECK(eq(headOf(std::string("HTTP/1.1 200 OK\r\n") + f + ": " + std::string(PATH_MAX_LEN + 100, 'a') + "\r\n\r\n"), "bad-response"), f);   // a read field is never cut
     { std::string many = "HTTP/1.1 200 OK\r\n"; for (int i = 0; i < 70; ++i) many += "X-" + std::to_string(i) + ": 1\r\n";
       CHECK(eq(headOf(many + "\r\n"), "bad-response"), "too many headers refused"); }
     { std::string s = "HTTP/1.1 200 OK\r\n"; s += std::string("X: a"); s.push_back('\0'); s += "\r\n\r\n"; CHECK(eq(headOf(s), "bad-response"), "NUL in head refused"); }
@@ -213,6 +228,30 @@ int main() {
     CHECK(eq(headOf("HTTP/1.1 200 OK\r\nContent Length: 5\r\n\r\n"), "bad-response"), "field name with a space refused");
     CHECK(eq(headOf("HTTP/1.1 200 OK\r\nX-Ok_1: a\r\n\r\n"), "done"), "token field name accepted");
     CHECK(eq(headOf("HTTP/1.1 302 Found\r\nLocation:\r\nLocation: /b\r\n\r\n"), "bad-response"), "an empty first Location still counts (Codex r4)");
+    // ---- GitHub's redirect heads (2026-11-22): a 4,203-byte Content-Security-Policy on both 302s, then 200 ----
+    { const std::string C = csp(), R = "HTTP/1.1 302 Found\r\n" + gh() + C + "Location: https://github.com/x/y\r\nContent-Length: 0\r\n\r\n";
+      static Head h; h.reset(); int r = 0; for (char c : R) { r = h.push(c); if (r) break; }
+      CHECK(C.size() == strlen("Content-Security-Policy: ") + 4203 + 2 && r == 1 && h.status == 302 && eq(h.location, "https://github.com/x/y") && h.length == 0,
+            "a 302 with GitHub's 4,203-byte CSP parses; Location and Content-Length are read in full");
+      CHECK(eq(headOf("HTTP/1.1 200 OK\r\n" + C + C + C + "Content-Length: 1\r\n\r\n"), "done"), "three such headers fit the 16 KB head limit");
+      CHECK(eq(headOf("HTTP/1.1 200 OK\r\n" + C + C + C + C + "Content-Length: 1\r\n\r\n"), "bad-response"), "four do not: the total head limit still holds");
+      std::string many = "HTTP/1.1 200 OK\r\n"; for (int i = 0; i < 70; ++i) many += "X-Long-" + std::to_string(i) + ": " + std::string(100, 'v') + "\r\n";
+      CHECK(eq(headOf(many + "\r\n"), "bad-response"), "the line limit counts skipped fields too");
+      // Malformed bytes inside a skipped field are refused like anywhere else; skipping never hides a second header.
+      const std::string half = "Content-Security-Policy: " + std::string(3000, 'a');
+      for (const std::string& bad : {half + "\rX-Hidden: 1\r\n", half + "\r \r\n", half + std::string(1, '\0') + "\r\n", half + "\x7f\r\n", half + "\x01\r\n"})
+        CHECK(eq(headOf("HTTP/1.1 200 OK\r\n" + bad + "\r\n"), "bad-response"), "bare CR, NUL, DEL or a control octet inside a skipped field refused");
+      CHECK(eq(headOf("HTTP/1.1 200 OK\r\n" + C + " folded: x\r\n\r\n"), "bad-response"), "line folding after a long field refused");
+      CHECK(eq(headOf("HTTP/1.1 200 OK\r\nContent-Security-Policy : " + std::string(3000, 'a') + "\r\n\r\n"), "bad-response"), "space before the colon of a skipped field refused");
+      CHECK(eq(headOf("HTTP/1.1 200 OK\r\nCont\x01ent-Security-Policy: x\r\n\r\n"), "bad-response"), "a control octet in a skipped field name refused");
+      CHECK(eq(headOf("HTTP/1.1 200 OK\r\nContent-Length: 1\r\n" + C + "Content-Length: 2\r\n\r\n"), "bad-response"), "conflicting lengths around a long field refused");
+      CHECK(eq(headOf("HTTP/1.1 302 Found\r\nLocation: /a\r\n" + C + "Location: /b\r\n\r\n"), "bad-response"), "two locations around a long field refused");
+      { static Head s; s.reset(); int q = 0; for (char c : "HTTP/1.1 200 OK\r\n" + C + "Transfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n") { q = s.push(c); if (q) break; }
+        CHECK(q == 1 && s.chunked, "a framing field after a long one is still read (a chunked body stays refused)"); }
+      { static Head s; s.reset(); int q = 0; for (char c : "HTTP/1.1 200 OK\r\nX-Note: Transfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n") { q = s.push(c); if (q) break; }
+        CHECK(q == 1 && !s.chunked && s.length == 5, "a framing field inside another field's value is only a value"); }
+      CHECK(eq(headOf("HTTP/1.1 200 OK\r\nContent-Type: " + std::string(PATH_MAX_LEN + 10, 'a') + "\r\nLocation: " + std::string(PATH_MAX_LEN + 20, 'b') + "\r\n\r\n"),
+               "bad-response"), "a read field is still refused when too long, after a skipped long one"); }
     // The strict flat-object grammar the index and the bundle head must pass before ArduinoJson (Codex r4).
     for (const char* good : {"{}", "{\"a\":1}", " {\"a\":\"x\\\"y\\u00e9\",\"b\":0}\n"}) CHECK(flatObject(good, strlen(good)), good);
     for (const char* bad : {"{'a':1}", "{a:1}", "{\"a\":'x'}", "{\"a\":1,\"a\":2}", "{\"a\":1}x", "{\"a\":\"x\\u0000\"}", "{\"a\":-1}",
@@ -222,6 +261,32 @@ int main() {
 
     const std::vector<uint8_t> img = image(5000);
     const std::string man = manifestText(1003000), sig = fakeSig(man);
+    // ---- the real GitHub shape (2026-11-22): both 302s carry a 4,203-byte CSP, then 200 with the 608-byte index ----
+    { std::string idx = indexJson(man, sig, "");
+      if (idx.size() < 608) idx = indexJson(man, sig, std::string(608 - idx.size(), 'x'));
+      Mock m; publish(m, man, sig, img, "v1.3.0", idx);
+      int hops = 0;
+      for (auto& kv : m.routes)
+          if (kv.second.bytes.rfind("HTTP/1.1 302", 0) == 0) {
+              const size_t l = kv.second.bytes.find("Location: ") + 10, e = kv.second.bytes.find("\r\n", l);
+              kv.second.bytes = ghRedirect(kv.second.bytes.substr(l, e - l)); ++hops;
+          }
+      Offer o; Found f;
+      CHECK(idx.size() == 608 && hops == 3 && !runCheck(m, o, f) && f == Found::Newer && o.m.version == 1003000 && m.log.size() == 3 &&
+            m.log[2].rfind("release-assets.githubusercontent.com ", 0) == 0,
+            "GitHub's two redirects with a 4,203-byte CSP each, then the 608-byte orcon-update.json: the newer release is found");
+      MockSink s; s.want = img;
+      CHECK(!runInstall(m, o, s) && s.activated, "the same heads on the bundle download: installed");
+      Offer up; Found same; const Own on13 = {1003000, otap::Variant::Control, "heltec_v2_sx1276_control", 0x330000};
+      CHECK(!runCheck(m, up, same, on13) && same == Found::UpToDate, "a board on that release sees it as up to date");
+      const std::string latest = "github.com " + std::string(REPO) + "latest/download/orcon-update.json";
+      for (const char* to : {"https://evil.example/x", "http://github.com/x", "https://github.com/other/repo/releases/download/v1/x"}) {
+          Mock b; publish(b, man, sig, img, "v1.3.0"); b.routes[latest].bytes = ghRedirect(to);
+          Offer o2; Found f2; CHECK(eq(runCheck(b, o2, f2), "redirect-not-allowed") && b.connects == 1, to);   // the redirect rules are unchanged
+      }
+      Mock loop; publish(loop, man, sig, img, "v1.3.0");
+      loop.routes[latest].bytes = ghRedirect("https://github.com" + std::string(REPO) + "latest/download/orcon-update.json");
+      Offer o3; Found f3; CHECK(eq(runCheck(loop, o3, f3), "too-many-redirects"), "a redirect loop with GitHub's heads still stops after 3"); }
     // ---- check: a newer official release ----
     { Mock m; publish(m, man, sig, img, "v1.3.0"); Offer o; Found f;
       CHECK(!runCheck(m, o, f) && f == Found::Newer && o.m.version == 1003000 && eq(o.notes, "Kleine verbeteringen."), "newer release found");
