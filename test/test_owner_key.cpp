@@ -137,7 +137,7 @@ int main() {
         spit(D + "/ours.pem", pem);
         spit(D + "/pass", PASS);
         // OpenSSL reads our file and derives the same public key ...
-        const std::string der = sh("openssl pkey -in " + D + "/ours.pem -passin file:" + D + "/pass -pubout -outform DER 2>/dev/null | xxd -p | tr -d '\\n'");
+        const std::string der = sh("openssl pkey -in " + D + "/ours.pem -passin file:" + D + "/pass -pubout -outform DER 2>/dev/null | od -An -v -tx1 | tr -d ' \\n'");
         CHECK(der.size() > 130 && der.substr(der.size() - 130) == hexs(q, 65));
         // ... and sees the parameters we promise: PBES2, PBKDF2 with HMAC-SHA256, 50000 rounds, AES-256-CBC.
         const std::string asn = sh("openssl asn1parse -in " + D + "/ours.pem 2>/dev/null");
@@ -146,7 +146,7 @@ int main() {
         CHECK(asn.find(":C350") != std::string::npos);                          // 50000
         // We read OpenSSL's own encrypted PKCS#8 (fresh key) and get its public key.
         sh("openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out " + D + "/plain.pem 2>/dev/null");
-        const std::string want = sh("openssl pkey -in " + D + "/plain.pem -pubout -outform DER 2>/dev/null | xxd -p | tr -d '\\n'");
+        const std::string want = sh("openssl pkey -in " + D + "/plain.pem -pubout -outform DER 2>/dev/null | od -An -v -tx1 | tr -d ' \\n'");
         auto conv = [&](const std::string& opts, const std::string& out) {
             sh("openssl pkcs8 -topk8 " + opts + " -in " + D + "/plain.pem -passout file:" + D + "/pass -out " + D + "/" + out + " 2>/dev/null");
             return slurp(D + "/" + out);

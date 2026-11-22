@@ -375,7 +375,8 @@ static void health() {
     std::thread pub([&](){for(uint32_t t=2;t<400000;t+=2)word.store(packHealth(t,(t/2)%3!=0),std::memory_order_release);done=true;});
     uint32_t last=0;
     while(!done.load()){uint32_t w=word.load(std::memory_order_acquire);if(!w)continue;uint32_t t=w&~1u;
-        if(t<last||(bool)(w&1u)!=((t/2)%3!=0))bad=true;last=t;}
+        if(t<last||(bool)(w&1u)!=((t/2)%3!=0))bad=true;
+        last=t;}
     pub.join();CHECK(!bad);
 }
 static void security() {

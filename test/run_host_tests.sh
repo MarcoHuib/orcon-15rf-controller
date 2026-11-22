@@ -9,6 +9,11 @@ OUT="${HOST_TEST_OUTPUT_DIR:-$(mktemp -d)}"
 mkdir -p "$OUT"
 CXX="${CXX:-g++}"
 read -r -a FLAGS <<<"-std=c++17 -O1 -g ${CXXFLAGS:-}"
+# GCC + sanitizers: -Wmaybe-uninitialized trips over ArduinoJson's own CollectionIterator::nextId_ (copied, never read).
+# A warning there; the plain run keeps it an error. Apple clang has no such option.
+if [[ "${CXXFLAGS:-}" == *-fsanitize=* && "$("$CXX" --version 2>&1)" == *"Free Software Foundation"* ]]; then
+    FLAGS+=(-Wno-error=maybe-uninitialized)
+fi
 run() {
     local name=$1; shift
     "$CXX" "${FLAGS[@]}" "$@" -o "$OUT/$name"
@@ -59,7 +64,8 @@ elif pkg-config --exists libcrypto 2>/dev/null; then
 else
     echo "owner_key: NOT TESTED (no OpenSSL headers/libcrypto found)"
 fi
-WEB="-Wall -Wextra -Werror -DARDUINOJSON_ENABLE_ARDUINO_STRING=1 -I test/shim_web -I src -I $AJ test/test_setup_web.cpp src/setup_web.cpp src/setup_flow.cpp src/remote_profiles.cpp src/rf_console.cpp src/web_auth.cpp src/owner_key.cpp src/provision.cpp $ORCON"
+# GCC 13 flags bounded snprintf calls in orcon.cpp/orcon_log.cpp (display strings, no overflow): kept as warnings, not errors.
+WEB="-Wall -Wextra -Werror -Wno-error=format-truncation -DARDUINOJSON_ENABLE_ARDUINO_STRING=1 -I test/shim_web -I src -I $AJ test/test_setup_web.cpp src/setup_web.cpp src/setup_flow.cpp src/remote_profiles.cpp src/rf_console.cpp src/web_auth.cpp src/owner_key.cpp src/provision.cpp $ORCON"
 if [ -d "$AJ" ]; then
     run setup_web_rx -DRADIO_SX1276=1 -DRX_ONLY=1 $WEB
     run setup_web_rx_v2 -DRADIO_SX1276=1 -DRX_ONLY=1 -DBOARD_HELTEC_V2=1 $WEB          # RX-only rollback image: web login

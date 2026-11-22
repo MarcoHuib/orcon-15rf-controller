@@ -232,7 +232,7 @@ bool flatObject(const char* s, size_t n) {
                 if (key || i + 1 >= n) return false;
                 const char e = s[i + 1];
                 if (e == 'u') { if (i + 5 >= n || !strncmp(s + i + 2, "0000", 4)) return false;
-                                for (int k = 2; k < 6; ++k) if (!isxdigit((unsigned char)s[i + k])) return false; i += 6; continue; }
+                                for (int k = 2; k < 6; ++k) { if (!isxdigit((unsigned char)s[i + k])) return false; } i += 6; continue; }
                 if (!strchr("\"\\/bfnrt", e)) return false;
                 i += 2; continue;
             }
