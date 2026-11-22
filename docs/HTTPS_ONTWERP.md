@@ -1,8 +1,8 @@
 # Veilige webverbinding op het thuisnetwerk (onderzoek en ontwerp)
 
-> Status: onderzoek, ontwerp en een bouwproef. Niet gebouwd in de firmware.
+> Status (22 november 2026): onderzoek, ontwerp en bouwproef; **LAN-HTTPS is niet geïmplementeerd in de gepubliceerde control-firmware v1.0.1**.
 >
-> Uitgangspunt van de maintainer: een wachtwoord dat via HTTP over het thuisnetwerk gaat, is niet voldoende beveiligd voor een definitieve release. Daarmee is dit een **releaseblokkade** (zie `RELEASES.md`).
+> De oorspronkelijke eis van de maintainer was om vóór een brede, veiligere uitrol LAN-HTTPS te realiseren. Inmiddels zijn officiële firmwarepakketten gepubliceerd, maar HTTP op het thuisnetwerk blijft een **relevante beveiligingsbeperking** (zie [`RELEASES.md`](RELEASES.md)).
 
 ## Het probleem
 
