@@ -8,17 +8,19 @@ Lees een bestaande Orcon 15RF-afstandsbediening uit, bewaar profielen en gebruik
 
 [![Licentie: MIT](https://img.shields.io/badge/licentie-MIT-2e7d32)](LICENSE)
 [![Hardware: Heltec V2](https://img.shields.io/badge/hardware-Heltec%20WiFi%20LoRa%2032%20V2-6d28d9)](#installatie)
-[![Status: ontwikkelversie](https://img.shields.io/badge/status-ontwikkelversie-b45309)](#projectstatus)
+[![Officiële firmware-release](https://img.shields.io/github/v/release/MarcoHuib/orcon-15rf-controller?label=firmware)](https://github.com/MarcoHuib/orcon-15rf-controller/releases/latest)
 
 <p align="center">
   <img src="docs/images/screenshots/dashboard-desktop.webp" width="1120" alt="Desktopweergave van het Orcon-dashboard met de virtuele afstandsbediening, Stand 2 en de technische status">
 </p>
 
-<p align="center"><sub>De echte ontwikkelinterface, met fictieve demonstratiegegevens. Alle opnames gebruiken een desktopviewport van 1440 × 900; de kleinere uitsnede is een aanvullende detailweergave.</sub></p>
+<p align="center"><sub>De daadwerkelijke webinterface, vastgelegd met fictieve demonstratiegegevens. Alle opnames gebruiken een desktopviewport van 1440 × 900; de kleinere uitsnede is een aanvullende detailweergave.</sub></p>
 
-> **Belangrijk voor nieuwe gebruikers**
+> **Begin hier: officiële firmware beschikbaar**
 >
-> Er is op dit moment **nog geen officiële firmware-release** op GitHub. De beveiligde webbediening staat in een open pull request; de installatiewizard, persoonlijke herstelsleutel, webupdates en het fysieke herstelmenu staan op een ontwikkelbranch. Die laatste onderdelen zijn host-getest, maar **nog niet op echte hardware gevalideerd**. Zie [Projectstatus](#projectstatus).
+> De **control-firmware voor de Heltec WiFi LoRa 32 V2 (868 MHz)** is officieel gepubliceerd. [Download de nieuwste release](https://github.com/MarcoHuib/orcon-15rf-controller/releases/latest) met een USB-**factory-image** voor een nieuwe controller en een ondertekend **`.orconfw`-updatepakket** voor bestaande controllers. Gebruik het factory-image **niet** om een werkende controller bij te werken: dit wist instellingen en profielen.
+>
+> De software is open source en wordt actief ontwikkeld. Publicatie van een release betekent niet dat elke installatie-, RF- of herstelprocedure op alle hardware is gevalideerd. Zie [Projectstatus](#projectstatus) en [Hardwarevalidatie](docs/HW_VALIDATIE_PROVISIONING.md).
 
 ## Wat kun je ermee?
 
@@ -27,9 +29,10 @@ Lees een bestaande Orcon 15RF-afstandsbediening uit, bewaar profielen en gebruik
 - **Daarna zonder originele afstandsbediening werken:** koppel de Heltec met een eigen identiteit; voor de huidige control-build is wel een eenmalig volledig uitgelezen profiel nodig.
 - **Profielen gebruiken:** bewaar maximaal vier profielen en kies welke actief is.
 - **Lokaal beheer:** wifi, OLED-scherm, beveiligde login en systeeminformatie in de browser.
-- **Updates en herstel:** ondertekende `.orconfw`-updates, automatische terugval en fysieke herstelopties in de ontwikkelversie.
+- **Updates en herstel:** officiële ondertekende `.orconfw`-updates via GitHub, A/B-terugval en fysieke herstelopties.
+- **Siri-bediening:** bedien vijf ventilatiestanden via de iPhone-app **Opdrachten**; dit is geen rechtstreekse Apple Woning-/HomeKit-integratie. Zie [Siri-handleiding](docs/SIRI.md).
 
-Niet beschikbaar: een webknop voor een fabrieksreset. In ontwikkeling (`feature/github-releases-control-ota`): officiële releases via GitHub en een updatecontrole met **Update installeren** in de webinterface; zie [Releases](docs/RELEASES.md) en [Updatecontrole](docs/UPDATECONTROLE.md).
+**Let op:** een fabrieksreset gebeurt uitsluitend via het fysieke PRG-menu, niet via een webknop. Onder **Systeem → Firmware** kun je updates controleren, een nieuwe versie bewust installeren of handmatig een officiële `.orconfw`-bundel kiezen. Er wordt nooit automatisch een update geïnstalleerd. Zie [Releases](docs/RELEASES.md) en [Updatecontrole](docs/UPDATECONTROLE.md).
 
 ## Inhoudsopgave
 
@@ -71,26 +74,22 @@ Deze handleiding is uitsluitend bedoeld voor de:
 - Een **micro-USB-datakabel**. Een kabel die alleen oplaadt, werkt niet.
 - Een telefoon of computer met wifi en een browser.
 - De naam en het wachtwoord van je **2,4 GHz**-wifinetwerk.
-- Bij voorkeur de originele Orcon 15RF-afstandsbediening; die is niet verplicht als je de Heltec zelf wilt koppelen.
+- Een bestaande Orcon 15RF-afstandsbediening om de zes knoppen voor een volledig profiel uit te lezen; het koppelen van de Heltec aan de unit is een aparte stap.
 
 ### 3. Firmware downloaden
 
-De bedoelde downloadlocatie is de [releasepagina van dit project](../../releases). Daar staat nu nog geen officiële release. Download dus geen willekeurig `.bin`-bestand uit een buildmap of van een andere bron.
+Open de [nieuwste officiële GitHub Release](https://github.com/MarcoHuib/orcon-15rf-controller/releases/latest) en download voor een **nieuwe Heltec V2** het bestand dat eindigt op **`-factory-usb.bin`** (bij release v1.0.1: `orcon-control-v1.0.1-1db048b-factory-usb.bin`). Dit bestand bevat het complete pakket voor de eenmalige USB-installatie.
 
-Voor een toekomstige eerste release is de bedoelde bestandsnaam:
-
-`orcon-controller-heltec-v2-factory.bin`
-
-Dit is het complete pakket voor de **eenmalige USB-installatie**. Het is niet hetzelfde als een `.orconfw`-updatebestand. De releaseprocedure is nog een voorstel; zie [Releases en GitHub-integratie](docs/RELEASES.md).
+**Waarschuwing:** een factory-installatie vanaf adres `0x0` wist de bestaande configuratie (wifi, wachtwoord, profielen en herstelsleutel). Is de controller al ingesteld en bereikbaar via de webinterface? Gebruik dan uitsluitend **Systeem → Firmware** met een ondertekend `.orconfw`-pakket. Download geen willekeurige binaries uit buildmappen of van derden.
 
 ### 4. Eenmalig installeren via USB
 
-**Deze stappen gelden pas zodra het genoemde factory-bestand als officiële release beschikbaar is.** Er is nog geen gevalideerde éénklikinstallatie.
+**Alleen voor een nieuwe of bewust volledig opnieuw in te richten controller.** De onderstaande USB-installatie schrijft het factory-image en wist bestaande instellingen; dit is geen updateprocedure.
 
 1. Sluit de Heltec met de datakabel op de computer aan.
 2. Open in Chrome of Edge de [officiële Espressif-webflasher](https://espressif.github.io/esptool-js/).
 3. Kies **Connect** en selecteer de USB-poort van de Heltec.
-4. Kies `orcon-controller-heltec-v2-factory.bin` en zet het bijbehorende adres op **`0x0`**.
+4. Kies het officiële bestand met achtervoegsel **`-factory-usb.bin`** uit de release en zet het bijbehorende adres op **`0x0`**.
 5. Start **Program** en wacht tot het schrijven volledig klaar is.
 6. Druk daarna één keer kort op **RST** op de Heltec.
 
@@ -100,7 +99,7 @@ Ontwikkelaars die zelf een ontwikkelbuild willen maken, vinden de afzonderlijke,
 
 ### 5. Eerste opstart en telefoon verbinden
 
-In de ontwikkelversie van de installatiewizard:
+Bij de eerste start van de officiële control-firmware:
 
 1. Het OLED toont **Installatie**, het netwerk **`Orcon15RF-Setup`** en een uniek wachtwoord van **12 tekens**.
 2. Open de wifi-instellingen op je telefoon en verbind met **`Orcon15RF-Setup`**.
@@ -116,12 +115,12 @@ Je telefoon kan melden dat dit netwerk geen internet heeft. Dat is normaal: je b
 
 | Moment | Methode | Bestand |
 | --- | --- | --- |
-| Eerste installatie, of herstel van de OTA-ontvanger | Eenmalig via USB | Factory-`.bin`, zodra officieel uitgebracht |
+| Nieuwe installatie (wist bestaande instellingen) | Eenmalig via USB | Officieel `-factory-usb.bin` uit [Releases](https://github.com/MarcoHuib/orcon-15rf-controller/releases/latest) |
 | Latere firmware-update | Via wifi in **Systeem → Firmware** | Ondertekende `.orconfw`-bundel |
 
 ### OLED-weergave instellen
 
-Open in de ontwikkelinterface **Systeem → OLED-scherm**. Kies **Altijd aan**, **Automatisch: uit na 30 seconden** of **Uit**. **Scherm nu aan of uit** verandert alleen de huidige weergave, niet de opgeslagen stand. Wifi en radio-ontvangst blijven actief als het scherm uit is.
+Open in de webinterface **Systeem → OLED-scherm**. Kies **Altijd aan**, **Automatisch: uit na 30 seconden** of **Uit**. **Scherm nu aan of uit** verandert alleen de huidige weergave, niet de opgeslagen stand. Wifi en radio-ontvangst blijven actief als het scherm uit is.
 
 <img src="docs/images/screenshots/oled-settings-desktop.webp" width="1120" alt="Desktopweergave van Systeem, OLED-scherm met Altijd aan, Automatisch en Uit">
 
@@ -134,7 +133,7 @@ Er is nog geen echte foto van het OLED- of herstelmenu in de repository. De afbe
 <details>
 <summary><strong>Eerste configuratie — wizard in vier stappen openen</strong></summary>
 
-> **Ontwikkelversie — niet op hardware gevalideerd.** Deze wizard en de persoonlijke herstelsleutel staan niet in een officiële release. De schermen hieronder komen uit de echte HTML, CSS en JavaScript van `feature/plug-and-play-setup`; de getoonde gegevens zijn fictief.
+> **Beschikbaar in de officiële control-firmware.** De vierstapswizard en persoonlijke herstelsleutel maken deel uit van de gepubliceerde software. De afbeeldingen hieronder zijn opnames van de echte HTML/CSS/JavaScript met **fictieve voorbeeldgegevens**. De releaseworkflow voert geen fysieke installatietest op een Heltec uit; zie [Hardwarevalidatie](docs/HW_VALIDATIE_PROVISIONING.md).
 
 Open **http://192.168.4.1** terwijl je met **`Orcon15RF-Setup`** bent verbonden.
 
@@ -202,7 +201,7 @@ De controller start opnieuw en verbindt met het geteste thuisnetwerk.
 
 <img src="docs/images/screenshots/login-desktop.webp" width="1120" alt="Desktopweergave van het echte aanmeldscherm met wachtwoordveld en knop Aanmelden">
 
-Gebruik de webinterface alleen op een vertrouwd thuisnetwerk. In de huidige ontwikkelversie gebruikt de verbinding op dat netwerk HTTP zonder TLS. De ontbrekende LAN-versleuteling is een van de releaseblokkades; zie [Projectstatus](#projectstatus).
+Gebruik de webinterface alleen op een **vertrouwd thuisnetwerk**. Ook de gepubliceerde firmware gebruikt op het LAN nog **HTTP zonder TLS**: verkeer, waaronder inloggegevens en sessies, is niet end-to-end versleuteld. Zie [HTTPS-ontwerp](docs/HTTPS_ONTWERP.md) en [Projectstatus](#projectstatus).
 
 </details>
 
@@ -239,7 +238,7 @@ Profielen, het beheerderswachtwoord, de herstelsleutel, OLED-instellingen en RF-
 
 ### Geen toegang meer tot de Heltec?
 
-Is het opgeslagen thuisnetwerk bij het opstarten niet binnen ongeveer **15 seconden** bereikbaar, dan start de ontwikkelversie het noodnetwerk `Orcon15RF-Setup`. Het wachtwoord staat op het OLED. Open daarna **http://192.168.4.1**, meld je aan en stel wifi opnieuw in.
+Is het opgeslagen thuisnetwerk bij het opstarten niet binnen ongeveer **15 seconden** bereikbaar, dan start de controller het noodnetwerk `Orcon15RF-Setup`. Het wachtwoord staat op het OLED. Open daarna **http://192.168.4.1**, meld je aan en stel wifi opnieuw in.
 
 De controller blijft het oude thuisnetwerk op de achtergrond opnieuw proberen, behalve terwijl iemand met het noodnetwerk is verbonden. Zet de router dus eerst aan en wacht even voordat je gegevens wist.
 
@@ -306,7 +305,7 @@ Wil je daarna met de Heltec zelf bedienen, ga dan naar [Afstandsbediening simule
 <details>
 <summary><strong>Afstandsbediening simuleren — koppelen en bedienen openen</strong></summary>
 
-> **Ontwikkelversie.** Dagelijkse RF-bediening hoort bij de afzonderlijke build `heltec_v2_sx1276_control` en de open pull request [#10](../../pull/10). De gewone Heltec V2-build op `main` is RX-only en kan deze opdrachten niet versturen. Koppelen en bedienen zijn niet onderdeel van een officiële release.
+> **Onderdeel van de officiële control-release.** De gepubliceerde firmware gebruikt `heltec_v2_sx1276_control` voor RF-bediening. De afzonderlijke `heltec_v2_sx1276`-build blijft RX-only en is niet bedoeld voor dagelijkse RF-bediening. De eerdere PR [#10](../../pull/10) is al gemerged.
 
 ### Wat doet de simulatie?
 
@@ -427,30 +426,36 @@ Een profiel hernoemen of wisselen herstelt geen verloren RF-koppeling.
 <details>
 <summary><strong>Firmware bijwerken — OTA-handleiding openen</strong></summary>
 
-> **Ontwikkelversie, nog geen updatepakket beschikbaar.** Web-OTA met `.orconfw` staat op de ontwikkelbranch en is nog niet volledig op hardware gevalideerd. De [releasepagina](../../releases) bevat op dit moment geen officiële downloads.
+De officiële firmware ondersteunt **updatecontrole via GitHub én handmatige installatie** van een ondertekend `.orconfw`-bestand. Update-installatie gebeurt alleen na je uitdrukkelijke keuze; een dagelijkse controle installeert niets automatisch.
 
-Na een eerste USB-installatie met OTA-ondersteuning zijn latere updates via wifi bedoeld. Met de control-firmware van `feature/github-releases-control-ota` (nog niet uitgebracht) kijkt de controller dagelijks of er een nieuwere officiële release is; **Systeem → Firmware → Update installeren** downloadt, controleert en installeert die pas na jouw klik ([Updatecontrole](docs/UPDATECONTROLE.md)). Handmatig een bestand installeren blijft mogelijk, zoals hieronder.
+### Automatisch een nieuwe release vinden
 
-### Update installeren
+1. Open de webinterface en meld je aan.
+2. Ga naar **Systeem → Firmware**.
+3. Kies **Controleer op updates**; de firmware controleert ook periodiek op nieuwe releases.
+4. Is er een **nieuwere officiële versie**, lees dan de releasenotes en kies **Update installeren**. Bevestig de installatie.
+5. Volg de download, controle, herstart en proefstart op het scherm. Controleer na afloop de nieuwe versie.
 
-**Voer deze stappen uit zodra een officiële release een bijpassend updatebestand aanbiedt.**
+**Bekend bij v1.0.0:** de GitHub-updatecontrole kan mislukken door lange HTTP-headers. Dit is verholpen in **v1.0.1**. Installeer v1.0.1 in dat geval **eenmalig handmatig** zoals hieronder; de fout verhindert niet dat de officiële updatebundel beschikbaar is.
 
-1. Download van de [officiële releasepagina](../../releases) het nieuwe **`.orconfw`**-bestand voor de Heltec V2. Gebruik geen factory-`.bin` in dit scherm.
-2. Open de webinterface, meld je aan en ga naar **Systeem**.
+### Handmatig installeren
 
-<img src="docs/images/screenshots/system-desktop.webp" width="1120" alt="Volledige desktopweergave van Systeem met Account, Herstelsleutel, Firmware, Herstarten en OLED-scherm">
+1. Download van de [nieuwste officiële release](https://github.com/MarcoHuib/orcon-15rf-controller/releases/latest) het bestand met achtervoegsel **`.orconfw`** voor de control-firmware. Gebruik **geen** factory-`.bin` in dit scherm.
+2. Open **Systeem → Firmware → Handmatig installeren**.
 
-3. Open **Firmware** en kies **Update installeren**.
-4. Selecteer het gedownloade `.orconfw`-bestand en start de update.
+<img src="docs/images/screenshots/system-desktop.webp" width="1120" alt="Desktopweergave van Systeem met firmware-instellingen">
 
-<img src="docs/images/screenshots/firmware-update-desktop.webp" width="1120" alt="Desktopweergave van Firmware met geïnstalleerde versie, bestandskeuze voor een orconfw-bestand en Update installeren">
+3. Selecteer het gedownloade `.orconfw`-bestand en kies **Update installeren**.
 
-5. Laat de pagina open en wacht op de herstart en proefperiode.
-6. Meld je daarna opnieuw aan en controleer onder **Systeem → Firmware** de geïnstalleerde versie.
+<img src="docs/images/screenshots/firmware-update-desktop.webp" width="1120" alt="Desktopweergave van de handmatige firmware-update, met fictieve demonstratiegegevens">
+
+4. Laat de voeding aan tijdens het schrijven, herstarten en de proefstart. Meld je daarna opnieuw aan en controleer de geïnstalleerde versie.
+
+**Vereiste:** bij een bestaande controller moet de persoonlijke herstelsleutel geregistreerd en bruikbaar zijn om een nieuwe control-firmware definitief te bevestigen. Raadpleeg [Herstelsleutelmigratie](docs/HERSTELSLEUTEL_MIGRATIE.md) voor een oude installatie zonder sleutel.
 
 ### Wat controleert de controller?
 
-De ontwikkelimplementatie controleert onder andere:
+De control-firmware controleert onder andere:
 
 - de digitale handtekening van de uitgever;
 - of de release niet ouder is dan de geïnstalleerde release;
@@ -461,7 +466,7 @@ De controller installeert niets als deze controles niet kloppen. Er is geen onde
 
 ### Wat gebeurt er tijdens de update?
 
-De nieuwe firmware wordt in de niet-actieve van twee firmwareplekken geschreven. Daarna start de controller ermee op in een **proefstart**. De proefstart wordt pas definitief nadat de firmware minimaal 60 seconden draait, wifi verbonden is en de radio-ontvanger werkt.
+De nieuwe firmware wordt in de niet-actieve van twee firmwareplekken geschreven. Daarna start de controller ermee op in een **proefstart**. De proefstart wordt pas definitief nadat de firmware minimaal 60 seconden draait, wifi verbonden is, de radio-ontvanger werkt én de vereiste eigenaarssleutel geldig is.
 
 > **Onderbreek de voeding niet tijdens schrijven, herstarten of de proefstart.** Sluit de Heltec niet zomaar af omdat het even duurt. Tijdens het schrijven kan de radio bovendien kort berichten missen.
 
@@ -478,7 +483,7 @@ Mislukt een update, controleer dan eerst bestand, netwerk en stroomvoorziening e
 <details>
 <summary><strong>Resetten en herstellen — handleiding openen</strong></summary>
 
-> **Ontwikkelprocedure — NOT TESTED op hardware.** De knopregels, herstelmodus en fabrieksreset zijn host-getest, maar het volledige OLED-menu is nog niet op een echte Heltec gevalideerd. Er bestaat geen webroute voor een fabrieksreset. Er is ook nog geen echte foto van dit menu beschikbaar; de afbeeldingen hieronder tonen alleen bestaande webpagina's.
+> **Fysiek herstelmenu in de officiële firmware.** Het PRG/RST-menu is opgenomen in de control-release. De releaseworkflow zelf voert geen volledige fysieke herstel- of fabrieksresettest uit; controleer de [hardwarevalidatie](docs/HW_VALIDATIE_PROVISIONING.md) voordat je ingrijpende stappen uitvoert. **Er is geen webroute voor fabrieksreset.** De afbeeldingen hieronder tonen webpagina's, geen foto van het OLED-menu.
 
 ### Het fysieke herstelmenu openen
 
@@ -560,7 +565,7 @@ Begin met de minst ingrijpende stap. Een fabrieksreset is alleen nodig voor over
 | **Mijn wifi-wachtwoord werkt niet** | Controleer hoofdletters en spelling. Gebruik een 2,4 GHz-netwerk. Test in de wizard opnieuw; een mislukte test overschrijft de oude wizardconfiguratie niet. Verberg het netwerk niet onnodig en typ anders de SSID exact. |
 | **Mijn originele afstandsbediening wordt niet herkend** | Controleer batterij, afstand en radio-ontvangst. Druk eerst één keer zodat hij in de lijst verschijnt, selecteer hem expliciet en druk daarna pas op de gevraagde knop. Start na een time-out opnieuw. |
 | **De ventilatie reageert niet** | Controleer actief profiel, RF-koppeling en de drie statussen. Een verzonden pakket is geen bevestigde stand. Controleer antenne, afstand en voeding; herhaal alleen koppelen als bevestiging ontbreekt. |
-| **Ik ben mijn beheerderswachtwoord vergeten** | Gebruik de ontwikkelherstelmodus met je PEM-bestand en wachtwoordzin. Voer geen fabrieksreset uit zolang dit herstelpad beschikbaar is. |
+| **Ik ben mijn beheerderswachtwoord vergeten** | Gebruik de fysieke herstelmodus met je PEM-bestand en wachtwoordzin. Voer geen fabrieksreset uit zolang dit herstelpad beschikbaar is. |
 | **Ik ben mijn PEM-sleutel kwijt** | Weet je het beheerderswachtwoord nog, maak dan in de fysieke herstelmodus via **Systeem → Herstelsleutel** een nieuwe sleutel. Zijn bestand, wachtwoordzin én beheerderswachtwoord allemaal onbeschikbaar, dan resteert een fabrieksreset. |
 | **Een OTA-update mislukt** | Houd de voeding stabiel. Controleer dat het een ongewijzigd, officieel `.orconfw`-bestand voor deze bord- en firmwarevariant is. Lees de melding en probeer geen controles te omzeilen. Gebruik geen `.bin` op de updatepagina. |
 | **Het apparaat valt terug op vorige firmware** | Dat is de automatische rollback na een niet-bevestigde proefstart. Laat de vorige firmware starten, controleer wifi en radio en bekijk daarna pas opnieuw een geschikte update. Rollback wist geen profielen of wifi-instellingen. |
@@ -586,7 +591,7 @@ De hoofdhandleiding blijft bewust niet-technisch. De bestaande diepgaande docume
 | Ondertekende OTA, A/B-proefstart en rollback | [Signed OTA en remote diagnostics](docs/OTA.md) |
 | USB-pakketten, flashgrenzen en herstel | [Volledig lokale USB-release](docs/LOCAL_USB_RELEASE.md) |
 | Testmatrix voor echte hardware | [Hardwarevalidatie van installatie en herstel](docs/HW_VALIDATIE_PROVISIONING.md) |
-| Voorgenomen releasebestanden en publicatie | [Releases en GitHub-integratie](docs/RELEASES.md) |
+| Officiële releases en publicatie | [Releases en GitHub-integratie](docs/RELEASES.md) |
 | OLED-standen, PRG en tests | [OLED-energiebesparing](docs/HELTEC_V2_OLED.md) |
 | PlatformIO-omgevingen | [`platformio.ini`](platformio.ini) |
 | Hosttests | [`test/run_host_tests.sh`](test/run_host_tests.sh) |
@@ -597,17 +602,19 @@ De lokale desktopopnames zijn reproduceerbaar met [`tools/capture_readme.js`](to
 
 ## Projectstatus
 
-Deze handleiding volgt de werkelijke code, maar het project heeft nog geen publieke release. De status hieronder voorkomt dat ontwikkelwerk als beschikbaar product wordt gelezen.
+**Stand: 22 november 2026.** Er zijn officiële firmwarepakketten gepubliceerd voor de **Heltec WiFi LoRa 32 V2 (868 MHz)**: [v1.0.0](https://github.com/MarcoHuib/orcon-15rf-controller/releases/tag/v1.0.0) en [v1.0.1](https://github.com/MarcoHuib/orcon-15rf-controller/releases/tag/v1.0.1). Voor nieuwere versies gebruik je altijd de [nieuwste release](https://github.com/MarcoHuib/orcon-15rf-controller/releases/latest).
 
-| Onderdeel | Status bij deze documentatie |
+| Onderdeel | Huidige situatie |
 | --- | --- |
-| Heltec V2 op [`main`](../../tree/main) | Basis met ontvangst en diagnose; de gewone `heltec_v2_sx1276`-build is RX-only |
-| Beveiligde login en dagelijkse virtuele afstandsbediening | Open ontwikkel-PR [#10](../../pull/10), nog niet in `main` |
-| Vierstapswizard, PEM, web-OTA en fysiek herstelmenu | Ontwikkelbranch [`feature/plug-and-play-setup`](../../tree/feature/plug-and-play-setup); host-getest, **niet op hardware gevalideerd** |
-| Officiële factory- en updatebestanden | Nog niet gepubliceerd op [Releases](../../releases) |
-| LAN-beveiliging | Huidige ontwikkelinterface gebruikt HTTP zonder TLS; ontbrekende LAN-versleuteling blokkeert volgens het releaseplan een definitieve release |
+| Dagelijkse webbediening | Officiële **control-firmware** `heltec_v2_sx1276_control` met RF-bediening, profielen en beveiligde login; de losse RX-only-build is een diagnosevariant. |
+| Eerste installatie en herstel | Vierstapswizard, persoonlijke PEM-herstelsleutel en fysiek PRG-menu zijn onderdeel van de gepubliceerde firmware. |
+| Firmware-updates | Officieel ondertekende `.orconfw`-bundels, handmatige installatie, GitHub-updatecontrole, A/B-proefstart en rollback. **Installatie alleen na bevestiging door de eigenaar.** |
+| Beschikbare downloads | [Factory-USB-image en OTA-bundel](https://github.com/MarcoHuib/orcon-15rf-controller/releases/latest), met controlebestanden. Factory wist instellingen; `.orconfw` is voor updates. |
+| Siri | Via iPhone **Opdrachten**, alleen op het lokale netwerk en met een eigen sleutel; geen directe Apple Woning-/HomeKit-koppeling. |
+| Hardwarevalidatie | De releaseworkflow bouwt, test en ondertekent de firmware, maar voert geen fysieke RF-, wifi-, installatie- of OTA-test op een bord uit. Raadpleeg het [hardwarevalidatieplan](docs/HW_VALIDATIE_PROVISIONING.md) voor testdekking en beperkingen. |
+| LAN-beveiliging | Op het thuisnetwerk gebruikt de controller momenteel **HTTP zonder TLS**. Daarom alleen gebruiken op een vertrouwd LAN; zie [HTTPS-ontwerp](docs/HTTPS_ONTWERP.md). |
 
-De hardware- en releasegrenzen zijn expliciet vastgelegd in [Hardwarevalidatie](docs/HW_VALIDATIE_PROVISIONING.md) en het [releasevoorstel](docs/RELEASES.md). Reverse-engineered, onofficieel en zonder garantie; dit project is niet gelieerd aan Orcon.
+Het project is reverse-engineered, onofficieel en wordt zonder garantie geleverd. Het is niet gelieerd aan Orcon. Raadpleeg [officiële releases en releaseproces](docs/RELEASES.md) voor de verschillende firmwarebestanden.
 
 ## Bijdragen en licentie
 
