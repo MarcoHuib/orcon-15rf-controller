@@ -22,9 +22,11 @@
                                         it in the web page (Systeem > Firmware); the board checks the
                                         signature, the version and its own owner's session
   orcon.py keygen                       create the signing key (once) and src/ota_pubkey.h
-  orcon.py trial-watch [--minutes N] [--every S] [--serial PORT] [--anyway]
+  orcon.py trial-watch --key-proven FINGERPRINT [--minutes N] [--every S] [--serial PORT] [--anyway]
                                         read-only record of one trial boot, started BEFORE installing: a
-                                        preflight (running == boot, valid, owner state done, WiFi, RX), then
+                                        preflight (running == boot, valid, owner state done, WiFi, RX, and the
+                                        owner key proven by hand: the board's fingerprint after a recovery with
+                                        the key file, because no home-network route shows the key), then
                                         /api/ota, /api/diag, /api/setup/state and the RF console every S s
                                         (optionally the USB log, opened without a reset) until the new image
                                         confirms itself or rolls back, then the condition that held it back.
@@ -242,9 +244,19 @@ def redact(v):
     return HEX_SECRET.sub('<redacted>', v) if isinstance(v, str) else v
 
 
-def preflight(ota, diag, state):
-    """What must hold before an install, so the new image can confirm itself (docs/HERSTELSLEUTEL_MIGRATIE.md step 7)."""
+FINGERPRINT = re.compile(r'[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}')   # ownerkey::fingerprint: SHA-256 of the public key, 6 bytes
+
+
+def preflight(ota, diag, state, key_proof=None):
+    """What must hold before an install, so the new image can confirm itself (docs/HERSTELSLEUTEL_MIGRATIE.md step 7).
+    The owner key itself cannot be read from the home network: without a login /api/setup/state only says 'done', which
+    an unreadable or malformed key also gives; with one, 'key' checks length and prefix, not the curve; the fingerprint and
+    crypto_ok are in /api/provision/state on the setup AP only. So GO needs the owner's proof by hand (key_proof)."""
     p, rx = [], (diag.get('rx') or {}).get('state')
+    if not FINGERPRINT.fullmatch(key_proof or ''):
+        p.append("owner key not provable from here ('done' also covers an unreadable key; the fingerprint is on the setup AP "
+                 "only): prove it on this board (migration steps 1-5: a password recovery with the key file in the PRG "
+                 "recovery mode, and the board's fingerprint equal to the file's 'Vingerafdruk'), then --key-proven xxxx-xxxx-xxxx")
     if not ota.get('running') or ota.get('running') != ota.get('boot'):
         p.append(f"running {ota.get('running')} != boot {ota.get('boot')}: the old updater would write the selected slot")
     if ota.get('running_state') != 'valid': p.append(f"running_state {ota.get('running_state')}: not a confirmed image")
@@ -314,11 +326,14 @@ def cmd_trial_watch(args):
     try: ota, diag, state = get('/api/ota'), get('/api/diag'), get('/api/setup/state')
     except (urllib.error.URLError, OSError, ValueError) as e: raise SystemExit(f'board {h} not readable (try again): {e}')
     d = private_dir(REPO / 'captures' / 'trial' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
-    problems = preflight(ota, diag, state)
-    write_private(d / 'preflight.json', json.dumps({'ota': ota, 'diag': diag, 'state': state, 'problems': problems}, indent=1))
+    problems = preflight(ota, diag, state, args.key_proven)
+    proof = {'fingerprint': args.key_proven, 'by': 'owner, by hand (migration steps 1-5)',
+             'utc': datetime.now(timezone.utc).isoformat()} if args.key_proven else None
+    write_private(d / 'preflight.json', json.dumps({'ota': ota, 'diag': diag, 'state': state, 'key_proof': proof, 'problems': problems}, indent=1))
     for p in problems: print('PREFLIGHT NO-GO:', p)
     if problems and not args.anyway: raise SystemExit(f'do not install now (saved {d}); --anyway watches all the same')
-    if not problems: print('preflight GO: install now in the web page (Systeem > Firmware); this records the trial boot')
+    if not problems: print(f'preflight GO (owner key proven by hand: {args.key_proven}): install now in the web page '
+                           '(Systeem > Firmware); this records the trial boot')
     stop, tee = threading.Event(), None
     if args.serial:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -542,6 +557,7 @@ def main(argv=None):
     sub.add_parser('backup-check').add_argument('--nvs', required=True)
     tw = sub.add_parser('trial-watch'); tw.add_argument('--minutes', type=float, default=12)
     tw.add_argument('--every', type=float, default=3); tw.add_argument('--serial'); tw.add_argument('--anyway', action='store_true')
+    tw.add_argument('--key-proven', metavar='FINGERPRINT')
     a = p.parse_args(argv)
     {'status': cmd_status, 'logs': cmd_logs, 'capture': cmd_capture, 'ota-install': cmd_ota_install, 'keygen': cmd_keygen,
      'release': cmd_release, 'backup-check': cmd_backup_check, 'trial-watch': cmd_trial_watch}[a.cmd](a)

@@ -204,13 +204,17 @@ with tempfile.TemporaryDirectory() as d:
 # Trial-boot watch: preflight, the condition that held a trial back, the end of the watch, nothing secret in a log
 OK_OTA = {'running': 'app1', 'boot': 'app1', 'running_state': 'valid'}
 OK_DIAG = {'wifi': {'up': True, 'rssi': -70}, 'rx': {'state': 0}}
-DONE = {'setup': {'state': 'done'}}
-check(orcon.preflight(OK_OTA, OK_DIAG, DONE) == [], 'trial watch: preflight GO on a confirmed image with an owner key')
-pf = orcon.preflight(OK_OTA, OK_DIAG, {'setup': {'state': 'legacy'}})
-check(len(pf) == 1 and 'legacy' in pf[0], 'trial watch: a legacy board (no owner key) is NO-GO')
-check(len(orcon.preflight({**OK_OTA, 'boot': 'app0'}, OK_DIAG, DONE)) == 1, 'trial watch: running != boot is NO-GO (migration step 7)')
-check(len(orcon.preflight(OK_OTA, {'wifi': {'up': False}, 'rx': {'state': 1}}, DONE)) == 2, 'trial watch: WiFi down and RX recovering are NO-GO')
-check(len(orcon.preflight({}, {}, {})) == 5, 'trial watch: an unreadable board is NO-GO on every point')
+DONE, FP = {'setup': {'state': 'done'}}, '1a2b-3c4d-5e6f'
+check(orcon.preflight(OK_OTA, OK_DIAG, DONE, FP) == [], 'trial watch: preflight GO on a confirmed image with an owner key proven by hand')
+pf = orcon.preflight(OK_OTA, OK_DIAG, DONE)
+check(len(pf) == 1 and 'not provable' in pf[0] and '--key-proven' in pf[0], 'trial watch: "done" alone is NO-GO (the key is not readable from the home network)')
+check(all(len(orcon.preflight(OK_OTA, OK_DIAG, DONE, bad)) == 1 for bad in ('', 'yes', '1A2B-3C4D-5E6F', '1a2b-3c4d-5e6', '1a2b3c4d5e6f', FP + '\n')),
+      'trial watch: anything but the board\'s fingerprint format is no proof')
+pf = orcon.preflight(OK_OTA, OK_DIAG, {'setup': {'state': 'legacy'}}, FP)
+check(len(pf) == 1 and 'legacy' in pf[0], 'trial watch: a legacy board (no owner key) stays NO-GO, whatever proof is given')
+check(len(orcon.preflight({**OK_OTA, 'boot': 'app0'}, OK_DIAG, DONE, FP)) == 1, 'trial watch: running != boot is NO-GO (migration step 7)')
+check(len(orcon.preflight(OK_OTA, {'wifi': {'up': False}, 'rx': {'state': 1}}, DONE, FP)) == 2, 'trial watch: WiFi down and RX recovering are NO-GO')
+check(len(orcon.preflight({}, {}, {})) == 6, 'trial watch: an unreadable board is NO-GO on every point')
 def tv(state, up, hold=False, wifi=True, rx=0, slot='app0'):
     return {'fw': 'x', 'slot': slot, 'state': state, 'up_s': up, 'hold': hold, 'wifi': wifi, 'rssi': -80, 'rx': rx, 'owner': 'done', 'ap': False}
 OLD_V, BACK = tv('valid', 2000, slot='app1'), tv('valid', 5, slot='app1')
@@ -250,9 +254,16 @@ with tempfile.TemporaryDirectory() as d:
         return 200, con
     real_http, real_repo = orcon.http, orcon.REPO
     orcon.http, orcon.REPO = fake_http, Path(d)
-    try: orcon.cmd_trial_watch(argparse.Namespace(host='b', minutes=1, every=0, serial=None, anyway=False))
+    try:
+        try: orcon.cmd_trial_watch(argparse.Namespace(host='b', minutes=1, every=0, serial=None, anyway=False, key_proven=None)); refusedrun = False
+        except SystemExit as e: refusedrun = 'do not install' in str(e)
+        check(refusedrun and calls and all(p in ('/api/ota', '/api/diag', '/api/setup/state') for p, _, _ in calls),
+              'trial watch: without the proof by hand it stops after the preflight reads')
+        calls.clear(); pos[0] = -1
+        orcon.cmd_trial_watch(argparse.Namespace(host='b', minutes=1, every=0, serial=None, anyway=False, key_proven=FP))
     finally: orcon.http, orcon.REPO = real_http, real_repo
-    run_dir = next((Path(d) / 'captures' / 'trial').iterdir())
+    run_dir = sorted((Path(d) / 'captures' / 'trial').iterdir())[-1]
+    check(json.loads((run_dir / 'preflight.json').read_text())['key_proof']['fingerprint'] == FP, 'trial watch: the proof by hand is recorded')
     verdict = json.loads((run_dir / 'verdict.json').read_text())
     check(verdict['verdict'] == 'owner-key' and verdict['end'] == 'rolled back', 'trial watch: a whole rollback, named by the key note')
     check(all(b is None and hd is None for _, b, hd in calls) and {p.split('?')[0] for p, _, _ in calls} ==
