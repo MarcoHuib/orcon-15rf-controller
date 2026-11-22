@@ -2,7 +2,7 @@
 
 Hiermee bedien je je Orcon-ventilatie (HRC/MVS met een 15RF-afstandsbediening) vanaf je telefoon. Je hebt maar één keer een computer nodig: om de firmware op de Heltec te zetten. Daarna doe je alles met je telefoon, ook updates en herstel.
 
-> Status: de firmware voor deze procedure is gebouwd en lokaal getest, maar nog niet op echte hardware gevalideerd. Er is ook nog geen gepubliceerde release. Deze handleiding beschrijft de procedure zoals die na de eerste release werkt.
+> Status (22 november 2026): de **officiële control-firmware is gepubliceerd** (v1.0.0 en v1.0.1). Gebruik altijd de [nieuwste GitHub Release](https://github.com/MarcoHuib/orcon-15rf-controller/releases/latest). De releaseworkflow test en ondertekent de firmware, maar vervangt geen volledige installatie- of hersteltest op echte hardware; zie [hardwarevalidatie](HW_VALIDATIE_PROVISIONING.md).
 
 ## Wat je nodig hebt
 
@@ -10,11 +10,11 @@ Hiermee bedien je je Orcon-ventilatie (HRC/MVS met een 15RF-afstandsbediening) v
 - Eenmalig: een computer met Chrome of Edge, en een USB-kabel (micro-USB, geschikt voor data).
 - Een telefoon met WiFi.
 - Je WiFi-netwerk (2,4 GHz) en het wachtwoord daarvan.
-- Voor stap 3 bij voorkeur je originele Orcon-afstandsbediening.
+- Voor een volledig uitgelezen profiel een bestaande Orcon 15RF-afstandsbediening. Daarna kan de Heltec zelfstandig bedienen; alleen de RF-koppeling volstaat niet voor een compleet profiel.
 
 ## 1. Firmware installeren (één keer, via USB)
 
-1. Download van de releasepagina van dit project het bestand `orcon-controller-heltec-v2-factory.bin`.
+1. Download van de [nieuwste officiële release](https://github.com/MarcoHuib/orcon-15rf-controller/releases/latest) het bestand met achtervoegsel `-factory-usb.bin` (bij v1.0.1: `orcon-control-v1.0.1-1db048b-factory-usb.bin`). **Dit is alleen voor een nieuwe controller: het wist WiFi, wachtwoord, profielen en herstelsleutel.**
 2. Open in Chrome of Edge de officiële webflasher van Espressif: <https://espressif.github.io/esptool-js/>.
 3. Sluit de Heltec aan. Kies **Connect** en selecteer de USB-poort.
 4. Kies het bestand bij adres **0x0** en klik op **Program**.
@@ -63,10 +63,13 @@ Bewaar het bestand en de wachtwoordzin apart en veilig, bijvoorbeeld in je wacht
 
 ## Updates
 
-1. Download het nieuwe updatebestand (`.orconfw`) van de releasepagina.
-2. Open in de webinterface **Systeem → Firmware → Update installeren** en kies het bestand.
+**Via GitHub-updatecontrole:** meld je aan, open **Systeem → Firmware**, kies **Controleer op updates** en, als er een nieuwere versie is, **Update installeren**. Bevestig de installatie. De controller controleert ook periodiek, maar installeert nooit uit zichzelf.
 
-De Heltec controleert of de update officieel ondertekend is, en of hij niet ouder is dan de geïnstalleerde versie. Werkt de nieuwe firmware niet goed, dan keert hij binnen 5 minuten vanzelf terug naar de vorige versie.
+**Handmatig:** download de officiële `.orconfw`-bundel van de [nieuwste release](https://github.com/MarcoHuib/orcon-15rf-controller/releases/latest), open **Systeem → Firmware → Handmatig installeren**, selecteer het bestand en kies **Update installeren**. Gebruik hier nooit een `-factory-usb.bin`.
+
+**Bekend bij v1.0.0:** de online updatecontrole kan vastlopen op lange HTTP-headers van GitHub. Dat is in v1.0.1 opgelost. Installeer de v1.0.1-`.orconfw` in dat geval eenmalig handmatig.
+
+De Heltec controleert de handtekening, hash, apparaatvariant en versie. Een nieuwe firmware draait eerst in een proefstart; bij een niet-bevestigde start volgt na maximaal ongeveer vijf minuten terugval. Een geldige persoonlijke herstelsleutel is vereist om een nieuwe control-update definitief te bevestigen. Houd de voeding aan tijdens de update.
 
 ## Herstellen met de knoppen
 
