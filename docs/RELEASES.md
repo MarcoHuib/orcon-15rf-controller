@@ -1,6 +1,6 @@
 # Officiële releases (GitHub Actions) en updates
 
-> Stand 2026-11-22. De workflow staat op `main` en v1.0.0 is de eerste gepubliceerde release. Branch `feature/release-auto-version`: bij **Run workflow** kies je alleen nog het soort release; het versienummer volgt uit de tags en releases.
+> **Stand 22 november 2026:** officiële control-firmware [v1.0.0](https://github.com/MarcoHuib/orcon-15rf-controller/releases/tag/v1.0.0) en [v1.0.1](https://github.com/MarcoHuib/orcon-15rf-controller/releases/tag/v1.0.1) zijn gepubliceerd. [De nieuwste release](https://github.com/MarcoHuib/orcon-15rf-controller/releases/latest) biedt het USB-factory-image én de ondertekende `.orconfw`-bundel. De releaseworkflow draait op `main`; het versienummer volgt automatisch uit de gepubliceerde geschiedenis.
 
 Alleen de **control-firmware** (`heltec_v2_sx1276_control`) wordt gepubliceerd. De RX-only-, RF-test- en dry-run-images blijven lokale diagnose- of herstelbuilds en worden door de workflow geweigerd.
 
@@ -28,7 +28,7 @@ Daardoor is de getalvolgorde gelijk aan de SemVer-volgorde. Het hoogste nummer i
 
 **Downgradebescherming.** Een controller installeert nooit een release met een lager nummer dan zijn eigen `ORCON_RELEASE_VERSION` (`older-release`). De updatecontrole biedt alleen een *hoger* nummer aan.
 
-De huidige controller (b75fad3) is een ontwikkelbuild met nummer 0. Hij accepteert dus elke release, en `v1.0.0` is een geldige eerste release.
+Een oudere ontwikkelbuild kan een releasenummer 0 hebben. Een gepubliceerde control-firmware gebruikt de versie uit het getekende releasemanifest; controleer op het apparaat de actuele versie via **Systeem → Firmware**. Het gedrag van een specifieke controller is niet af te leiden uit historische voorbeeldcommits.
 
 ### Automatische versie
 
@@ -108,46 +108,15 @@ Elke eigenschap heeft een mutatie die geweigerd moet worden (113 stuks), waarond
 | `BUILD_INFO.json` | controle | commit, versie, image-grootte, SHA-256 van alle onderdelen |
 | `SHA256SUMS` | controle | hashes van alle bovenstaande bestanden |
 
-## GitHub-instellingen
+## GitHub-publicatie en sleutelbeheer
 
-| Instelling | Stand | Door |
-|---|---|---|
-| Environment `orcon-production-release` | **aangemaakt** (2026-11-19) | Claude, via `gh api` |
-| — deployment branches | **alleen `main`** (eigen branchbeleid) | Claude |
-| — required reviewers | **MarcoHuib** (goedkeuring per release) | Claude |
-| — admins mogen regels omzeilen | **nee** (`can_admins_bypass: false`) | Claude |
-| — secret `ORCON_OTA_SIGNING_KEY` | **ONTBREEKT** (bewust niet gezet, zie hieronder) | eigenaar |
-| Repository-secrets en -variabelen | geen (en zo laten) | — |
-| Actions | aan; standaard workflowrechten *read*; PR-goedkeuring door Actions uit | ongewijzigd |
-| Branchbescherming `main` | geen (alleen de eigenaar heeft schrijfrechten) | ongewijzigd, zie aanbeveling |
+De releases worden handmatig gestart via **Actions → Release control firmware (Heltec V2)** op `main`. De workflow bouwt de control-variant, voert host- en veiligheidscontroles uit, ondertekent in de beschermde environment `orcon-production-release`, controleert de bundel opnieuw en publiceert daarna de bestanden. Er wordt **nooit** automatisch firmware op een Heltec geïnstalleerd.
 
-Wil je de extra goedkeuringsklik niet, verwijder dan de reviewer onder Settings → Environments → `orcon-production-release`. Het branchbeleid moet blijven.
+**Feitelijke verificatie:** v1.0.0 en v1.0.1 hebben een GitHub Release met een officieel `.orconfw`-bestand en bijbehorende controlebestanden. De [release v1.0.1](https://github.com/MarcoHuib/orcon-15rf-controller/releases/tag/v1.0.1) vermeldt de gebruikte workflowrun en het getekende image. Eerdere aantekeningen dat er **geen signing-secret** was of dat een release **nog niet kon worden gepubliceerd**, zijn daardoor achterhaald. De actuele configuratie en toegang tot secrets zijn niet uit de publieke releasebestanden af te leiden; controleer wijzigingen daaraan uitsluitend in de beveiligde GitHub-instellingen.
 
-## Sleutel: wat nog ontbreekt
+De **firmware-signingsleutel** is bedoeld om officiële updatepakketten te authentiseren. Een **persoonlijke eigenaarssleutel** (`orcon-recovery-key.pem`) is per Heltec verschillend en uitsluitend bedoeld voor herstel in de fysieke herstelmodus. De oude Legacy-route die de firmwaresleutel ook voor wachtwoordherstel gebruikte, is verwijderd uit de officiële control-firmware. Zie [Herstelsleutelmigratie](HERSTELSLEUTEL_MIGRATIE.md) voor de historische overgang en de voorwaarden op oudere images.
 
-**Feiten (gecontroleerd):**
-- `~/.orcon/ota-signing-key.pem` hoort bij `src/ota_pubkey.h`: SPKI-SHA-256 `e71543f1…`.
-- `ota_pubkey.h` is ongewijzigd sinds bb80bb3. De firmware op het board (b75fad3 in app1, 2edb423 in app0) vertrouwt dus precies deze sleutel.
-- Een release moet met deze sleutel getekend zijn, anders weigert de huidige controller hem. Daarom wordt er geen nieuwe sleutel gebruikt en niet geroteerd.
-
-**Waarom het secret nog niet is gezet.** Op een controller in de toestand *legacy* (gemigreerd, nog geen herstelsleutel van de eigenaar) is deze sleutel méér dan een firmwaresleutel. Wie hem heeft, kan via `orcon.py auth-code` (`/api/auth/nonce` + `/api/auth/reset`, `vendorRecoveryOk()` in `setup_web.cpp`) vanaf het thuisnetwerk een herstelcode krijgen en het beheerderswachtwoord vervangen. Jouw controller meldt `legacy`.
-
-Staat de sleutel in GitHub, dan geeft een lek daar (plus toegang tot je netwerk) toegang tot je controller. Dat valt buiten de opdracht "alleen als bestaande apparaten zonder rotatie veilig blijven". Een lek kan op drie manieren ontstaan:
-- een kwaadaardige commit op `main`;
-- een gecompromitteerde action;
-- GitHub zelf.
-
-**Volgorde (verplicht):** eerst de migratie in [HERSTELSLEUTEL_MIGRATIE.md](HERSTELSLEUTEL_MIGRATIE.md), stap 0 tot en met 5: herstelsleutel registreren, controleren, en het herstel met het bestand bewezen. Pas daarna het secret:
-```
-gh secret set ORCON_OTA_SIGNING_KEY --env orcon-production-release --repo MarcoHuib/orcon-15rf-controller < ~/.orcon/ota-signing-key.pem
-```
-`gh` versleutelt lokaal (sealed box). De inhoud verschijnt niet in de terminal of in logs. Het lokale bestand blijft staan.
-
-Zonder secret faalt de job `sign` met `signing key missing`. Er wordt dan niets gepubliceerd.
-
-**Definitief (branch `feature/remove-legacy-recovery`):** de firmware zonder Legacy-paden heeft geen herstel met deze sleutel meer. Een update op een board zonder herstelsleutel wordt niet bevestigd en valt terug. Migratievolgorde: [HERSTELSLEUTEL_MIGRATIE.md](HERSTELSLEUTEL_MIGRATIE.md).
-
-**Later (apart akkoord):** een aparte releasesleutel K_rel volgens [RELEASESLEUTEL.md](RELEASESLEUTEL.md), zodat de ontwikkel-Mac en GitHub niet dezelfde sleutel delen.
+Een bestaande controller zonder geldige geregistreerde eigenaarssleutel kan een nieuwe control-update niet definitief bevestigen. Controleer vóór een update of **Systeem → Herstelsleutel** correct is ingericht; volg bij een oudere migratie het aparte draaiboek. Gebruik geen factory-USB-image als update: dat wist instellingen.
 
 ## Bekende restpunten van het releaseproces (Codex r4, MINOR)
 
@@ -179,29 +148,20 @@ bash test/run_host_tests.sh           # alles, incl. updatecontrole en webinterf
 
 Gebruik voor tekentests nooit de productiesleutel. De tests maken per run wegwerpsleutels.
 
-## Eerste release: wat er op het board gebeurt
+## Effect van een release op de controller
 
-Zie [A/B-overgang](AB_OVERGANG.md). Kort samengevat:
-- Het board draait b75fad3 (control) uit **app1**. De eerste release gaat dus naar **app0** en vervangt het oude RX-only-image 2edb423.
-- b75fad3 blijft de terugvaloptie.
-- Daarna wisselen app0 en app1 per release, steeds met de vorige control-release als terugvaloptie.
+De publieke release bevat uitsluitend het control-image. Een bestaande controller installeert het officiële `.orconfw`-bestand via **Systeem → Firmware** in het niet-actieve firmware-slot. Na de herstart draait de nieuwe versie in een proefstart. Pas bij een gezonde start (onder meer tijd, wifi, radio-ontvangst en een geldige eigenaarssleutel) wordt die versie definitief; anders volgt automatisch terugval naar het vorige geldige image. De actuele slotindeling verschilt per apparaat en per update. Zie [OTA](OTA.md) en [A/B-overgang](AB_OVERGANG.md).
 
-## Hardwarevalidatie (nog te doen, met toestemming per stap)
+**Geen fysieke test door GitHub Actions:** de publicatieworkflow controleert builds, hashes, handtekeningen en hosttests, maar heeft geen Heltec aan boord. Voor praktijkvalidatie op een echte controller zijn afzonderlijke stappen relevant: updatecontrole via GitHub, handmatige `.orconfw`, proefstart/rollback, RF-bediening en Siri, behoud van profielen/wifi en de fysieke herstelopties. De status van die hardwaretests moet bij de betreffende testresultaten worden vastgelegd; een gepubliceerde release is niet automatisch bewijs voor al deze controles.
 
-1. De eerste release installeren via **Update installeren**. Dan controleren:
-   - voortgang;
-   - proefstart;
-   - *Update geslaagd*;
-   - `/api/ota`: app0 valid en running, app1 = b75fad3 valid.
-2. `/api/update` na de controle: `mem.heap_min_job` en `mem.stack_free_job` noteren (TLS-geheugen).
-3. RF-bediening en Siri na de update. Profielen, WiFi en eigenaarschap moeten ongewijzigd zijn (`orcon.py backup-check`).
-4. Optioneel een rollbacktest met de volgende release (`orcon.py ota-install --test-rollback`, of de hold-knop): het board moet terug naar de vorige control-release.
+**Bekend verschil tussen v1.0.0 en v1.0.1:** bij v1.0.0 kan GitHubs lange HTTP-header een fout in **Controleer op updates** veroorzaken. v1.0.1 corrigeert de parser. Is v1.0.0 al geïnstalleerd en mislukt de automatische controle, gebruik dan eenmalig de officiële **v1.0.1-`.orconfw`** via **Handmatig installeren**. Zo'n handmatige update doorloopt dezelfde handtekening- en rollbackcontroles.
 
-## Eerder genoemde releaseblokkades (besluit eigenaar)
+## Bekende beperkingen en toekomstig werk
 
-De workflow controleert deze niet. Ze blijven gelden voor een release die ook voor anderen bedoeld is:
-- HTTPS op het LAN ([HTTPS_ONTWERP.md](HTTPS_ONTWERP.md));
-- hardwarevalidatie van de installatiewizard ([HW_VALIDATIE_PROVISIONING.md](HW_VALIDATIE_PROVISIONING.md));
-- een aparte releasesleutel ([RELEASESLEUTEL.md](RELEASESLEUTEL.md)).
+De officiële releases bestaan, maar de volgende punten blijven relevant voor een bredere, beter gevalideerde uitrol:
 
-Voor een release voor je eigen controller zijn ze geen technische voorwaarde.
+- **HTTP zonder TLS op het thuisnetwerk.** Dit is in de huidige control-firmware niet opgelost; gebruik uitsluitend een vertrouwd LAN. Zie [HTTPS-ontwerp](HTTPS_ONTWERP.md).
+- **Hardwarevalidatie.** De GitHub-workflow is geen fysieke installatie- en hersteltest; leg de resultaten van [Hardwarevalidatie](HW_VALIDATIE_PROVISIONING.md) afzonderlijk vast.
+- **Sleutelscheiding.** Een afzonderlijke releasesleutel is beschreven als mogelijke toekomstige versterking in [Releasesleutel](RELEASESLEUTEL.md). De actuele ondertekening mag niet zonder migratieplan worden gewijzigd.
+
+Deze punten zijn dus **beperkingen van bestaande releases**, niet een aanwijzing dat er nog geen firmware kan worden gedownload.
