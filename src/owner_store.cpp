@@ -228,6 +228,8 @@ bool unsettledBoot() {
     if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) != ESP_OK) return true;
     return !(st == ESP_OTA_IMG_VALID || st == ESP_OTA_IMG_UNDEFINED);
 }
+// Matter builds (idf/components/orcon_matter/orcon_matter_nvs.cpp): erase Matter's own storage; absent elsewhere.
+extern "C" bool orcon_matter_factory_wipe(void) __attribute__((weak));
 struct Ops : provision::ResetOps {
     // The marker lives in the ownership sentinel, outside NVS: an NVS auto-format cannot swallow a pending
     // reset (Codex OWNER-11). Tri-state (Codex OWNER-01): only a confirmed absence means "no reset pending".
@@ -254,6 +256,7 @@ struct Ops : provision::ResetOps {
     // release key for password recovery again. It is not erased but overwritten with a copy of the
     // running, confirmed image: no pre-owner firmware remains, and the device keeps two bootable
     // owner-model images (bootloader fallback, and a rollback target for the next OTA, both intact).
+    bool eraseMatter() override { return orcon_matter_factory_wipe ? orcon_matter_factory_wipe() : true; }   // weak: Matter builds
     bool retirePreOwnerSlot() override {
         const esp_partition_t* other = esp_ota_get_next_update_partition(nullptr);
         const esp_partition_t* run = esp_ota_get_running_partition();

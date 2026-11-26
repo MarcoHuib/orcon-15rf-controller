@@ -27,10 +27,11 @@ inline bool nvsStateWord(uint32_t s) { return s == 0xFFFFFFFEu || s == 0xFFFFFFF
 
 // Matter's namespaces: CHIP's ESP32 platform (ESP32Config.cpp: chip-factory, chip-config, chip-counters;
 // KeyValueStoreManagerImpl.h: CHIP_KVS) and ESP-Matter (esp_matter_nvs.h: esp_matter_kvs; "node" and
-// "endpoint_<hex>" only as the source of its own one-way migration). Checked against the QEMU chipkvs dumps.
+// "endpoint_<hex>" only as the source of its own one-way migration), and this device's own Matter identity
+// (orcon_matter_identity.h: orcon-id). Checked against the QEMU chipkvs dumps.
 inline bool matterNamespace(const char* n) {
     static const char* const kNames[] = {"chip-factory", "chip-config", "chip-counters", "CHIP_KVS", "esp_matter_kvs",
-                                         "node"};
+                                         "node", "orcon-id"};
     for (const char* k : kNames)
         if (strcmp(n, k) == 0) return true;
     if (strncmp(n, "endpoint_", 9) != 0) return false;

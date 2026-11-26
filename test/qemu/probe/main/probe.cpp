@@ -11,6 +11,12 @@
 // the probe confirmed its image) checks that the labels were kept and no default replaced them.
 // Each step prints "PROBE <step> PASS|FAIL <facts>"; "PROBE heap ..." the free internal RAM; "PROBE DONE boot=N
 // pass=N fail=M" ends the run.
+// The identity lives on the device (orcon_matter_identity.h): a boot without one makes it, as the owner's "Matter
+// activeren" does. tools/qemu_memtest.sh picks each boot's scenario with one byte in the unused middle of spiffs:
+//   N (or erased) normal; I an activation cut off before its digest; D one stored byte changed; X the boot after that
+//   (damaged: Matter off, the image still confirms); R the owner's new identity after damage; F Orcon's factory wipe.
+// A boot that makes or keeps an identity prints its facts and certificates (throwaway QEMU identities only), so the
+// runner can compare devices and boots and check the chain with CHIP's own chip-cert.
 #include <Arduino.h>
 #include <WebServer.h>
 #include <esp_eth.h>
@@ -37,14 +43,23 @@
 #include <platform/CHIPDeviceLayer.h>
 #include <platform/DeviceInstanceInfoProvider.h>
 
+#include <esp_partition.h>
+#include <esp_random.h>
+#include <mbedtls/sha256.h>
+#include <nvs.h>
+
 #include "orcon_matter.h"
+#include "orcon_matter_identity.h"
 #include "orcon_matter_nvs.h"
+
+extern "C" bool orcon_matter_factory_wipe(void);   // orcon_matter_nvs.cpp, Orcon's factory reset step
+namespace mid = orcon_matter::identity;
 
 using namespace chip::app::Clusters;
 using FanModeEnum = FanControl::FanModeEnum;
 
 // Stand-ins for the Orcon symbols the component refers to (no Orcon here).
-namespace net { void begin() {} void loop() {} }
+namespace net { void begin() {} void loop() {} void restartSoon() {} bool restartQueued() { return false; } }
 namespace ota { bool writerBusy() { return false; } void begin(WebServer&) {} }
 namespace radio { namespace sx1276 { bool txBegin(const uint8_t*, size_t) { return true; } } }
 namespace updsvc { bool updateBoot() { return false; } }
@@ -211,13 +226,102 @@ static void unitReports(uint8_t mode) { sim::unit = mode; sim::txBusy = false; }
 
 static const char* const kUserRoot = "Mijn Orcon", * const kUserFan = "Woonkamer test";   // "a user's" labels
 
+// ---- the identity on the device (before Matter starts: no stack lock, so no fan snapshot) ----------------------
+static void checkPlain(const char* step, bool ok) {
+    printf("PROBE %s %s\n", step, ok ? "PASS" : "FAIL");
+    ++(ok ? g_pass : g_fail);
+}
+static char scenario() {   // tools/qemu_memtest.sh writes it at spiffs + 0x80000 (outside Matter's 48 KB and the sentinel)
+    const esp_partition_t* sp = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
+    uint8_t b = 0xFF;
+    if (sp) esp_partition_read(sp, 0x80000, &b, 1);
+    return b == 0xFF ? 'N' : char(b);
+}
+// One printf (no other task's log line lands inside it), from a buffer that exists only meanwhile: before Matter
+// starts, so the probe's own export never lowers what it measures.
+static void printBlob(const char* name, const char* key) {
+    constexpr size_t kMax = 600;
+    uint8_t* b = static_cast<uint8_t*>(malloc(kMax + 2 * kMax + 1));
+    if (!b) { printf("PROBE blob %s=none\n", name); return; }
+    char* hex = reinterpret_cast<char*>(b + kMax);
+    chip::MutableByteSpan s(b, kMax);
+    if (mid::read(key, s) == CHIP_NO_ERROR) {
+        for (size_t i = 0; i < s.size(); ++i) snprintf(hex + 2 * i, 3, "%02x", s.data()[i]);
+        hex[2 * s.size()] = '\0';
+        printf("PROBE blob %s=%s n=%u\n", name, hex, unsigned(s.size()));
+    } else {
+        printf("PROBE blob %s=none\n", name);
+    }
+    free(b);
+}
+static void printIdentity() {   // what identifies this device, as hashes; and its public certificates for chip-cert
+    uint8_t pub[65], h[32] = {0}, q[32] = {0};
+    chip::MutableByteSpan p(pub);
+    if (mid::read(mid::kDacPub, p) == CHIP_NO_ERROR) mbedtls_sha256(p.data(), p.size(), h, 0);
+    mbedtls_sha256(reinterpret_cast<const uint8_t*>(mid::qrCode()), strlen(mid::qrCode()), q, 0);
+    printf("PROBE identity state=%s origin=%d serial=%s disc=%u dac=%02x%02x%02x%02x%02x%02x%02x%02x qr=%02x%02x%02x%02x%02x%02x\n",
+           mid::stateName(), int(mid::origin()), mid::serial(), unsigned(mid::discriminator()), h[0], h[1], h[2], h[3], h[4], h[5],
+           h[6], h[7], q[0], q[1], q[2], q[3], q[4], q[5]);
+    printBlob("paa", mid::kPaaCert);
+    printBlob("pai", mid::kPaiCert);
+    printBlob("dac", mid::kDacCert);
+    printBlob("cd", mid::kCd);
+}
+static void scenarioOnly(char sc, mid::State st) {   // the short boots: no Matter start
+    nvs_handle_t h;
+    switch (sc) {
+        case 'I': {   // an activation cut off before its digest: some fields written, the digest never
+            uint8_t junk[32];
+            esp_fill_random(junk, sizeof junk);
+            bool ok = nvs_open_from_partition("chipkvs", "orcon-id", NVS_READWRITE, &h) == ESP_OK;
+            if (ok) {
+                ok = nvs_erase_all(h) == ESP_OK && nvs_set_u8(h, "v", 1) == ESP_OK && nvs_set_blob(h, mid::kDacKey, junk, sizeof junk) == ESP_OK &&
+                     nvs_commit(h) == ESP_OK;
+                nvs_close(h);
+            }
+            checkPlain("interrupted-activation-left-behind", ok && st == mid::State::Absent);
+            break;
+        }
+        case 'D': {   // one stored byte changes (a flash fault, or a hand): the record no longer matches its digest
+            uint8_t salt[32];
+            chip::MutableByteSpan s(salt);
+            bool ok = st == mid::State::Valid && mid::read(mid::kSalt, s) == CHIP_NO_ERROR &&
+                      nvs_open_from_partition("chipkvs", "orcon-id", NVS_READWRITE, &h) == ESP_OK;
+            if (ok) {
+                salt[0] ^= 1;
+                ok = nvs_set_blob(h, mid::kSalt, salt, s.size()) == ESP_OK && nvs_commit(h) == ESP_OK;
+                nvs_close(h);
+            }
+            checkPlain("one-stored-byte-changed", ok);
+            break;
+        }
+        case 'X':   // damaged: Matter stays off, nothing replaces the record by itself, and the image still confirms
+            checkPlain("damage-detected", st == mid::State::Damaged);
+            checkPlain("damaged-record-not-used", !orcon_matter::identityPresent() && mid::passcode() == 0 && !mid::qrCode()[0]);
+            checkPlain("damaged-image-still-confirms", esp_ota_mark_app_valid_cancel_rollback() == ESP_OK);
+            break;
+        case 'R':   // the owner's explicit choice after damage: a new identity (a new device for every controller)
+            checkPlain("replace-starts-from-damaged", st == mid::State::Damaged);
+            checkPlain("new-identity-after-damage", mid::erase() == ESP_OK && mid::generate() == ESP_OK && mid::state() == mid::State::Valid);
+            printIdentity();
+            break;
+        case 'F':   // Orcon's factory reset step ran before NVS opened (setup())
+            checkPlain("factory-wipe-leaves-no-identity", st == mid::State::Absent);
+            checkPlain("unactivated-image-confirms", esp_ota_mark_app_valid_cancel_rollback() == ESP_OK);
+            break;
+        default:
+            checkPlain("known-scenario", false);
+    }
+    printf("PROBE DONE boot=%c pass=%d fail=%d\n", sc, g_pass, g_fail);
+}
+
 static void identityChecks() {   // what a controller reads at commissioning (Basic Information, DN of _matterc._udp)
     char b[72];
     const auto read = [&b](CHIP_ERROR e) -> const char* { return e == CHIP_NO_ERROR ? b : "<read failed>"; };
     chip::DeviceLayer::DeviceInstanceInfoProvider* p = chip::DeviceLayer::GetDeviceInstanceInfoProvider();
     checkText("root-vendor-name", read(p->GetVendorName(b, sizeof b)), "Zelfbouw (niet van Orcon)");
     checkText("root-product-name", read(p->GetProductName(b, sizeof b)), "15RF-controller voor Orcon");
-    checkText("root-serial", read(p->GetSerialNumber(b, sizeof b)), CONFIG_USE_TEST_SERIAL_NUMBER);
+    checkText("root-serial", read(p->GetSerialNumber(b, sizeof b)), mid::serial());
     checkText("root-hardware", read(p->GetHardwareVersionString(b, sizeof b)), "Heltec WiFi LoRa 32 V2");
     checkText("dnssd-dn-name", read(chip::DeviceLayer::ConfigurationMgr().GetCommissionableDeviceName(b, sizeof b)),
               "Orcon ventilator");
@@ -232,7 +336,7 @@ static void identityChecks() {   // what a controller reads at commissioning (Ba
     bridgedText(BridgedDeviceBasicInformation::Attributes::ProductName::Id, b, sizeof b);
     checkText("bridged-product-name", b, "15RF-controller voor Orcon");
     bridgedText(BridgedDeviceBasicInformation::Attributes::SerialNumber::Id, b, sizeof b);
-    checkText("bridged-serial", b, CONFIG_USE_TEST_SERIAL_NUMBER);
+    checkText("bridged-serial", b, mid::serial());
     bridgedText(BridgedDeviceBasicInformation::Attributes::UniqueID::Id, b, sizeof b);
     check("bridged-unique-id", !strncmp(b, "orcon-fan-", 10) && strlen(b) == 16);
 #else
@@ -387,7 +491,31 @@ void setup() {
     for (int i = 0; i < 300 && !g_netUp; ++i) delay(100);
     printf("PROBE net=%s\n", g_netUp ? "up" : "DOWN");
     const unsigned before = unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    const char sc = scenario();
+    printf("PROBE scenario=%c\n", sc);
+    if (sc == 'F') checkPlain("factory-wipe", orcon_matter_factory_wipe());   // as provision::resume() at boot
     esp_err_t err = orcon_matter::matterNvsBegin();
+    const mid::State st = err == ESP_OK ? mid::load() : mid::State::Unknown;
+    printf("PROBE identity-loaded=%s\n", mid::stateName());
+    if (sc != 'N') { scenarioOnly(sc, st); return; }
+    if (st == mid::State::Absent && mid::embeddedPresent()) {   // a migration build: its identity moves onto the device
+        const esp_err_t m = mid::migrateEmbedded();
+        printf("PROBE migrate=%s\n", esp_err_to_name(m));
+        checkPlain("identity-moved-onto-device", m == ESP_OK && mid::state() == mid::State::Valid && mid::origin() == mid::Origin::Migrated);
+        checkPlain("codes-equal-the-embedded-ones", mid::embeddedCodesMatch());
+    } else if (st == mid::State::Absent) {   // the owner's "Matter activeren"
+        const esp_err_t g = mid::generate();
+        const mid::GenStats s = mid::lastGenStats();
+        printf("PROBE generate=%s ms=%u heap_before=%u heap_after=%u heap_min=%u\n", esp_err_to_name(g), unsigned(s.ms),
+               unsigned(s.heapBefore), unsigned(s.heapAfter), unsigned(s.heapMinAfter));
+        checkPlain("identity-made-on-device", g == ESP_OK && mid::state() == mid::State::Valid && mid::origin() == mid::Origin::Generated);
+    } else {
+        checkPlain("identity-kept", st == mid::State::Valid);
+    }
+    printIdentity();
+    checkPlain("codes-from-identity", strlen(orcon_matter::manualCode()) == 11 && !strncmp(orcon_matter::qrCode(), "MT:", 3));
+    checkPlain("confirm-refused-before-matter-runs", esp_ota_mark_app_valid_cancel_rollback() == ESP_ERR_INVALID_STATE);
+    if (err == ESP_OK && mid::state() != mid::State::Valid) err = ESP_ERR_INVALID_STATE;
     if (err == ESP_OK) err = orcon_matter::createModel();
     const unsigned model = unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     // Boot 1: a stale "off" in the fan's On/Off, as the first layout's outlet on endpoint 2 leaves it in NVS (there

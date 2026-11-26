@@ -27,6 +27,17 @@ with tempfile.TemporaryDirectory() as d:
         r = subprocess.run([sys.executable, str(ROOT / 'tools/check_privacy.py'), str(p)], capture_output=True, text=True)
         check(r.returncode != 0, f'{name}: refused')
 
+# IPv4 addresses in every usual spot are refused; a dotted number of more than four groups (an OID such as Matter's
+# vendor attribute 1.3.6.1.4.1.37244.2.1, or a version) is no address.
+with tempfile.TemporaryDirectory() as d:
+    lan = '192.168.' + '50.7'
+    for name, text, want in (('ip-text.txt', f'host {lan} here', True), ('ip-end.txt', f'see {lan}.', True), ('ip-url.txt', f'http://{lan}/x', True),
+                             ('ip-port.txt', f'{lan}:80', True), ('ip-quoted.txt', f'"{lan}"', True), ('oid.txt', 'oid 1.3.6.1.4.1.37244.2.1', False),
+                             ('version.txt', 'version 1.2.3.4.5', False)):
+        p = Path(d) / name; p.write_text(text + '\n')
+        r = subprocess.run([sys.executable, str(ROOT / 'tools/check_privacy.py'), str(p)], capture_output=True, text=True)
+        check(('IPv4 address' in r.stdout) == want, f"{name}: {'refused' if want else 'allowed'}")
+
 # Matter (docs/MATTER.md): a pairing code (the specification's construction: chunks and Verhoeff check digit), a QR
 # payload, identity bytes or values and identity, firmware, key and log files are refused; the CHIP specification's
 # example code and payloads, test values and the zero placeholder are allowed. Assembled at run time, as above.

@@ -14,7 +14,7 @@ static bool is(const char* got, const char* want) { return want ? got && !strcmp
 // Flash as the reset sees it; "budget" operations succeed, then the power fails (every later op fails).
 struct Flash : ResetOps {
     std::set<std::string> ns{"orcon", "orconauth", "orconown", "orconprofiles", "nvs.net80211", "orconother"};
-    bool marked = false, dump = true, preOwner = true, dead = false, unreadable = false;
+    bool marked = false, dump = true, matter = true, preOwner = true, dead = false, unreadable = false;
     int budget = 1 << 30;
     std::vector<std::string> log;
     bool step(const std::string& what) { if (dead || budget-- <= 0) { dead = true; return false; } log.push_back(what); return true; }
@@ -23,11 +23,12 @@ struct Flash : ResetOps {
     bool mark() override { if (!step("mark")) return false; marked = true; return true; }
     bool eraseNamespace(const char* n) override { if (!step(std::string("erase ") + n)) return false; ns.erase(n); return true; }
     bool eraseCrashDump() override { if (!step("dump")) return false; dump = false; return true; }
+    bool eraseMatter() override { if (!step("matter")) return false; matter = false; return true; }
     bool retirePreOwnerSlot() override { if (!step("slot")) return false; preOwner = false; return true; }
     bool clear() override { if (!step("clear")) return false; marked = false; return true; }
     void reboot() { dead = false; budget = 1 << 30; }
-    bool wiped() const { return ns.size() == 1 && ns.count("orconother") && !dump && !preOwner; }   // only a foreign namespace is left
-    bool untouched() const { return ns.size() == 6 && dump && preOwner && !marked; }
+    bool wiped() const { return ns.size() == 1 && ns.count("orconother") && !dump && !matter && !preOwner; }   // only a foreign namespace is left
+    bool untouched() const { return ns.size() == 6 && dump && matter && preOwner && !marked; }
 };
 
 // The two sentinel sectors with power cuts: after `budget` byte steps the power fails. An erase clears byte by
@@ -151,10 +152,11 @@ int main() {
         CHECK(resume(f) && f.untouched() && f.log.empty());               // nothing pending: nothing happens
         CHECK(request(f) && f.marked && f.ns.size() == 6);                // the request itself erases nothing
         f.reboot(); CHECK(resume(f) && f.wiped() && !f.marked && f.ns.count("orconother"));
-        CHECK(f.log.size() == 9 && f.log[0] == "mark" && f.log[1] == "erase orconauth" && f.log[2] == "erase orconown" && f.log.back() == "clear");
+        CHECK(f.log.size() == 10 && f.log[0] == "mark" && f.log[1] == "erase orconauth" && f.log[2] == "erase orconown" && f.log.back() == "clear");
+        CHECK(f.log[6] == "dump" && f.log[7] == "matter" && f.log[8] == "slot");    // Matter's storage before the slot copy
     }
     // A power cut after every possible number of steps, then normal boots until it settles.
-    for (int cut = 0; cut <= 10; ++cut) {
+    for (int cut = 0; cut <= 11; ++cut) {
         Flash f;
         f.budget = cut;
         const bool reqOk = request(f);

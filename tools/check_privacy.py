@@ -17,7 +17,7 @@ ALLOWED_IPS = {"0.0.0.0", "127.0.0.1", "10.0.0.5", "192.168.1.10", "192.168.4.1"
                "192.168.2.137", "192.168.2.139", "192.168.2.140"}                    # pre-existing defaults/examples
 ID = re.compile(r"\b(\d\d):(\d{6})\b")
 MAC = re.compile(r"\b[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}\b")
-IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+IP = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?!\w|\.\d)")   # as \b...\b, but never inside a longer dotted number (an OID)
 HOME = re.compile(r"(?:/Users|/home)/[A-Za-z][\w.-]*")   # personal absolute paths
 # A private key: a PEM block whose payload is real key material, in any representation: a .pem file,
 # one long line, C/JS string lines, a single escaped string, traditional encrypted PEM with headers

@@ -78,3 +78,22 @@ esp_err_t matterNvsBegin() {
     return nvs_flash_init_partition_ptr(&g_part);
 }
 }  // namespace orcon_matter
+
+// Orcon's factory reset (provision::resume(), at boot before Matter starts): all of Matter's storage goes, its fabrics
+// and this device's Matter identity, so the next owner gets a new device with a new passcode. Only a region that is
+// blank or provably Matter's own NVS is erased; foreign bytes stay (nothing of Matter to wipe there). A read error is
+// "not done" (the reset retries at the next boot), never "nothing there".
+extern "C" bool orcon_matter_factory_wipe(void) {
+    const esp_partition_t* sp = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
+    if (!sp || sp->size < kSize) return true;   // no Matter storage on this layout
+    esp_partition_t region = *sp;
+    region.size = kSize;
+    bool readOk = false;
+    const orcon_matter::RegionCheck r = checkRegion(&region, readOk);
+    if (!readOk) return false;
+    if (!r.ok() || r.erased * kPage == kSize) return true;   // foreign data, or already blank
+    nvs_flash_deinit_partition(orcon_matter::kMatterNvsLabel);   // when this boot opened it (else a harmless error)
+    const esp_err_t err = esp_partition_erase_range(sp, 0, kSize);
+    ESP_LOGW(TAG, "factory reset: Matter's storage (fabrics and identity) erased: %s", esp_err_to_name(err));
+    return err == ESP_OK;
+}

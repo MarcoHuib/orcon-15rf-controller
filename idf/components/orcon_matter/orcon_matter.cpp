@@ -27,6 +27,7 @@
 //   (orcon_matter_nvs.cpp); a region holding foreign bytes is refused and Matter stays off.
 #include "orcon_matter.h"
 #include "orcon_matter_control.h"
+#include "orcon_matter_identity.h"
 #include "orcon_matter_nvs.h"
 #include "orcon_matter_heapmon.h"
 #include "orcon_matter_state.h"
@@ -484,7 +485,8 @@ esp_err_t createModel() {
         namespace bdbi = cluster::bridged_device_basic_information::attribute;
         // NodeLabel is NONVOLATILE: a label a controller wrote is loaded from NVS at create and wins over this default
         char label[kMaxLabel + 1], vendor[] = CHIP_DEVICE_CONFIG_DEVICE_VENDOR_NAME,
-             product[] = CHIP_DEVICE_CONFIG_DEVICE_PRODUCT_NAME, serial[] = CONFIG_USE_TEST_SERIAL_NUMBER;
+             product[] = CHIP_DEVICE_CONFIG_DEVICE_PRODUCT_NAME, serial[24] = CONFIG_USE_TEST_SERIAL_NUMBER;
+        if (identity::serial()[0]) strlcpy(serial, identity::serial(), sizeof serial);   // the device's own
         strlcpy(label, kDeviceLabel, sizeof label);
         char version[33];
         strlcpy(version, esp_app_get_description()->version, sizeof version);
@@ -534,13 +536,24 @@ esp_err_t begin() {
         return ESP_ERR_INVALID_STATE;
     }
     g_waitForNetwork = false;
-    if (!identityPresent()) {   // no own identity in this build (placeholder): no Matter, no pairing
-        g_mtr.fail("no-identity", ESP_ERR_INVALID_STATE, millis());
+    if (updsvc::updateBoot()) {   // the owner's restart for an update check: Matter stays off this boot only
+        g_mtr.fail("update-boot", ESP_OK, millis());
         stateLine("start");
         return ESP_ERR_INVALID_STATE;
     }
-    if (updsvc::updateBoot()) {   // the owner's restart for an update check: Matter stays off this boot only
-        g_mtr.fail("update-boot", ESP_OK, millis());
+    // The identity lives on the device, in Matter's own NVS (orcon_matter_identity.h): open that first.
+    esp_err_t nerr = matterNvsBegin();
+    if (nerr != ESP_OK) {
+        g_mtr.fail("nvs", nerr, millis());
+        stateLine("start");
+        return nerr;
+    }
+    identity::State id = identity::load();
+    if (id == identity::State::Absent && identity::embeddedPresent() && identity::migrateEmbedded() == ESP_OK)
+        id = identity::state();   // a migration build: its own identity now lives on the device
+    if (id != identity::State::Valid) {   // not activated yet (the owner's page offers it), or a damaged record
+        g_mtr.fail(id == identity::State::Absent ? "not-activated" : id == identity::State::Damaged ? "identity-damaged" : "identity",
+                   id == identity::State::Absent ? ESP_OK : ESP_ERR_INVALID_CRC, millis());
         stateLine("start");
         return ESP_ERR_INVALID_STATE;
     }
@@ -553,9 +566,8 @@ esp_err_t begin() {
     }
     heapMonitorSet(MonPhase::MatterStart, true);
     g_startHeap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    const char* step = "nvs";
-    esp_err_t err = matterNvsBegin();          // dedicated Matter NVS when configured (e18); else no-op
-    if (err == ESP_OK) { step = "model"; err = createModel(); }
+    const char* step = "model";
+    esp_err_t err = createModel();
     if (err == ESP_OK) { step = "start"; setCredentialProviders(); err = esp_matter::start(onChipEvent); }
     if (err == ESP_OK) {
         // Orcon's net layer owns Wi-Fi (connect, reconnect, setup AP). Otherwise CHIP's
@@ -601,8 +613,12 @@ extern "C" void __wrap__ZN3net5beginEv() {
 // without Matter by 300 s Orcon rolls back to the previous image. Not running at all (no home network) is already
 // "unhealthy" for Orcon. Nothing else in this build confirms images (no Matter OTA requestor).
 extern "C" esp_err_t __real_esp_ota_mark_app_valid_cancel_rollback(void);
+// A universal image without an activated identity (or with a damaged one, which no other image fixes) confirms like
+// any Orcon image: Matter is not expected to run there.
 extern "C" esp_err_t __wrap_esp_ota_mark_app_valid_cancel_rollback(void) {
-    if (!orcon_matter::matterReady()) {
+    const orcon_matter::identity::State id = orcon_matter::identity::state();
+    const bool matterExpected = id != orcon_matter::identity::State::Absent && id != orcon_matter::identity::State::Damaged;
+    if (matterExpected && !orcon_matter::matterReady()) {
         ++orcon_matter::g_confirmRefused;
         stateLine("confirm-refused");
         return ESP_ERR_INVALID_STATE;

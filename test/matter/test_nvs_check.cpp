@@ -69,10 +69,11 @@ int main(int argc, char** argv) {
     assert(crc32le(0, v, 9) == 0xCBF43926u);   // the standard CRC-32 check value
 
     // names
-    for (const char* n : {"chip-factory", "chip-config", "chip-counters", "CHIP_KVS", "esp_matter_kvs", "node",
+    for (const char* n : {"chip-factory", "chip-config", "chip-counters", "CHIP_KVS", "esp_matter_kvs", "node", "orcon-id",
                           "endpoint_0", "endpoint_1F", "endpoint_FFFF"})
         assert(matterNamespace(n));
-    for (const char* n : {"orcon", "orconown", "nvs.net80211", "chip_kvs", "endpoint_", "endpoint_1g", "endpoint_12345", ""})
+    for (const char* n : {"orcon", "orconown", "orcon-idx", "orcon-i", "nvs.net80211", "chip_kvs", "endpoint_", "endpoint_1g",
+                          "endpoint_12345", ""})
         assert(!matterNamespace(n));
 
     // pages
