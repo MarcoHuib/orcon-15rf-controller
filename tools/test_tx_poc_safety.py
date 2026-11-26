@@ -806,7 +806,7 @@ def release_workflow_safe(text):
 WORKFLOWS={'heltec-v2-rx-only.yml':'fbf3af64a87be3822246c0adc17ba3cb5ec42c1ddb725c455153f8fd4ea7a563',   # file -> sha256 of the reviewed content
            'release-control.yml':'3c903ee8c13c224629a61fe8620445a1859ec903bdbb346e2e3350c97b06a258',
            # Matter checks (pull requests): contents read, no secrets, no artifact; the placeholder identity only
-           'matter.yml':'81cbc5ca70ff0ab999afa8393b528bd71e06326b43c2bc863d966618f4afec2c'}
+           'matter.yml':'a100667c36bcdd86ece1a9a03b73bafe8ef705a8359c8316e76d86eec14b7c7f'}
 def workflows_reviewed(files):   # files: name -> bytes (None: not a regular file) of every *.yml/*.yaml entry
     assert sorted(files)==sorted(WORKFLOWS),('workflow files differ from the reviewed list',sorted(files))
     for n,data in files.items():

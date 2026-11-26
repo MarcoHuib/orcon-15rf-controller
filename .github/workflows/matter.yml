@@ -133,5 +133,8 @@ jobs:
           echo "$RUNNER_TEMP/pio-venv/bin" >> "$GITHUB_PATH"
       - name: The pinned libraries and arduino-esp32
         run: bash tools/fetch_idf_deps.sh
-      - name: Two boots in Espressif QEMU (every step, and the free-RAM floor once Matter is ready)
+      - name: One image on three emulated devices (the identity on the device, every scenario, the free-RAM floor)
         run: bash tools/qemu_memtest.sh
+      - name: From an image with an identity to the universal firmware (a throwaway identity; identity, codes, labels kept)
+        if: ${{ !cancelled() }}
+        run: bash tools/qemu_memtest.sh --migration
