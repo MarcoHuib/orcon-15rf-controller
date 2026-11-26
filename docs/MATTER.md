@@ -65,12 +65,21 @@ De firmware doet zich nergens voor als product van Orcon of als gecertificeerd: 
 
 ## Installeren (met toestemming van de eigenaar)
 
-1. Bouw met de eigen identiteit van het apparaat (zie hierboven).
-2. Installeer via de bestaande ondertekende OTA (`docs/OTA.md`): een bordgebonden manifest, ondertekend met de eigenaarssleutel, voor variant `control`. Het bord controleert handtekening, MAC, nonce, hash, markers en het ESP-IDF-image zelf.
-3. De proefstart bevestigt zich alleen als Matter draait (binnen 300 s). Anders zet de bootloader het vorige image terug.
-4. Terug naar v1.0.1 kan altijd met het officiële `.orconfw`: een Matter-image draagt release-stempel 0, dus elke officiële release is nieuwer.
-
-> **Open punt.** `tools/orcon.py ota-install` verwacht nu nog een PlatformIO-pakket. Een pad voor IDF-images (`--image`) volgt in deze PR; tot dan gebeurt de installatie met het lokale hulpscript van de ontwikkelomgeving.
+1. Bouw met de eigen identiteit van het apparaat (zie hierboven), vanuit een worktree zonder lokale wijzigingen: het image draagt die commit.
+2. Controleer eerst, zonder sleutel en zonder wachtwoord:
+   ```
+   tools/orcon.py --host orcon15rf.local ota-install --image idf/build/matter/orcon_15rf.bin \
+       --mac-file <bestand met de MAC van het bord> --tx-ack "control firmware" --dry-run
+   ```
+   - Het image moet een intact ESP32-image zijn (de ingebouwde SHA-256 klopt), gebouwd door `tools/build_idf.sh` uit de schone HEAD van deze worktree (geen `-dirty`), met die commit erin.
+   - Met `--host` leest de controle `GET /api/ota` van het bord (alleen lezen, zonder login): welke slot de installatie schrijft, en dat het draaiende image in de andere slot de terugval blijft.
+   - De MAC komt uit een lokaal bestand: hetzelfde `.flashtools/board.mac` dat de USB-installatie als verwachte MAC gebruikt, of het bestand van `--mac-file`. Nooit van het bord zelf.
+3. Installeer met dezelfde opdracht, met `--yes` in plaats van `--dry-run`. Verder gaat het zoals elke installatie via de ondertekende OTA (`docs/OTA.md`):
+   - het wachtwoord van de eigenaar;
+   - een bordgebonden manifest (MAC en eenmalige nonce), ondertekend met de eigenaarssleutel, voor variant `control`;
+   - het bord controleert handtekening, MAC, nonce, hash, markers en het ESP-IDF-image zelf.
+4. De proefstart bevestigt zich alleen als Matter draait (binnen 300 s). Anders zet de bootloader het vorige image terug.
+5. Terug naar v1.0.1 kan altijd met het officiële `.orconfw`: een Matter-image draagt release-stempel 0, dus elke officiële release is nieuwer.
 
 ## Koppelen
 
@@ -132,6 +141,21 @@ Statisch DRAM 118.576 B. Vrije heap op het bord in rust ongeveer 139,7 KB totaal
 
 - De CHIP-stack wordt niet verkleind: tijdens het koppelen bleef daar 1.824 B over.
 - De pagina `/connect` (10,4 KB gzip) komt uit flash en kost geen RAM.
+- De QEMU-geheugentest (`tools/qemu_memtest.sh`, ook in CI) bewaakt de Matter-component: het laagste punt van de vrije interne heap zodra Matter klaar is, is in QEMU ongeveer 173,2 KB met de bridge en 174,6 KB zonder. De test faalt onder 171.000 B. QEMU is een benadering: zonder WiFi en zonder koppeling ligt de heap daar hoger dan op het bord.
+
+### De PlatformIO-builds ten opzichte van `main`
+
+De officiële releases (zonder Matter), met dezelfde instellingen gebouwd uit `main` en uit deze branch:
+
+| Build | RAM (statisch) | Flash |
+|---|---|---|
+| `heltec_v2_sx1276` (RX-only) | 85.356 → 75.116 B (−10.240) | 1.065.173 → 1.066.493 B (+1.320) |
+| `heltec_v2_sx1276_control` | 88.564 → 78.348 B (−10.216) | 1.225.213 → 1.229.005 B (+3.792) |
+| `…_webctl`, `…_webctl_dryrun`, `…_rftest` | −10.240 B | +1.344 tot +1.372 B |
+| `…_tx_poc`, `…_tx_poc_dryrun` (geen webinterface) | gelijk | +124 / +128 B |
+
+- RAM: de gedeelde antwoordbuffer (twee statische buffers van 3 KB minder) en de 4 KB-buffer van de fabrieksreset, die nu alleen tijdens een reset op de heap staat.
+- Flash: de updateherstart en de stable/bètakanalen (`fw_update_esp`, `fw_update`, `ota_policy`: samen ongeveer 3,7 KB in de control-build) en de Matter-kaart op het dashboard (+412 B gzip; zonder Matter verborgen).
 
 ## Beveiliging
 
@@ -153,5 +177,20 @@ Statisch DRAM 118.576 B. Vrije heap op het bord in rust ongeveer 139,7 KB totaal
   - Matter bereikt RF alleen via `setupweb::matterControl` → `ctlAdmit`, met dezelfde vijf standen als Siri en precies één aanroeper;
   - de updatecontrole van een Matter-build vertrouwt alleen de vastgezette roots (`VERIFY_REQUIRED`; de DER-roots worden opnieuw gegenereerd en moeten gelijk zijn aan de PEM-roots);
   - mutaties bewijzen dat elke versoepeling van die regels faalt.
-- `python3 -I tools/check_privacy.py`: geen apparaat-ID's, MAC- of LAN-adressen, persoonlijke paden of privésleutels in het repository.
-- `.github/workflows/matter.yml`: dezelfde hosttests, de veiligheidscontroles, de privacycontrole en een Matter-build met de plaatshouder-identiteit (geen geheimen, publiceert niets).
+- `tools/qemu_memtest.sh`: de Matter-component in Espressif QEMU, als benadering van het bord (Ethernet in plaats van WiFi, geen RF; toelating en unit gesimuleerd; niets wordt gekoppeld):
+  - twee starts op één geëmuleerde flash: eerst namen, bediening en de labels van "een gebruiker" (50 controles), daarna blijven die labels staan (17 controles);
+  - het laagste punt van de vrije interne heap zodra Matter klaar is, moet boven een ondergrens blijven: de gemeten waarde min 2 KB. Daaronder is de component of CHIP gegroeid;
+  - `--nobridge`: dezelfde ventilator zonder bridge (43 controles), voor de RAM-vergelijking.
+- `python3 -I tools/check_privacy.py`: geen gegevens die niet openbaar mogen worden:
+  - geen apparaat-ID's, MAC- of LAN-adressen, persoonlijke paden of privésleutels;
+  - geen Matter-identiteit (DAC-sleutel, verifier, salt, certificaten, koppelcode), geen koppelcodes of QR-payloads (alleen de voorbeelden uit de CHIP-specificatie);
+  - geen identiteits-, firmware-, sleutel- of ruwe logbestanden.
+- `python3 -I tools/check_privacy.py --history BASE..HEAD`: dezelfde regels voor elke commit (toegevoegde bestanden, toegevoegde regels en berichten). Een geheim dat een latere commit weer verwijdert, blijft immers openbaar.
+- `python3 -B tools/test_orcon_cli.py`: het OTA-gereedschap, ook de controles van een ESP-IDF-image.
+- `.github/workflows/matter.yml`, vier jobs die los van elkaar draaien:
+  - veiligheid en privacy: elke stap draait, ook als een andere stap of job faalt; de privacycontrole leest ook elke commit van de pull request;
+  - alle hosttests;
+  - een Matter-build met de plaatshouder-identiteit;
+  - de QEMU-geheugentest.
+
+  Geen geheimen; er wordt niets gepubliceerd.
