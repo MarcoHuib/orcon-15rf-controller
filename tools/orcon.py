@@ -10,6 +10,12 @@
                                         upload, then confirm the new image (or report the rollback).
                                         PHRASE for images that transmit: "RF test image" (rftest),
                                         "control firmware" (the daily-use control image)
+       ota-install --image FILE --yes --tx-ack "control firmware" [--worktree DIR] [--mac-file FILE]
+                                        an ESP-IDF image of tools/build_idf.sh (docs/MATTER.md) instead of a
+                                        PlatformIO package: an intact ESP32 app image, built from DIR's clean HEAD
+                                        (default: this repository); otherwise the same board-bound, signed install
+       ota-install ... --dry-run        every check, nothing signed or sent: the image, the manifest it would
+                                        sign and, with --host, what the board reports (GET /api/ota, read-only)
        ota-install ... --test-rollback  rollback test: the trial boot is told not to confirm itself
                                         (POST /api/ota/hold, logged in); PASS only if the previous image returns.
                                         The password is checked on the running firmware before anything is
@@ -30,7 +36,7 @@ Host: --host, $ORCON_HOST, ~/.orcon/config.json {"host": ...}, else orcon15rf.lo
 Captures hold real device IDs: they go to captures/ (git-ignored), directories 0700, files 0600.
 Nothing here uses GitHub or the network beyond the board itself.
 """
-import argparse, getpass, hashlib, json, os, subprocess, sys, tempfile, time, urllib.error, urllib.request, uuid, zlib
+import argparse, getpass, hashlib, json, os, re, subprocess, sys, tempfile, time, urllib.error, urllib.request, uuid, zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -148,6 +154,49 @@ def write_bundle(path, manifest, sig, firmware):
     Path(path).write_bytes(head.encode() + b'\n' + Path(firmware).read_bytes())
 
 
+# ---- ESP-IDF images (tools/build_idf.sh, docs/MATTER.md): checked before anything is signed -----------
+IDF_ENV = 'heltec_v2_sx1276_control'   # every ESP-IDF image is a control build (idf/main/CMakeLists.txt)
+MAC_RE = r'([0-9a-f]{2}:){5}[0-9a-f]{2}'
+
+
+def idf_image(img, wt, run=subprocess.run):
+    """(commit, version) of an ESP-IDF image, refused unless it is an intact ESP32 app image that tools/build_idf.sh
+    built from the worktree's clean HEAD. The board then reports that commit as its firmware."""
+    data = Path(img).read_bytes()
+    if len(data) < 0x200 or data[0] != 0xE9 or data[12:14] != b'\0\0': raise SystemExit(f'{img}: not an ESP32 app image')
+    if data[23] != 1 or hashlib.sha256(data[:-32]).digest() != data[-32:]: raise SystemExit(f'{img}: damaged (its SHA-256 does not match)')
+    if data[32:36] != bytes.fromhex('3254cdab'): raise SystemExit(f'{img}: no ESP-IDF app description')
+    ver = data[48:80].split(b'\0', 1)[0].decode('ascii', 'replace')   # esp_app_desc_t.version = PROJECT_VER
+    git = lambda *a: run(['git', '-C', str(wt), *a], capture_output=True, text=True, check=True).stdout.strip()
+    head = git('rev-parse', 'HEAD')
+    if git('status', '--porcelain', '--', 'src', 'idf'): raise SystemExit(f'{wt}: uncommitted changes in src/ or idf/; commit them and rebuild')
+    if ver not in (f'matter-dev-{head[:7]}', f'idf5-dev-{head[:7]}'):
+        raise SystemExit(f'{img}: built as "{ver}", not from {wt} at {head[:7]}: rebuild it there with tools/build_idf.sh')
+    if head.encode() not in data: raise SystemExit(f'{img}: commit {head} is not in the image (the board would refuse it)')
+    return head, ver
+
+
+def dry_run(h, env, commit, firmware, mac, get=None):
+    """ota-install without the key, the password or a write: the manifest it would sign (zeros for the board's
+    one-time nonce) and, with a host, what the board reports (GET /api/ota, read-only, no login)."""
+    size = Path(firmware).stat().st_size
+    if h:
+        st, o = (get or http)(h, '/api/ota', timeout=6)
+        if st != 200: raise SystemExit(f'{h}: GET /api/ota -> HTTP {st}')
+        print(f"board: runs {str(o.get('fw'))[:12]} ({o.get('variant')}) from {o.get('running')} ({o.get('running_state')}); "
+              f"the install writes {o.get('next')} ({o.get('next_state')}, slot {o.get('slot_size')} B, image {size} B); "
+              f"the running image stays in {o.get('running')}: the rollback if the new one does not confirm itself")
+        blocked = [why for why, bad in (('no signed OTA', o.get('signed_ota') != 'ORCON-SIGNED-OTA v1'),
+                                        ('it is still confirming its running image', o.get('running_state') == 'pending-verify'),
+                                        ('the image is larger than the slot', size > int(o.get('slot_size') or 0))) if bad]
+        if blocked: raise SystemExit('the board would refuse it now: ' + '; '.join(blocked))
+    else:
+        print('board not asked (no --host)')
+    text = build_manifest(mac, env, commit, firmware, '0' * 32)
+    print("manifest it would sign (the real one carries the board's one-time nonce):\n" + text.replace(mac, '<board MAC>'))
+    print('DRY RUN OK: nothing signed, nothing sent')
+
+
 def rf_gate(env, ack):
     """An image that can transmit needs its own explicit phrase, the same as the USB flash path."""
     if ENV_VARIANT.get(env, (None, False))[1]:
@@ -224,16 +273,28 @@ def cmd_status(args):
 
 
 def cmd_ota_install(args):
-    h, wt, env = host(args), Path(args.worktree).resolve(), args.env
+    h = host(args)
+    if args.image: env, wt = IDF_ENV, Path(args.worktree or REPO).resolve()
+    elif args.worktree and args.env: env, wt = args.env, Path(args.worktree).resolve()
+    else: raise SystemExit('ota-install needs --worktree DIR --env ENV (a PlatformIO package) or --image FILE (ESP-IDF)')
     rf_gate(env, args.tx_ack)
-    if not args.yes: raise SystemExit('refusing without --yes (explicit approval for this update)')
-    commit = subprocess.run(['git', '-C', str(wt), 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
-    pkg = wt / '.flashtools' / 'local' / f'{commit}-{env}'
-    # Same package verification as the USB path: evidence, hashes, markers, ELF reachability.
-    venv = dict(os.environ, LOCAL_ENV=env, **({ENV_ACK[env][0]: ENV_ACK[env][1]} if env in ENV_ACK else {}))
-    v = subprocess.run(['bash', 'tools/heltec_v2.sh', 'verify', commit], cwd=wt, env=venv, capture_output=True, text=True)
-    if v.returncode or 'VERIFIED' not in v.stdout: raise SystemExit('package verification failed:\n' + v.stdout[-800:] + v.stderr[-800:])
-    mac = (wt / '.flashtools' / 'board.mac').read_text().strip()
+    if not args.yes and not args.dry_run: raise SystemExit('refusing without --yes (explicit approval for this update)')
+    if args.image:
+        firmware = Path(args.image)
+        commit, ver = idf_image(firmware, wt)
+        print(f'ESP-IDF image {firmware.name}: {ver}, built from {wt.name} at {commit[:12]}, {firmware.stat().st_size} B, intact')
+    else:
+        commit = subprocess.run(['git', '-C', str(wt), 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
+        firmware = wt / '.flashtools' / 'local' / f'{commit}-{env}' / 'firmware.bin'
+        # Same package verification as the USB path: evidence, hashes, markers, ELF reachability.
+        venv = dict(os.environ, LOCAL_ENV=env, **({ENV_ACK[env][0]: ENV_ACK[env][1]} if env in ENV_ACK else {}))
+        v = subprocess.run(['bash', 'tools/heltec_v2.sh', 'verify', commit], cwd=wt, env=venv, capture_output=True, text=True)
+        if v.returncode or 'VERIFIED' not in v.stdout: raise SystemExit('package verification failed:\n' + v.stdout[-800:] + v.stderr[-800:])
+    # The board's MAC from a local file (the USB bootstrap's, or --mac-file), never from the board being installed.
+    macf = Path(args.mac_file).expanduser() if args.mac_file else wt / '.flashtools' / 'board.mac'
+    mac = macf.read_text().strip().lower() if macf.exists() else ''
+    if not re.fullmatch(MAC_RE, mac): raise SystemExit(f"{macf}: the board's MAC, six hex pairs (as 02:00:00:00:00:01); --mac-file names another file")
+    if args.dry_run: return dry_run(h if args.host else None, env, commit, firmware, mac)
     st, before = http(h, '/api/ota')
     if st != 200 or before.get('signed_ota') != 'ORCON-SIGNED-OTA v1': raise SystemExit(f'board has no signed OTA (HTTP {st}); USB bootstrap first')
     if before.get('running_state') == 'pending-verify': raise SystemExit('board is still confirming its running image; wait')
@@ -247,16 +308,16 @@ def cmd_ota_install(args):
     if args.test_rollback and not owner: login(h, password)
     st, n = http(h, '/api/ota/nonce', {}, headers=hdr)
     if st != 200: raise SystemExit(f'nonce refused: {n}')
-    text = build_manifest(mac, env, commit, pkg / 'firmware.bin', n['nonce'])
+    text = build_manifest(mac, env, commit, firmware, n['nonce'])
     st, b = http(h, '/api/ota/begin', {'manifest': text, 'sig': sign(text)}, headers=hdr)
     if st != 200: raise SystemExit(f'begin refused: {b}')
-    print(f"upload {commit[:7]} {env} -> {b['partition']} ({b['size']} B)")
+    print(f"upload {commit[:7]} {'ESP-IDF image' if args.image else env} -> {b['partition']} ({b['size']} B)")
     boundary = uuid.uuid4().hex
     body = (f'--{boundary}\r\nContent-Disposition: form-data; name="firmware"; filename="firmware.bin"\r\n'
-            f'Content-Type: application/octet-stream\r\n\r\n').encode() + (pkg / 'firmware.bin').read_bytes() + f'\r\n--{boundary}--\r\n'.encode()
+            f'Content-Type: application/octet-stream\r\n\r\n').encode() + firmware.read_bytes() + f'\r\n--{boundary}--\r\n'.encode()
     st, u = http(h, '/api/ota/upload', body, timeout=180, ctype=f'multipart/form-data; boundary={boundary}', headers=hdr)
     if st != 200: raise SystemExit(f'upload refused, boot partition unchanged: {u}')
-    record_install(INSTALLED, pkg / 'firmware.bin', f'{commit[:7]}-{env} ota {datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}')
+    record_install(INSTALLED, firmware, f"{commit[:7]}-{'idf-' if args.image else ''}{env} ota {datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}")
     print('written and verified on the board; restarting into a trial boot')
     hold = rollback_hold(h, password) if args.test_rollback else None
     verdict = watch_confirmation(lambda: http(h, '/api/ota', timeout=4), commit, before['fw'], time.time, time.sleep,
@@ -390,7 +451,8 @@ def main(argv=None):
     sub = p.add_subparsers(dest='cmd', required=True)
     sub.add_parser('status'); sub.add_parser('capture'); sub.add_parser('keygen')
     lg = sub.add_parser('logs'); lg.add_argument('--minutes', type=float, default=60)
-    oi = sub.add_parser('ota-install'); oi.add_argument('--worktree', required=True); oi.add_argument('--env', required=True)
+    oi = sub.add_parser('ota-install'); oi.add_argument('--worktree'); oi.add_argument('--env')
+    oi.add_argument('--image'); oi.add_argument('--mac-file'); oi.add_argument('--dry-run', action='store_true')
     oi.add_argument('--yes', action='store_true'); oi.add_argument('--tx-ack', '--rf-ack', dest='tx_ack', default='')
     oi.add_argument('--test-rollback', action='store_true')
     rl = sub.add_parser('release'); rl.add_argument('--worktree', required=True); rl.add_argument('--env', required=True)
