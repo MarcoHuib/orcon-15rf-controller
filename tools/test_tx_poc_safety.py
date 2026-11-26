@@ -804,7 +804,9 @@ def release_workflow_safe(text):
     assert d['env']=={'RELEASE_ENV':'heltec_v2_sx1276_control','PYTHONDONTWRITEBYTECODE':'1','PIP_DISABLE_PIP_VERSION_CHECK':'1'},('workflow env: exactly as reviewed',d['env'])
     assert all('run' in st or st['uses'].split('@')[0] in ('actions/checkout','actions/upload-artifact','actions/download-artifact') for st in jobs['sign']['steps']),'signing job: no setup actions'
 WORKFLOWS={'heltec-v2-rx-only.yml':'fbf3af64a87be3822246c0adc17ba3cb5ec42c1ddb725c455153f8fd4ea7a563',   # file -> sha256 of the reviewed content
-           'release-control.yml':'3c903ee8c13c224629a61fe8620445a1859ec903bdbb346e2e3350c97b06a258'}
+           'release-control.yml':'3c903ee8c13c224629a61fe8620445a1859ec903bdbb346e2e3350c97b06a258',
+           # Matter checks (pull requests): contents read, no secrets, no artifact; the placeholder identity only
+           'matter.yml':'fb1fe599de0b07c507a90040c812926f75b9dfac8ac96dc223fa057f5b757fb8'}
 def workflows_reviewed(files):   # files: name -> bytes (None: not a regular file) of every *.yml/*.yaml entry
     assert sorted(files)==sorted(WORKFLOWS),('workflow files differ from the reviewed list',sorted(files))
     for n,data in files.items():
