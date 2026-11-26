@@ -27,7 +27,7 @@ chip-cert gen-att-cert -t d -c "Orcon 15RF controller" -V FFF1 -P 8000 -C pai-ce
 chip-cert validate-att-cert -d dac-cert.pem -i pai-cert.pem -a paa-cert.pem
 chip-cert gen-att-cert -t a -c "Orcon 15RF zelfbouw CD" -V FFF1 -l $L -o cd-signer-cert.pem -O cd-signer-key.pem
 chip-cert gen-cd -K cd-signer-key.pem -C cd-signer-cert.pem -O cd.der -f 1 -V FFF1 -p 8000 -d 002B \
-    -c ZELFBOUW-000001-26 -l 0 -i 0 -n 0001 -t 0
+    -c ZELFBOUW-0000001-26 -l 0 -i 0 -n 0001 -t 0
 /opt/espressif/tools/python_env/idf5.5_py3.12_env/bin/python3 -I - "$C" <<"EOF"
 import os, secrets, sys
 sys.path[:0] = [sys.argv[1] + "/scripts/tools/spake2p", sys.argv[1] + "/src/setup_payload/python"]
