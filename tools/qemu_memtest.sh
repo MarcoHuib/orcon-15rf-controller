@@ -41,9 +41,10 @@ build() {   # build <dir> <extra layers> [identity dir]: the probe into test/qem
     local mounts=(-v "$root:/repo") envs=()
     if [ -n "$id" ]; then mounts+=(-v "$id:/identity:ro"); envs+=(-e ORCON_MATTER_IDENTITY=/identity); lay="$lay;/identity/identity.defaults"; fi
     mkdir -p "$root/test/qemu/build/$d"
-    rm -f "$root/test/qemu/build/$d/idf/sdkconfig" "$root/test/qemu/build/$d/flash.bin"   # defaults fill a new sdkconfig only
+    # Removed inside the container: it made them (as root on a Linux host). Defaults fill a new sdkconfig only.
     docker run --rm "${mounts[@]}" ${envs[@]+"${envs[@]}"} "$image" bash -c "
       set -e
+      rm -f /repo/test/qemu/build/$d/idf/sdkconfig /repo/test/qemu/build/$d/flash.bin
       cd /repo/test/qemu/probe
       idf.py -B /repo/test/qemu/build/$d/idf -D SDKCONFIG=/repo/test/qemu/build/$d/idf/sdkconfig \
              -D 'SDKCONFIG_DEFAULTS=$lay' build > /repo/test/qemu/build/$d/build.log 2>&1 || { tail -40 /repo/test/qemu/build/$d/build.log; exit 1; }
@@ -52,7 +53,7 @@ build() {   # build <dir> <extra layers> [identity dir]: the probe into test/qem
 }
 out=$root/test/qemu/build/$cfg
 mkdir -p "$out"
-rm -f "$out"/serial-*.log "$out"/dev-*.bin "$out/RESULT.txt"
+docker run --rm -v "$out:/w" --entrypoint /bin/bash "$image" -c 'rm -f /w/serial-*.log /w/dev-*.bin /w/RESULT.txt'   # files of an earlier run
 idt=""
 case $cfg in
     nobridge) build nobridge ";nobridge.defaults" ;;

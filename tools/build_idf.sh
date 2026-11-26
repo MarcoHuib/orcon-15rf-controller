@@ -44,9 +44,9 @@ if [ "$matter" = 1 ]; then
     fi
 fi
 mkdir -p "$root/idf/$b"
-rm -f "$root/idf/$b/sdkconfig"   # sdkconfig.defaults only fill what an existing sdkconfig lacks: always regenerate
 docker run --rm "${mounts[@]}" ${envs[@]+"${envs[@]}"} "$image" bash -c "
   set -e
+  rm -f /repo/idf/$b/sdkconfig   # defaults only fill what an existing sdkconfig lacks; removed here, where it was made
   cd /repo/idf
   idf.py -B $b -D SDKCONFIG=$b/sdkconfig -D 'SDKCONFIG_DEFAULTS=$defaults' -D ORCON_MATTER=$matter \
          -D ORCON_FW_VERSION=$commit -D ORCON_DIRTY=$dirty -D ORCON_RELEASE=$release -D ORCON_PRE=$pre build
