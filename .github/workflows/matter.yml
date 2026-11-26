@@ -1,9 +1,11 @@
 name: Matter (ESP-IDF 5) checks
 
-# Unprivileged checks of the experimental Matter build (docs/MATTER.md): the host tests (all suites, including
-# test/matter/), the safety guards, the privacy check, and the ESP-IDF/Matter build with the PLACEHOLDER identity.
-# No secrets, no keys, nothing published: a placeholder image never starts Matter, and no artifact is uploaded.
-# Reviewed and pinned by content in tools/test_tx_poc_safety.py (WORKFLOWS), like every workflow of this repository.
+# Unprivileged checks of the experimental Matter build (docs/MATTER.md), in four independent jobs: the safety and privacy
+# checks (every step runs, also when another step or job fails; the privacy check also reads every commit of the pull
+# request), the host tests (all suites, including test/matter/), the ESP-IDF/Matter build with the PLACEHOLDER identity,
+# and the QEMU memory test of the Matter component. No secrets, no keys, nothing published: a placeholder image never
+# starts Matter, and no artifact is uploaded. Reviewed and pinned by content in tools/test_tx_poc_safety.py (WORKFLOWS),
+# like every workflow of this repository.
 on:
   pull_request:
     paths:
@@ -22,8 +24,42 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: '1'
 
 jobs:
+  checks:
+    name: Safety and privacy checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out (with history; the privacy check reads every commit of the pull request)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Safety guards (TX paths and their admission, update TLS roots, workflow pins, capability compiles)
+        run: python3 -B tools/test_tx_poc_safety.py
+      - name: Privacy check of every tracked file (device data, keys, Matter identity and pairing codes)
+        if: ${{ !cancelled() }}
+        run: python3 -I tools/check_privacy.py
+      - name: Privacy check of every commit of this pull request (added files, added lines, messages)
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 -I tools/check_privacy.py --history "$BASE_SHA..$HEAD_SHA"
+      - name: The privacy check's own negative cases
+        if: ${{ !cancelled() }}
+        run: python3 -I tools/test_check_privacy.py
+      - name: The OTA tool (manifests, signatures, ESP-IDF image checks, rollback verdicts)
+        if: ${{ !cancelled() }}
+        run: python3 -B tools/test_orcon_cli.py
+
   host:
-    name: Host tests and privacy check
+    name: Host tests
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -47,10 +83,6 @@ jobs:
         run: pio pkg install -e heltec_v2_sx1276 -e heltec_v2_sx1276_control
       - name: Host tests (all suites, including the Matter rules and pages)
         run: bash test/run_host_tests.sh
-      - name: Safety guards (TX paths and their admission, update TLS roots, workflow pins, capability compiles)
-        run: python3 -B tools/test_tx_poc_safety.py
-      - name: Privacy check of every tracked file
-        run: python3 -I tools/check_privacy.py
 
   idf:
     name: ESP-IDF 5 Matter build (placeholder identity)
@@ -77,3 +109,29 @@ jobs:
         run: bash tools/fetch_idf_deps.sh
       - name: Build Orcon + Matter in the pinned ESP-Matter container (no identity)
         run: bash tools/build_idf.sh
+
+  qemu:
+    name: QEMU memory test of the Matter component (placeholder identity)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: PlatformIO, hash-pinned, in its own environment
+        run: |
+          python -m venv "$RUNNER_TEMP/pio-venv"
+          "$RUNNER_TEMP/pio-venv/bin/python" -m pip install --require-hashes --no-deps --only-binary=:all: --force-reinstall -r tools/release/requirements-platformio.txt
+          "$RUNNER_TEMP/pio-venv/bin/python" -m pip check
+          echo "$RUNNER_TEMP/pio-venv/bin" >> "$GITHUB_PATH"
+      - name: The pinned libraries and arduino-esp32
+        run: bash tools/fetch_idf_deps.sh
+      - name: Two boots in Espressif QEMU (every step, and the free-RAM floor once Matter is ready)
+        run: bash tools/qemu_memtest.sh
