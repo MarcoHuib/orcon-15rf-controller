@@ -1,0 +1,3 @@
+# tools/qemu_memtest.sh --nobridge: the same fan on endpoint 1 without Aggregator and Bridged Node (the RAM comparison).
+CONFIG_ORCON_MATTER_BRIDGE=n
+CONFIG_SUPPORT_BRIDGED_DEVICE_BASIC_INFORMATION_CLUSTER=n

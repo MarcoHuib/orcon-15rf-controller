@@ -1,0 +1,3 @@
+# esp-matter's components_include.cmake always reads the project's own sdkconfig.defaults first. The probe's
+# configuration follows it, from tools/qemu_memtest.sh: the firmware's layers, then qemu.defaults (last, so it wins).
+CONFIG_IDF_TARGET="esp32"

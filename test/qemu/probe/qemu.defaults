@@ -1,0 +1,11 @@
+# QEMU memory test (tools/qemu_memtest.sh): on top of the firmware's own layers (idf/sdkconfig.defaults and
+# idf/config/{memory,clusters,matter,diagnostics}.defaults), only what QEMU needs.
+# Matter over the emulated Ethernet (OpenETH) instead of Wi-Fi; no task watchdog (emulated flash is slow).
+CONFIG_ENABLE_WIFI_STATION=n
+CONFIG_ENABLE_ETHERNET_TELEMETRY=y
+CONFIG_ETH_USE_OPENETH=y
+CONFIG_ESP_TASK_WDT_INIT=n
+CONFIG_CUSTOM_NETWORK_CONFIG=y
+# The firmware's partition table and CHIP project configuration, from this project's directory.
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../../idf/partitions.csv"
+CONFIG_CHIP_PROJECT_CONFIG="../../../idf/components/orcon_matter/orcon_chip_config.h"

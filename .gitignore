@@ -63,6 +63,7 @@ idf/components/ArduinoJson/
 idf/components/RadioLib/
 idf/components/U8g2/
 idf/managed_components/
+test/qemu/probe/managed_components/
 idf/sdkconfig
 idf/sdkconfig.old
 *.elf
