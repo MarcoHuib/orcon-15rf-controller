@@ -19,6 +19,8 @@ bool busy();                                                       // read/pair 
 // JSON; then a logged-in session (with its CSRF token for a mutation). Sends the refusal itself.
 // Builds without the web login: always true (unchanged legacy behaviour).
 bool authorize(bool mutation, bool allowAp = false);
+// The shared JSON response buffer (3,072 B). Loop task only, and free again once the route has called send().
+char* responseBuffer(size_t& cap);
 bool uploadAuthorized();   // a multipart upload: own host, a logged-in session and its CSRF token (no reply)
 #if ORCON_WEB_CONTROL
 void consumeTxResults(uint32_t now); // before draining RX, so prompt bind replies are not lost

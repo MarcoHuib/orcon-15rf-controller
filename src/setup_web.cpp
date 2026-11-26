@@ -71,9 +71,10 @@ static bool     g_pendOffer = false, g_pendAck = false;   // bind sends awaiting
 static uint32_t g_offerAt = 0;                            // when the offer was admitted
 static ramses::DeviceId g_learnedFan;                     // pairing result to persist (net.cpp)
 #endif
-static char     g_out[3072];                  // one response at a time (loop task only)
+// The one JSON response buffer of the web server: every route runs in the loop task's handleClient(), one at a time,
+// and send() has copied it to lwIP before the next one starts (also net.cpp /api/state, via responseBuffer()).
+static char     g_out[3072];
 static rfcon::Ring g_con;                     // live RF console (loop task only)
-static char     g_conOut[3072];
 
 struct Out {
     size_t n = 0; bool ok = true;
@@ -170,6 +171,8 @@ static bool guard(JsonDocument& d, const char* const* keys, size_t nkeys, bool a
 #endif
     return parseBody(d, keys, nkeys, maxBody);
 }
+char* responseBuffer(size_t& cap) { cap = sizeof(g_out); return g_out; }
+
 bool authorize(bool mutation, bool allowAp) {
 #if ORCON_WEB_AUTH
     if (mutation) { if (!sameOrigin(allowAp)) return false; }
@@ -917,9 +920,9 @@ static void handleConsole() {
     if (!a.length() || (end && *end)) after = 0;                 // absent or not a number: from the start
     consoleTick(millis());                                       // fresh syncs/health in this reply
     for (uint32_t max = 16; max; max /= 2)
-        if (g_con.json(uint32_t(after), max, millis(), g_conOut, sizeof(g_conOut))) {
+        if (g_con.json(uint32_t(after), max, millis(), g_out, sizeof(g_out))) {
             g_srv->sendHeader("Cache-Control", "no-store");
-            g_srv->send(200, "application/json", g_conOut);
+            g_srv->send(200, "application/json", g_out);
             return;
         }
     fail(500, "response-too-large");

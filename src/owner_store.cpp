@@ -15,6 +15,8 @@
 #include <mbedtls/sha256.h>
 #include <nvs.h>
 #include <string.h>
+#include <memory>
+#include <new>
 
 namespace ownerstore {
 
@@ -262,9 +264,12 @@ struct Ops : provision::ResetOps {
         if (v == ESP_ERR_IMAGE_INVALID) return true;    // nothing bootable there
         if (v != ESP_OK) return false;                  // a read error is not "absent": keep the marker, retry (Codex OWNER-09)
         otap::Scanner s("");
-        static uint8_t buf[4096];
-        for (uint32_t off = 0; off < meta.image_len; off += sizeof(buf)) {
-            const uint32_t n = meta.image_len - off < sizeof(buf) ? meta.image_len - off : sizeof(buf);
+        std::unique_ptr<uint8_t[]> heap(new (std::nothrow) uint8_t[4096]);   // was static: 4 KB of DRAM for a reset
+        uint8_t small[512];                                                  // too little RAM: smaller steps, never a failure
+        uint8_t* const buf = heap ? heap.get() : small;
+        const uint32_t cap = heap ? 4096 : sizeof(small);
+        for (uint32_t off = 0; off < meta.image_len; off += cap) {
+            const uint32_t n = meta.image_len - off < cap ? meta.image_len - off : cap;
             if (esp_partition_read(other, off, buf, n) != ESP_OK) return false;
             s.feed(buf, n);
         }
@@ -276,8 +281,8 @@ struct Ops : provision::ResetOps {
                       other->label, run->label);
         esp_ota_handle_t h;
         if (esp_ota_begin(other, rm.image_len, &h) != ESP_OK) return false;   // erases what the copy needs
-        for (uint32_t off = 0; off < rm.image_len; off += sizeof(buf)) {
-            const uint32_t n = rm.image_len - off < sizeof(buf) ? rm.image_len - off : sizeof(buf);
+        for (uint32_t off = 0; off < rm.image_len; off += cap) {
+            const uint32_t n = rm.image_len - off < cap ? rm.image_len - off : cap;
             if (esp_partition_read(run, off, buf, n) != ESP_OK || esp_ota_write(h, buf, n) != ESP_OK) { esp_ota_abort(h); return false; }
         }
         return esp_ota_end(h) == ESP_OK;                // ESP-IDF verifies the copy; the boot selection is unchanged
