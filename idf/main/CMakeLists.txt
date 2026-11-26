@@ -36,4 +36,5 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     ORCON_IDF5=1
     ORCON_MATTER=${ORCON_MATTER}
     FW_VERSION="${ORCON_FW_VERSION}"   # the 40-hex source commit, see ../CMakeLists.txt
-    ORCON_RELEASE_VERSION=0)
+    ORCON_RELEASE_VERSION=${ORCON_RELEASE}   # tools/build_idf.sh --release N (0: a dev build)
+    ORCON_RELEASE_PRE=${ORCON_PRE})
