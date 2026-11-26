@@ -1,6 +1,6 @@
 """Local-only phase 1 source guards and negative capability compiles. No hardware/network."""
 from pathlib import Path
-import argparse, configparser, hashlib, os, re, subprocess
+import argparse, configparser, hashlib, os, re, subprocess, sys, tempfile
 
 p=argparse.ArgumentParser()
 p.add_argument('--compiler',default='g++')
@@ -331,10 +331,22 @@ else: raise AssertionError('hold guard accepted mutation unauthenticated-hold')
 # Release update check (fw_update_esp.cpp, docs/UPDATECONTROLE.md): it can install firmware, so every route asks the owner's
 # session first (the install and the check also CSRF + same origin), TLS always verifies against the pinned roots, nothing
 # disables verification, and the download URL is never taken from the request.
-def update_safe(src):
+def update_safe(src,cb=None):
+    cb=Path('src/fw_update_roots_cb.h').read_text() if cb is None else cb
     for h,mut in (('static void handleStatus() {','authorize(false)'),('static void handleCheck() {','authorize(true)'),('static void handleInstall() {','authorize(true)')):
         assert fn(src,h).lstrip().startswith('if (!setupweb::authorize(%s)) return;'%mut.split('(')[1].rstrip(')')),(h,'must ask the owner first')
-    assert src.count('c.connect(ip, 443, host, FWUP_ROOTS_PEM, nullptr, nullptr)')==1,'TLS must verify against the pinned roots'
+    # The pinned roots on every build: WiFiClientSecure gets the PEM buffer; a Matter build (docs/MATTER.md) offers the
+    # same nine roots as DER through mbedTLS's trusted-CA callback (fw_update_roots_cb.h), VERIFY_REQUIRED.
+    tls=src.split('struct TlsTransport : fwup::Transport {\n',1)[1].split('    const char* err',1)[0]
+    assert tls==('#if ORCON_MATTER\n    rootscb::Client c;\n    static constexpr const char* kRoots = nullptr;   // the callback supplies them\n'
+                 '#else\n    WiFiClientSecure c;\n    static constexpr const char* kRoots = FWUP_ROOTS_PEM;\n#endif\n'),'TLS must verify against the pinned roots'
+    assert src.count('c.connect(ip, 443, host, kRoots, nullptr, nullptr)')==1,'TLS must verify against the pinned roots'
+    att=fn(cb,'static esp_err_t attach(void* conf) {')
+    assert 'mbedtls_ssl_conf_authmode((mbedtls_ssl_config*)conf, MBEDTLS_SSL_VERIFY_REQUIRED);' in att and \
+           'mbedtls_ssl_conf_ca_cb((mbedtls_ssl_config*)conf, caCallback, nullptr);' in att,'callback roots: VERIFY_REQUIRED'
+    assert 'Client() { sslclient->bundle_attach_cb = attach; _use_ca_bundle = true; }' in cb,'the Matter client always attaches them'
+    pick=fn(cb,'static int caCallback(void*, mbedtls_x509_crt const* child, mbedtls_x509_crt** candidates) {')
+    assert pick.count('_parse_der_nocopy(')==pick.count('ROOT_DER[i], ROOT_DER_LEN[i])')==2,'the callback offers the pinned roots only'
     allsrc='\n'.join(x.read_text() for x in Path('src').glob('*.[ch]*'))
     for bad in ('setInsecure','MBEDTLS_SSL_VERIFY_NONE','MBEDTLS_SSL_VERIFY_OPTIONAL','setCACertBundle','HTTPUpdate'):
         assert bad not in allsrc,('forbidden in the firmware',bad)   # (Update.begin: legacy non-V2 /update in net.cpp; the image scanner refuses it)
@@ -355,7 +367,9 @@ upd=Path('src/fw_update_esp.cpp').read_text(); update_safe(upd)
 for name,old,new in (('status-without-login','if (!setupweb::authorize(false)) return; statusBody(200);','statusBody(200);'),
                      ('install-without-login','static void handleInstall() {\n    if (!setupweb::authorize(true)) return;','static void handleInstall() {'),
                      ('check-without-csrf','static void handleCheck() {\n    if (!setupweb::authorize(true)) return;','static void handleCheck() {\n    if (!setupweb::authorize(false)) return;'),
-                     ('tls-without-roots','c.connect(ip, 443, host, FWUP_ROOTS_PEM, nullptr, nullptr)','c.connect(ip, 443)'),
+                     ('tls-without-roots','c.connect(ip, 443, host, kRoots, nullptr, nullptr)','c.connect(ip, 443)'),
+                     ('tls-pem-dropped','kRoots = FWUP_ROOTS_PEM;','kRoots = nullptr;'),
+                     ('tls-matter-plain-client','    rootscb::Client c;','    NetworkClientSecure c;'),
                      ('install-from-url','g_offer.m.version == want','g_s->arg("url").length()'),
                      ('install-any-offer','startJob(Job::Install, false, want, commit)','startJob(Job::Install, false)'),
                      ('install-any-commit','LOCKED(offered = g_st.found == fwup::Found::Newer && g_offer.m.version == want && !strcmp(g_offer.m.commit, commit));','LOCKED(offered = g_st.found == fwup::Found::Newer && g_offer.m.version == want);'),):
@@ -363,6 +377,18 @@ for name,old,new in (('status-without-login','if (!setupweb::authorize(false)) r
     try: update_safe(m)
     except AssertionError: print('PASS update guard rejects mutation',name)
     else: raise AssertionError('update guard accepted mutation '+name)
+cbh=Path('src/fw_update_roots_cb.h').read_text()
+for name,old,new in (('tls-callback-verify-optional','MBEDTLS_SSL_VERIFY_REQUIRED);','MBEDTLS_SSL_VERIFY_OPTIONAL);'),
+                     ('tls-callback-not-attached','sslclient->bundle_attach_cb = attach; ',''),
+                     ('tls-callback-trusts-peer','_parse_der_nocopy(list, ROOT_DER[i], ROOT_DER_LEN[i])','_parse_der_nocopy(list, child->raw.p, child->raw.len)')):
+    m=cbh.replace(old,new,1); assert m!=cbh,name
+    try: update_safe(upd,m)
+    except AssertionError: print('PASS update guard rejects mutation',name)
+    else: raise AssertionError('update guard accepted mutation '+name)
+# The callback's DER roots are exactly the pinned PEM roots: regenerated (fingerprints checked) and compared.
+with tempfile.TemporaryDirectory() as d:
+    g=run([sys.executable,'-I','tools/gen_roots_der.py','src/fw_update_roots.h',os.path.join(d,'der.h')])
+    assert g.returncode==0 and Path(d,'der.h').read_text()==Path('src/fw_update_roots_der.h').read_text(),('DER roots differ from the pinned roots',g.stderr)
 print('PASS update check: owner session first, pinned TLS roots, no insecure TLS, signed-OTA writer only')
 # The firmware signing key never sets or resets a password (docs/HERSTELSLEUTEL_MIGRATIE.md): no release-key recovery
 # route, request, code or state comes back, the CLI has no auth-code, and an OTA trial boot on a board without an owner key

@@ -20,26 +20,36 @@ const char* parseManifest(const char* json, Manifest& m) {
     m = Manifest();
     static const char* const K1[] = {"v", "mac", "env", "variant", "allow_tx", "commit", "size", "sha256", "nonce"};
     static const char* const K2[] = {"v", "kind", "env", "variant", "allow_tx", "commit", "version", "size", "sha256"};
+    // A beta is the v2 release form plus exactly one field, "pre", under its own kind (so a stable manifest stays
+    // byte for byte what it is, and firmware without channels refuses every beta: its key set is exact).
+    static const char* const K2B[] = {"v", "kind", "env", "variant", "allow_tx", "commit", "version", "size", "sha256", "pre"};
     constexpr size_t KN = sizeof(K1) / sizeof(K1[0]);
     static_assert(sizeof(K2) == sizeof(K1), "both forms have nine fields");
+    static_assert(sizeof(K2B) == sizeof(K2) + sizeof(K2[0]), "a beta has one field more");
     JsonDocument d;
     if (!json || deserializeJson(d, json) || !d.is<JsonObject>()) return "bad-manifest";
     const uint8_t v = d["v"].is<uint8_t>() ? d["v"].as<uint8_t>() : 0;
-    const char* const* K = v == 2 ? K2 : K1;      // anything but 2 is judged as v1 (checkManifest refuses v != 1)
+    const bool beta = v == 2 && d["kind"].is<const char*>() && !strcmp(d["kind"].as<const char*>(), "orcon-prerelease");
+    const char* const* K = v == 2 ? (beta ? K2B : K2) : K1;   // anything but 2 is judged as v1 (checkManifest refuses v != 1)
+    const size_t kn = beta ? KN + 1 : KN;
     for (JsonPair kv : d.as<JsonObject>()) {
         bool known = false;
-        for (size_t i = 0; i < KN; ++i) if (!strcmp(kv.key().c_str(), K[i])) known = true;
+        for (size_t i = 0; i < kn; ++i) if (!strcmp(kv.key().c_str(), K[i])) known = true;
         if (!known) return "unknown-field";
     }
-    if (d.as<JsonObject>().size() != KN) return "missing-field";
+    if (d.as<JsonObject>().size() != kn) return "missing-field";
     if (!d["v"].is<uint8_t>() || !d["size"].is<uint32_t>() || !d["allow_tx"].is<bool>()) return "bad-manifest";
     for (const char* k : {"env", "variant", "commit", "sha256"}) if (!d[k].is<const char*>()) return "bad-manifest";
     m.v = d["v"]; m.size = d["size"]; m.allowTx = d["allow_tx"];
     const char* env = d["env"]; const char* var = d["variant"]; const char* commit = d["commit"]; const char* sha = d["sha256"];
     if (strlen(env) >= sizeof(m.env) || !hexOk(commit, 40) || !hexOk(sha, 64)) return "bad-manifest";
     if (m.v == 2) {
-        if (!d["kind"].is<const char*>() || strcmp(d["kind"].as<const char*>(), "orcon-release") || !d["version"].is<uint32_t>()) return "bad-manifest";
+        if (!d["kind"].is<const char*>() || (!beta && strcmp(d["kind"].as<const char*>(), "orcon-release")) || !d["version"].is<uint32_t>()) return "bad-manifest";
         m.version = d["version"];
+        if (beta) {   // beta.1 .. beta.99, an integer (never 0: that is the stable release itself)
+            if (!d["pre"].is<uint8_t>() || d["pre"].as<uint8_t>() < 1 || d["pre"].as<uint8_t>() > 99) return "bad-manifest";
+            m.pre = d["pre"];
+        }
     } else {
         if (!d["mac"].is<const char*>() || !d["nonce"].is<const char*>()) return "bad-manifest";
         const char* mac = d["mac"]; const char* nonce = d["nonce"];
@@ -55,9 +65,11 @@ const char* parseManifest(const char* json, Manifest& m) {
     return nullptr;
 }
 
-const char* checkManifest(const Manifest& m, const char* ownMac, const char* issuedNonce, uint32_t slotSize, uint32_t ownVersion) {
+const char* checkManifest(const Manifest& m, const char* ownMac, const char* issuedNonce, uint32_t slotSize, uint32_t ownVersion,
+                          uint8_t ownPre, bool betaOk) {
     if (m.v == 2) {
-        if (m.version < ownVersion) return "older-release";
+        if (m.pre && !betaOk) return "beta-disabled";   // only with the owner's "Bèta-updates ontvangen"
+        if (releaseRank(m.version, m.pre) < releaseRank(ownVersion, ownPre)) return "older-release";
         if (m.variant == Variant::RfTest) return "variant-not-released";   // test images are never published
     } else if (m.v == 1) {
         char own[18] = "";

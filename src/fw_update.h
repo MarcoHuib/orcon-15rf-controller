@@ -29,11 +29,18 @@ namespace fwup {
 // build). So 1.2.3 = 1002003 and the order of numbers is the SemVer order. tools/release_ci.py uses the same rule.
 bool parseSemver(const char* s, uint32_t& out);   // "1.2.3" or "v1.2.3"; false for anything else
 void semverText(uint32_t v, char out[16]);         // "1.2.3"; 0 -> "dev"; above 999.999.999 -> "?"
+// Channels: also "1.2.3-beta.N" (N 1..99, no leading zero; pre = N, 0 for a stable "1.2.3"). Nothing else: no
+// "-rc.1", no "-beta.0", no build metadata. tools/release_ci.py must use the same rule once the workflow publishes betas.
+bool parseSemverPre(const char* s, uint32_t& out, uint8_t& pre);
+void semverTextPre(uint32_t v, uint8_t pre, char out[24]);   // "1.2.3" or "1.2.3-beta.4"
 
 // ---- names and URLs, built from the signed manifest only ----------------------------------------------------------
 static const char INDEX_ASSET[] = "orcon-update.json";
-bool bundleName(const otap::Manifest& m, char* out, size_t n);   // orcon-control-v1.2.3-abcdef1.orconfw
-bool indexUrl(char* out, size_t n);
+// The beta channel reads one fixed address, the pre-release "channel-beta" whose index the workflow replaces with
+// every publication (stable and beta), so it always names the highest of both. Stable reads "latest" as before.
+static const char BETA_TAG[] = "channel-beta";
+bool bundleName(const otap::Manifest& m, char* out, size_t n);   // orcon-control-v1.2.3-abcdef1.orconfw (or -v1.2.3-beta.4-)
+bool indexUrl(char* out, size_t n, bool beta = false);
 bool bundleUrl(const otap::Manifest& m, char* out, size_t n);
 
 static const size_t HOST_MAX = 64, PATH_MAX_LEN = 1600;   // a signed asset-host redirect is ~950 characters today
@@ -100,7 +107,9 @@ const char* httpGet(Transport& t, const char* url, Clock now, uint32_t deadline,
                     uint32_t maxBody, uint32_t& bodyLen, Url& scratch, Head& head);
 
 // ---- what this device runs, and the offer of a release ----------------------------------------------------------
-struct Own { uint32_t version; otap::Variant variant; const char* env; uint32_t slotSize; };
+// An aggregate (no member initialisers: PlatformIO builds C++11): fields left out of a brace list are zero/false.
+struct Own { uint32_t version; otap::Variant variant; const char* env; uint32_t slotSize;
+             uint8_t pre; bool beta; };   // this image's beta number (0 = stable), and the owner's beta channel
 static const size_t INDEX_MAX = 2048, MANIFEST_MAX = 600, SIG_MAX = 160, NOTES_MAX = 400;
 struct Offer {
     char manifest[MANIFEST_MAX + 1] = "";
@@ -114,10 +123,34 @@ const char* parseIndex(const char* json, size_t n, Offer& o);
 // variant and env; "up-to-date" = the same release; otherwise why it is not offered.
 const char* judge(const Offer& o, const Own& own);
 
-// Room for one TLS session (two 16 KB record buffers, the parsed roots, the handshake) next to everything else, and
-// for the worker task (stack + buffers). Checked before a check or an install starts; "low-memory" otherwise.
-static const uint32_t MIN_FREE_HEAP = 90000, MIN_FREE_BLOCK = 32000;
+// Free internal 8-bit RAM for one whole job with the owner's 20 KB reserve left at its peak: worker stack, Ctx and one
+// TLS session with dynamic buffers, roots on demand and no kept peer chain (QEMU peak 47.6 KB), the WiFi RX buffers
+// during TLS (up to 8 KB, estimate) and 20 KB: 75.6 KB. One 16 KB TLS record must still fit in one piece. Checked before
+// a job starts and again before each TLS connect; "low-memory" otherwise. Lower it only after board measurements.
+static const uint32_t MIN_FREE_HEAP = 76000, MIN_FREE_BLOCK = 32000;
 const char* memoryOk(uint32_t freeHeap, uint32_t largestBlock);
+
+// ---- The update check next to Matter, through ONE restart without Matter --------------------------
+// With Matter running the gate above stays shut, so the owner may ask for one restart in which Matter stays off: the
+// check runs at once, a newer release can be installed through the normal page, then the device starts normally again.
+// The device glue (fw_update_esp.cpp) keeps the request in RTC memory for exactly one software restart.
+struct UpdateBootAsk { bool matterBuild, roomNow, jobBusy, restartPending, trialBoot, matterBusy, sessionBusy; };
+inline const char* updateBootRefusal(const UpdateBootAsk& a) {   // nullptr: restart for the check now
+    if (!a.matterBuild || a.roomNow) return "not-needed";        // "Controleer op updates" works without a restart
+    if (a.jobBusy || a.restartPending) return "update-busy";
+    if (a.trialBoot) return "confirm-running-image-first";       // a trial boot confirms only with Matter running
+    if (a.matterBusy) return "matter-busy";                      // a controller is commissioning this device
+    if (a.sessionBusy) return "session-busy";                    // a read/pair session or an RF command in flight
+    return nullptr;
+}
+static const uint32_t UPDATE_BOOT_MAX_MS = 600000;   // Matter is off for at most 10 minutes
+static const uint32_t UPDATE_BOOT_REST_MS = 60000;   // after a check without a newer release (the page shows why)
+// In the update boot: back to the normal start with Matter now? Never during a download, its restart or an RF command.
+inline bool updateBootDone(uint32_t sinceBootMs, bool checked, bool newer, uint32_t checkedAtMs, bool busy) {
+    if (busy) return false;
+    if (sinceBootMs >= UPDATE_BOOT_MAX_MS) return true;
+    return checked && !newer && sinceBootMs - checkedAtMs >= UPDATE_BOOT_REST_MS;
+}
 
 enum class Found : uint8_t { None, Newer, UpToDate };
 // The whole check. On Newer, `offer` holds the verified release. Errors as httpGet, plus bad-index, bad-signature,

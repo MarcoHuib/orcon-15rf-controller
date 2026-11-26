@@ -33,6 +33,7 @@ const char* variantName(Variant v);
 struct Manifest {
     uint8_t  v = 0;
     uint32_t version = 0;            // v2: the release number
+    uint8_t  pre = 0;                // v2 beta (kind "orcon-prerelease"): beta N = 1..99 of `version`; 0 = stable
     char     mac[18] = "";          // v1: lower-case MAC (six hex pairs) of the one board it is for
     char     env[40] = "";
     Variant  variant = Variant::None;
@@ -46,9 +47,15 @@ struct Manifest {
 // Parse the signed manifest text. Returns nullptr or an error code (unknown/missing/bad fields).
 const char* parseManifest(const char* json, Manifest& m);
 
-// Manifest against this device. v1: board and one-time nonce. v2: no older release than ownVersion,
-// released variants only (never the RF test image). Both: slot size, variant/env/allowTx pairing.
-const char* checkManifest(const Manifest& m, const char* ownMac, const char* issuedNonce, uint32_t slotSize, uint32_t ownVersion = 0);
+// The order of releases: a stable release above every beta of the same version, so
+// 1.0.1 < 1.1.0-beta.1 < 1.1.0-beta.2 < 1.1.0. One rule for the check (fw_update.cpp judge) and every install.
+inline uint64_t releaseRank(uint32_t version, uint8_t pre) { return uint64_t(version) * 100u + (pre ? pre : 100u); }
+
+// Manifest against this device. v1: board and one-time nonce. v2: never below the own release (releaseRank), a beta
+// only when the owner allows betas ("beta-disabled"), released variants only (never the RF test image). Both: slot
+// size, variant/env/allowTx pairing.
+const char* checkManifest(const Manifest& m, const char* ownMac, const char* issuedNonce, uint32_t slotSize, uint32_t ownVersion = 0,
+                          uint8_t ownPre = 0, bool betaOk = false);
 
 // Streaming search over the uploaded image (chunks of any size, patterns may straddle chunks).
 class Scanner {

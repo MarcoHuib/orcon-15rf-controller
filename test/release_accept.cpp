@@ -72,7 +72,8 @@ int main(int argc, char** argv) {
         std::string man, sig; size_t at = 0;
         if (!head(b, man, sig, at)) return done("bad-bundle");
         if (man != o.manifest || sig != o.sig) return done("bundle-mismatch");
-        const fwup::Own own = {(uint32_t)strtoul(argv[4], nullptr, 10), otap::Variant::Control, "heltec_v2_sx1276_control", SLOT};
+        const fwup::Own own = {(uint32_t)strtoul(argv[4], nullptr, 10), otap::Variant::Control, "heltec_v2_sx1276_control", SLOT,
+                                0, false};   // a stable release, the beta channel off
         const char* e = fwup::judge(o, own);
         if (e && !strcmp(e, "up-to-date")) return done(nullptr, "UP-TO-DATE");
         return done(e, "NEWER");

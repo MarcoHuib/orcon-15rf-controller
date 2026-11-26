@@ -13,6 +13,7 @@
 #include "ota_signed.h"
 #include "ota_policy.h"
 #include "fw_update.h"
+#include "fw_update_esp.h"   // updsvc::betaEnabled()
 #include "ota_pubkey.h"
 #include "net.h"
 #include "ramses_radio.h"
@@ -156,8 +157,8 @@ static void handleInfo() {
     const esp_partition_t* run = esp_ota_get_running_partition();
     const esp_partition_t* boot = esp_ota_get_boot_partition();
     const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
-    char b[640], rel[16];
-    fwup::semverText(ORCON_RELEASE_VERSION, rel);
+    char b[640], rel[24];
+    fwup::semverTextPre(ORCON_RELEASE_VERSION, ORCON_RELEASE_PRE, rel);   // "1.2.3-beta.4" for a beta image
     const bool dl = g_dl;   // the worker owns g_st/g_err while set: report a fixed state then (Codex r4)
     snprintf(b, sizeof(b),
              "{\"signed_ota\":\"%s\",\"fw\":\"%s\",\"variant\":\"%s\",\"running\":\"%s\",\"running_state\":\"%s\","
@@ -272,7 +273,8 @@ static const char* acceptManifest(const char* text, const char* sig, const char*
     if (!e && releaseOnly && m.v != 2) e = "manifest-version";
     char mac[18]; ownMac(mac);
     g_part = esp_ota_get_next_update_partition(nullptr);
-    if (!e) e = otap::checkManifest(m, mac, nonce, g_part ? g_part->size : 0, ORCON_RELEASE_VERSION);
+    if (!e) e = otap::checkManifest(m, mac, nonce, g_part ? g_part->size : 0, ORCON_RELEASE_VERSION, ORCON_RELEASE_PRE,
+                                    updsvc::betaEnabled());   // a beta .orconfw only with the owner's beta setting
     if (e) return e;
     g_m = m; g_scan = otap::Scanner(m.commit); g_st = St::Ready; g_err = "none";
     return nullptr;

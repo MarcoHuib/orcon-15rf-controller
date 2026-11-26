@@ -9,7 +9,11 @@
 #if ORCON_UPDATE_CHECK
 #include "fw_update_esp.h"
 #include "fw_update.h"
+#if ORCON_MATTER
+#include "fw_update_roots_cb.h"   // the roots on demand: less TLS RAM next to Matter
+#else
 #include "fw_update_roots.h"
+#endif
 #include "ota_signed.h"
 #include "ota_policy.h"
 #include "net.h"
@@ -20,7 +24,10 @@
 #include <WiFiClientSecure.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>   // the beta channel setting
+#include <esp_attr.h>        // RTC_NOINIT_ATTR (the update restart without Matter)
 #include <esp_heap_caps.h>
+#include <esp_system.h>      // esp_reset_reason()
 #include <new>
 #include <atomic>
 
@@ -51,9 +58,14 @@ static std::atomic<bool> g_install{false};    // the running job is an install (
 static std::atomic<bool> g_restart{false};    // an image was written: busy until the restart into its trial boot
 static std::atomic<uint32_t> g_writtenAt{0};  // stored before g_restart
 static WebServer* g_s = nullptr;
+static bool g_beta = false;   // the owner's beta channel (NVS "orcon"/"beta", read in begin(); loop task)
 static uint32_t g_lastStart = 0;
 static bool g_started = false, g_restartSent = false;
 
+// Matter builds: no automatic GitHub check next to Matter until its TLS peak fits with the agreed 20 KB reserve.
+// In the firmware, not a setting: no install, restart or NVS state can turn it back on. "Controleer op updates" (via
+// one restart without Matter) and the local uploads (.orconfw page, board-bound OTA) stay. Other builds: unchanged.
+static const bool AUTO_CHECK = !ORCON_MATTER;
 static const uint32_t FIRST_CHECK_MS = 180000;             // 3 minutes after boot (after a trial boot is confirmed)
 static const uint32_t EVERY_MS = 24UL * 3600UL * 1000UL;   // then once a day
 static const uint32_t RETRY_MS = 3600UL * 1000UL;          // after a failed automatic check: once an hour
@@ -63,17 +75,49 @@ static const uint32_t STACK = 12288;
 
 #define LOCKED(stmt) do { portENTER_CRITICAL(&g_mux); stmt; portEXIT_CRITICAL(&g_mux); } while (0)
 
-// ---- TLS transport: WiFiClientSecure, chain verified against FWUP_ROOTS_PEM, host name checked (SNI) -------------
-// Never the insecure mode: WiFiClientSecure gets the CA buffer, so mbedTLS verification is VERIFY_REQUIRED.
+// ---- TLS transport: WiFiClientSecure, chain verified against the pinned roots, host name checked (SNI) -----------
+// Never the insecure mode: WiFiClientSecure gets the CA buffer FWUP_ROOTS_PEM, so mbedTLS verification is
+// VERIFY_REQUIRED. Matter builds (ESP-IDF 5, mbedTLS 3) offer the same nine roots through mbedTLS's trusted-CA
+// callback instead (fw_update_roots_cb.h: on demand, not parsed up front; -17.3 KB at the TLS peak).
 // Known limit: this core's mbedTLS is built without MBEDTLS_HAVE_TIME_DATE, so certificate dates are not checked
 // (docs/UPDATECONTROLE.md); the release signature check after the download does not depend on TLS.
 static void sampleHeap();
+// Byte-addressable internal RAM: what TLS, lwIP and Matter allocate from. ESP.getFreeHeap() also counts the IRAM-only
+// heap (51 KB on v1.0.1, 77 KB with Matter on IDF 5), which none of them can use, so the gate measured nothing there.
+static uint32_t free8() { return heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT); }
+// The Matter build defers update jobs while a controller commissions the device (orcon_matter); others never do.
+extern "C" bool orcon_fwup_defer(void) __attribute__((weak));
+static const char* roomForTls() {
+    if (orcon_fwup_defer && orcon_fwup_defer()) return "matter-busy";
+    return fwup::memoryOk(free8(), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+}
+// The owner's restart for an update check next to Matter (fwup::updateBootRefusal / updateBootDone). One flag in
+// RTC memory that survives esp_restart() only: read and cleared once per boot, so a crash, a watchdog reset or a power
+// cut in that boot brings Matter back, and the update boot itself never asks for another one (never a loop).
+struct UpdateBootFlag { uint32_t magic, check; };
+RTC_NOINIT_ATTR static UpdateBootFlag g_ubFlag;
+static const uint32_t UB_MAGIC = 0x4F55424Fu;
+static int8_t g_updateBoot = -1;   // -1: not read yet this boot
+bool updateBoot() {   // loop task (orcon_matter::begin() asks before Matter would start, tick() afterwards)
+    if (g_updateBoot < 0) {
+        g_updateBoot = g_ubFlag.magic == UB_MAGIC && g_ubFlag.check == ~UB_MAGIC && esp_reset_reason() == ESP_RST_SW;
+        g_ubFlag.magic = g_ubFlag.check = 0;
+    }
+    return g_updateBoot == 1;
+}
 struct TlsTransport : fwup::Transport {
+#if ORCON_MATTER
+    rootscb::Client c;
+    static constexpr const char* kRoots = nullptr;   // the callback supplies them
+#else
     WiFiClientSecure c;
+    static constexpr const char* kRoots = FWUP_ROOTS_PEM;
+#endif
     const char* err = "connect-failed";
     bool connect(const char* host, uint32_t ms) override {
         c.stop();
         if (!net::wifiConnected()) { err = "no-network"; return false; }
+        if (const char* e = roomForTls()) { err = e; return false; }   // again before each of the three handshakes
         const uint32_t t0 = millis();
         IPAddress ip;
         if (!WiFi.hostByName(host, ip) || ip == IPAddress((uint32_t)0)) { err = "dns-failed"; return false; }
@@ -81,7 +125,7 @@ struct TlsTransport : fwup::Transport {
         if (used + 1000 > ms) { err = "timeout"; return false; }
         c.setHandshakeTimeout((ms - used) / 1000);
         c.setTimeout((ms - used) / 1000);
-        if (!c.connect(ip, 443, host, FWUP_ROOTS_PEM, nullptr, nullptr) || millis() - t0 > ms) {   // TCP + TLS within the step too (Codex r5)
+        if (!c.connect(ip, 443, host, kRoots, nullptr, nullptr) || millis() - t0 > ms) {   // TCP + TLS within the step too (Codex r5)
             if (c.connected()) { c.stop(); err = "timeout"; sampleHeap(); return false; }
             char b[8];
             err = c.lastError(b, sizeof(b)) < -1 ? "tls-failed" : "connect-failed";   // -1: TCP connect or handshake timeout
@@ -119,12 +163,12 @@ struct TlsTransport : fwup::Transport {
 
 static uint32_t clockMs() { return millis(); }
 static void sampleHeap() {   // during the TLS session too (transport connect/read), not only after it (Codex r3)
-    const uint32_t f = ESP.getFreeHeap(), b = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    const uint32_t f = free8(), b = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     LOCKED(if (f < g_st.heapMin) g_st.heapMin = f; if (b < g_st.blockMin) g_st.blockMin = b);
 }
 static void progress(uint32_t done, uint32_t total) { sampleHeap(); LOCKED(g_st.done = done; g_st.total = total); }
 
-struct Ctx { fwup::Url u; fwup::Head h; uint8_t io[4096]; fwup::Offer offer; Job job; };
+struct Ctx { fwup::Url u; fwup::Head h; uint8_t io[4096]; fwup::Offer offer; Job job; bool beta; };   // beta: the owner's channel
 
 static void worker(void* arg) {
     Ctx* c = static_cast<Ctx*>(arg);
@@ -132,7 +176,8 @@ static void worker(void* arg) {
         TlsTransport t;
         fwup::Limits lim;
         if (c->job == Job::Check) {
-            const fwup::Own own = {ORCON_RELEASE_VERSION, otap::Variant::Control, "heltec_v2_sx1276_control", ota::updateSlotSize()};
+            const fwup::Own own = {ORCON_RELEASE_VERSION, otap::Variant::Control, "heltec_v2_sx1276_control", ota::updateSlotSize(),
+                                   ORCON_RELEASE_PRE, c->beta};
             fwup::Found f = fwup::Found::None;
             const char* e = fwup::check(t, ota::verifySignature, clockMs, lim, own, c->offer, f, (char*)c->io, sizeof(c->io), c->u, c->h);
             sampleHeap();
@@ -160,10 +205,11 @@ static const char* startJob(Job j, bool automatic, uint32_t want = 0, const char
     if (g_running) return "update-busy";
     if (ota::pendingVerify()) return "confirm-running-image-first";
     if (!net::wifiConnected()) return "no-network";
-    if (const char* e = fwup::memoryOk(ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT))) return e;
+    if (const char* e = roomForTls()) return e;
     Ctx* c = new (std::nothrow) Ctx;
     if (!c) return "low-memory";
     c->job = j;
+    c->beta = g_beta;   // the channel as the owner set it when the job starts (the worker never reads the setting)
     if (j == Job::Install) {
         bool same = false;
         LOCKED(c->offer = g_offer; same = g_st.found == fwup::Found::Newer && g_offer.m.version == want && !strcmp(g_offer.m.commit, commit));
@@ -172,7 +218,7 @@ static const char* startJob(Job j, bool automatic, uint32_t want = 0, const char
     }
     const uint32_t total = j == Job::Install ? c->offer.m.size : 0;
     LOCKED(g_st.phase = j == Job::Check ? Phase::Checking : Phase::Downloading; g_st.job = j; g_st.err = ""; g_st.done = 0;
-           g_st.total = total; g_st.heapMin = ESP.getFreeHeap(); g_st.blockMin = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+           g_st.total = total; g_st.heapMin = free8(); g_st.blockMin = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
            g_st.automatic = automatic);
     g_install = j == Job::Install; g_running = true; g_finished = false;
     g_lastStart = millis(); g_started = true;
@@ -211,24 +257,26 @@ static const char* phaseName(Phase p) {
 static void statusBody(int code) {
     Status s; fwup::Offer o;
     portENTER_CRITICAL(&g_mux); s = g_st; if (s.found != fwup::Found::None) o = g_offer; portEXIT_CRITICAL(&g_mux);
-    char cur[16], b[320];
-    fwup::semverText(ORCON_RELEASE_VERSION, cur);
+    char cur[24], b[384];   // two fields for the update restart and the channel (update_boot, channel); the longest line is ~370
+    fwup::semverTextPre(ORCON_RELEASE_VERSION, ORCON_RELEASE_PRE, cur);
     String out; out.reserve(900);
     snprintf(b, sizeof(b), "{\"supported\":true,\"repo\":\"%s\",\"current\":{\"release\":%lu,\"name\":\"%s\",\"fw\":\"%s\",\"variant\":\"control\"},"
-             "\"phase\":\"%s\",\"job\":\"%s\",\"error\":\"%s\",\"automatic\":%s,\"checked\":%s,\"checked_age_s\":%ld,\"found\":\"%s\",",
+             "\"phase\":\"%s\",\"job\":\"%s\",\"error\":\"%s\",\"automatic\":%s,\"checked\":%s,\"checked_age_s\":%ld,\"found\":\"%s\","
+             "\"update_boot\":%s,\"channel\":\"%s\",",
              ORCON_RELEASE_REPO, (unsigned long)ORCON_RELEASE_VERSION, cur, FW_VERSION, phaseName(s.phase),
              s.job == Job::Install ? "install" : "check", s.err, s.automatic ? "true" : "false", s.checked ? "true" : "false",
              s.checked ? long((millis() - s.checkedAt) / 1000) : -1L,
-             s.found == fwup::Found::Newer ? "newer" : s.found == fwup::Found::UpToDate ? "up-to-date" : "none");
+             s.found == fwup::Found::Newer ? "newer" : s.found == fwup::Found::UpToDate ? "up-to-date" : "none",
+             updateBoot() ? "true" : "false", g_beta ? "beta" : "stable");
     out += b;
     if (s.found != fwup::Found::None) {
-        char name[16]; fwup::semverText(o.m.version, name);
-        snprintf(b, sizeof(b), "\"latest\":{\"release\":%lu,\"name\":\"%s\",\"commit\":\"%s\",\"size\":%lu,\"notes\":",
-                 (unsigned long)o.m.version, name, o.m.commit, (unsigned long)o.m.size);
+        char name[24]; fwup::semverTextPre(o.m.version, o.m.pre, name);
+        snprintf(b, sizeof(b), "\"latest\":{\"release\":%lu,\"pre\":%u,\"name\":\"%s\",\"commit\":\"%s\",\"size\":%lu,\"notes\":",
+                 (unsigned long)o.m.version, unsigned(o.m.pre), name, o.m.commit, (unsigned long)o.m.size);
         out += b; quoted(out, o.notes); out += "},";
     } else out += "\"latest\":null,";
     snprintf(b, sizeof(b), "\"progress\":{\"done\":%lu,\"total\":%lu},\"mem\":{\"heap_free\":%lu,\"heap_min_job\":%lu,\"block_min_job\":%lu,"
-             "\"stack_free_job\":%lu}}", (unsigned long)s.done, (unsigned long)s.total, (unsigned long)ESP.getFreeHeap(), (unsigned long)s.heapMin,
+             "\"stack_free_job\":%lu}}", (unsigned long)s.done, (unsigned long)s.total, (unsigned long)free8(), (unsigned long)s.heapMin,
              (unsigned long)s.blockMin, (unsigned long)s.stackFree);
     out += b;
     reply(code, out);
@@ -267,8 +315,47 @@ static void handleInstall() {
     statusBody(202);
 }
 
+// POST /api/update/restart {}: the owner's one restart without Matter, only when the check cannot run next to it.
+static void handleUpdateRestart() {
+    if (!setupweb::authorize(true)) return;
+    if (g_s->arg("plain").length() > 2) { fail(400, "bad-json"); return; }
+    const fwup::UpdateBootAsk a{orcon_fwup_defer != nullptr,
+        !fwup::memoryOk(free8(), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+        g_running.load(), g_restart.load() || net::restartQueued(), ota::pendingVerify(),
+        orcon_fwup_defer && orcon_fwup_defer(), setupweb::busy()};
+    if (const char* e = fwup::updateBootRefusal(a)) { fail(409, e); return; }
+    g_ubFlag.magic = UB_MAGIC; g_ubFlag.check = ~UB_MAGIC;
+    setupweb::note(rfcon::INFO, "update: herstart zonder Matter voor de updatecontrole (op verzoek van de eigenaar)");
+    reply(202, "{\"restart\":\"update-check\"}");
+    net::restartSoon();
+}
+
+// POST /api/update/channel {"beta":true|false}: the owner's "Bèta-updates ontvangen". Switching drops the last
+// offer, so an install always follows a check on the channel now chosen. Back to stable never installs an older
+// release (releaseRank): a beta stays until a stable release at least as high.
+bool betaEnabled() { return g_beta; }
+static void handleChannel() {
+    if (!setupweb::authorize(true)) return;
+    const String body = g_s->arg("plain");
+    JsonDocument d;
+    if (body.length() > 32 || deserializeJson(d, body) || !d.is<JsonObject>() || d.as<JsonObject>().size() != 1 ||
+        !d["beta"].is<bool>()) { fail(400, "bad-json"); return; }
+    if (g_running) { fail(409, "update-busy"); return; }
+    const bool beta = d["beta"].as<bool>();
+    Preferences p;
+    if (!p.begin("orcon", false) || p.putBool("beta", beta) != 1) { p.end(); fail(503, "storage-unavailable"); return; }
+    p.end();
+    g_beta = beta;
+    LOCKED(g_st.found = fwup::Found::None);
+    setupweb::note(rfcon::INFO, beta ? "update: bèta-updates aan (op verzoek van de eigenaar)" : "update: bèta-updates uit");
+    statusBody(200);
+}
+
 void begin(WebServer& s) {
     g_s = &s;
+    { Preferences p; if (p.begin("orcon", true)) { g_beta = p.getBool("beta", false); p.end(); } }   // absent: stable
+    s.on("/api/update/restart", HTTP_POST, handleUpdateRestart);
+    s.on("/api/update/channel", HTTP_POST, handleChannel);
     s.on("/api/update",         HTTP_GET,  handleStatus);
     s.on("/api/update/check",   HTTP_POST, handleCheck);
     s.on("/api/update/install", HTTP_POST, handleInstall);
@@ -279,7 +366,7 @@ void tick(uint32_t now) {
         g_finished = false;
         Status s; fwup::Offer o;
         portENTER_CRITICAL(&g_mux); s = g_st; o = g_offer; portEXIT_CRITICAL(&g_mux);
-        char name[16]; fwup::semverText(o.m.version, name);
+        char name[24]; fwup::semverTextPre(o.m.version, o.m.pre, name);
         char m[112];
         if (s.job == Job::Check) {
             if (s.phase == Phase::Failed) snprintf(m, sizeof(m), "updatecontrole mislukt: %s", s.err);
@@ -299,7 +386,18 @@ void tick(uint32_t now) {
         if (!g_restartSent && millis() - g_writtenAt.load() >= RESTART_AFTER_WRITE_MS) { g_restartSent = true; net::restartSoon(); }
         return;
     }
-    if (g_running) return;
+    if (updateBoot()) {   // Matter is off this boot only, for the owner's check; then back to the normal start
+        if (!g_started && net::wifiConnected()) { g_started = true; g_lastStart = now; startJob(Job::Check, false); }
+        bool checked = false, newer = false; uint32_t at = 0;
+        LOCKED(checked = g_st.checked; newer = g_st.found == fwup::Found::Newer; at = g_st.checkedAt);
+        if (!g_restartSent && fwup::updateBootDone(now, checked, newer, at, g_running.load() || net::restartQueued() || busy() || setupweb::busy())) {
+            g_restartSent = true;
+            setupweb::note(rfcon::INFO, "update: terug naar de normale start met Matter");
+            net::restartSoon();
+        }
+        return;
+    }
+    if (g_running || !AUTO_CHECK) return;
     bool failedLast = false;
     LOCKED(failedLast = g_st.phase == Phase::Failed && g_st.job == Job::Check);
     const bool due = !g_started ? now >= FIRST_CHECK_MS : now - g_lastStart >= (failedLast ? RETRY_MS : EVERY_MS);

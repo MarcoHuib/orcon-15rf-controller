@@ -162,3 +162,7 @@
 #ifndef ORCON_RELEASE_VERSION
 #define ORCON_RELEASE_VERSION 0
 #endif
+// Release channels: 1..99 when this image is beta N of ORCON_RELEASE_VERSION (a beta workflow sets it); 0 = stable.
+#ifndef ORCON_RELEASE_PRE
+#define ORCON_RELEASE_PRE 0
+#endif
