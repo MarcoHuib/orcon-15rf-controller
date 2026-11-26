@@ -162,6 +162,7 @@ int main() {
     char t[16];
     semverText(1002003, t); CHECK(eq(t, "1.2.3"), "text 1.2.3");
     semverText(0, t); CHECK(eq(t, "dev"), "text dev");
+    semverText(999999999u, t); CHECK(eq(t, "999.999.999"), "text largest");
     semverText(1000000000u, t); CHECK(eq(t, "?"), "text overflow");
     CHECK(parseSemver("2.0.0", v) && v > 1999999 && parseSemver("1.999.999", v) && v < 2000000, "numeric order = SemVer order");
 

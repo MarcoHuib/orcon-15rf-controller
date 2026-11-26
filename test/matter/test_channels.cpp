@@ -39,6 +39,16 @@ int main() {
     semverTextPre(1001000, 0, t); CHECK(is(t, "1.1.0"));
     semverTextPre(1001000, 4, t); CHECK(is(t, "1.1.0-beta.4"));
     semverTextPre(999999999, 99, t); CHECK(is(t, "999.999.999-beta.99"));
+    // ---- the maxima: 999.999.999 and beta.99 are the largest valid values; one more is refused; no text is ever cut short
+    CHECK(parseSemverPre("999.999.999-beta.99", v, p) && v == 999999999u && p == 99);
+    CHECK(parseSemverPre("999.999.999", v, p) && v == 999999999u && p == 0);
+    for (const char* bad : {"1000.0.0", "1.1000.0", "1.0.1000", "1000.0.0-beta.1", "999.999.999-beta.100", "999.999.999-beta.999"})
+        CHECK(!parseSemverPre(bad, v, p));
+    for (unsigned pre = 0; pre <= 99; ++pre) {   // every valid beta number of the largest version: to text and back
+        semverTextPre(999999999, uint8_t(pre), t);
+        CHECK(parseSemverPre(t, v, p) && v == 999999999u && p == pre);
+    }
+    semverTextPre(999999999, 255, t); CHECK(is(t, "999.999.999-beta.255"));   // the longest text of any input (20 chars), whole
 
     // ---- the order: 1.0.1 < 1.1.0-beta.1 < 1.1.0-beta.2 < 1.1.0 < 1.1.1-beta.1
     using otap::releaseRank;
@@ -91,6 +101,13 @@ int main() {
     CHECK(bundleName(stable110, n, sizeof n) && is(n, "orcon-control-v1.1.0-0123456.orconfw"));
     CHECK(bundleUrl(beta1, u, sizeof u) && std::strstr(u, "/releases/download/v1.1.0-beta.1/orcon-control-v1.1.0-beta.1-0123456.orconfw"));
     CHECK(parseUrl(u, pu) && allowedUrl(pu));
+    // the longest valid name and URL fit the firmware's own buffers (bundleUrl: name[80]; check(): url[200], as n and u here)
+    otap::Manifest top = beta1; top.version = 999999999; top.pre = 99;
+    CHECK(bundleName(top, n, sizeof n) && is(n, "orcon-control-v999.999.999-beta.99-0123456.orconfw"));
+    CHECK(bundleUrl(top, u, sizeof u) && std::strstr(u, "/releases/download/v999.999.999-beta.99/orcon-control-v999.999.999-beta.99-0123456.orconfw"));
+    CHECK(parseUrl(u, pu) && allowedUrl(pu));
+    top.pre = 100; CHECK(!bundleName(top, n, sizeof n) && !bundleUrl(top, u, sizeof u));   // never a name for an invalid beta
+    top.pre = 99; top.version = 1000000000u; CHECK(!bundleName(top, n, sizeof n) && !bundleUrl(top, u, sizeof u));
 
     // ---- judge(): what the check offers
     const Own stableOwn{1000001, otap::Variant::Control, "heltec_v2_sx1276_control", slot, 0, false};   // stable, beta off

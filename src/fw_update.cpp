@@ -40,8 +40,8 @@ bool parseSemverPre(const char* s, uint32_t& out, uint8_t& pre) {
     return true;
 }
 void semverTextPre(uint32_t v, uint8_t pre, char out[24]) {
-    char core[16]; semverText(v, core);
-    if (pre) snprintf(out, 24, "%s-beta.%u", core, unsigned(pre)); else snprintf(out, 24, "%s", core);
+    char core[16]; semverText(v, core);   // at most 11 characters ("999.999.999"): %.11s lets the compiler prove the fit
+    if (pre) snprintf(out, 24, "%.11s-beta.%u", core, unsigned(pre)); else snprintf(out, 24, "%s", core);
 }
 void semverText(uint32_t v, char out[16]) {
     if (!v) snprintf(out, 16, "dev");
