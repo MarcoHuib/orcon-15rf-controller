@@ -145,8 +145,9 @@ def fn(text,head):                                     # body of the first funct
     return text.split(head,1)[1].split('\n}\n',1)[0]
 def tx_paths_safe(web,net,radio,runtime,main):
     assert web.count('controller().submitCtl(')==1 and 'submitCtl' not in net+main
-    # The mode-command gates live in ctlAdmit(), shared by the web page and Siri (docs/SIRI.md): the only
-    # submitCtl() call, after every gate, and exactly two callers, each with its own authentication first.
+    # The mode-command gates live in ctlAdmit(), shared by the web page, Siri (docs/SIRI.md) and Matter
+    # (docs/MATTER.md): the only submitCtl() call, after every gate, and exactly three callers, each with its own
+    # authentication first (Matter: the Matter stack's session and access control, before a request reaches us).
     adm=fn(web,'static int ctlAdmit(uint8_t k, uint32_t request, const char*& e, uint32_t& waitMs) {')
     order=['"profile-storage-unavailable"','"profile-required"','"profile-protocol-unsupported"',
            '"profile-unit-mismatch"','"identity-conflict"','"tx-budget"','controller().submitCtl(']
@@ -154,7 +155,7 @@ def tx_paths_safe(web,net,radio,runtime,main):
     assert all(x>=0 for x in pos) and pos==sorted(pos),('send gate order',list(zip(order,pos)))
     assert 'identityClear' in adm.split('submitCtl(',1)[1] and 'txpoc::rxReady()' in adm.split('submitCtl(',1)[1]
     callers=len(re.findall(r'\bctlAdmit\s*\(',web))
-    assert callers==3,('ctlAdmit callers',callers)           # the definition + the two handlers below
+    assert callers==4,('ctlAdmit callers',callers)           # the definition + the two handlers + matterControl below
     assert not re.search(r'\barg\s*\(\s*"k"\s*\)',web),'a Siri key is never read from the URL'
     # Whole statements, whitespace-normalised, in this order: each gate with its early return (Codex SIRI-08:
     # tokens alone let "||" -> "&&", an ignored guard result or a weakened predicate pass). The behaviour
@@ -174,6 +175,11 @@ def tx_paths_safe(web,net,radio,runtime,main):
               r'const char\* given = auth\.length\(\) > 7 && !strncasecmp\(auth\.c_str\(\), "Bearer ", 7\) \? auth\.c_str\(\) \+ 7 : "";',
               r'if \(authstore::siriKey\(key\) != authstore::Status::Ok \|\| !webauth::equal\(given, key\)\) '+say,
               r'ctlAdmit\(k, 0, e, w\)'],'siri')
+    # Matter: the five keys Siri takes (never the timer), no page sequence, like Siri.
+    in_order(fn(web,'int matterControl(const char* key, const char*& e, uint32_t& waitMs) {'),
+             [r'const uint8_t k = keyFromName\(key\);',
+              r'if \(k == K_NONE \|\| k == K_TIMER\) \{ e = "bad-key"; waitMs = 0; return 400; \}',
+              r'return ctlAdmit\(k, 0, e, waitMs\);'],'matter')
     assert net.count('controller().submit(')==1 and 'submit' not in main.replace('consumeResult','')
     poc=fn(net,'static void handlePocMode() {')
     assert poc.find('rf-web-control-required')>=0 and poc.find('rf-web-control-required')<poc.find('controller().submit(')
@@ -193,6 +199,14 @@ def tx_paths_safe(web,net,radio,runtime,main):
     assert len(be)==2 and 'class Sx1276Backend' in be[0] and 'class Sx1276Backend' not in be[1]+runtime.split('#if ORCON_TX_RF_ENABLE\n',1)[0]
 web=Path('src/setup_web.cpp').read_text(); main_src=Path('src/main.cpp').read_text()
 tx_paths_safe(web,net,radio,runtime:=Path('src/tx_poc_runtime.cpp').read_text(),main_src)
+# The Matter admission (setupweb::matterControl) has exactly one caller: the Matter component's loop-task handoff.
+uses=sorted(p.name for p in Path('src').iterdir() if 'matterControl(' in p.read_text())
+assert uses==['setup_web.cpp','setup_web.h'] and web.count('matterControl(')==1,uses
+mtr=[p for p in sorted(Path('idf/components/orcon_matter').rglob('*')) if p.is_file() and 'matterControl(' in p.read_text(errors='replace')]
+assert [str(p) for p in mtr]==['idf/components/orcon_matter/orcon_matter.cpp'],mtr   # its declaration and one call
+mtr=mtr[0].read_text()
+assert mtr.count('matterControl(')==2 and mtr.count('\nint matterControl(const char* key, const char*& e, uint32_t& waitMs);\n')==1
+assert mtr.count('setupweb::matterControl(')==1
 for name,old,new in [('no-profile-gate','if(!profile){e="profile-required";return 409;}',''),
                      ('no-unit-gate','if(!(profile->unit==orcon::ids().fan)){e="profile-unit-mismatch";return 409;}',''),
                      ('auto-ack-ungated','if (CAN_PAIR && g_pair.st','if (g_pair.st'),
@@ -211,6 +225,9 @@ for name,old,new in [('no-profile-gate','if(!profile){e="profile-required";retur
                      ('siri-state-weakened','st != provision::State::Done)','st == provision::State::New)'),
                      ('siri-key-in-url-spaced','g_srv->header("Authorization")','g_srv->arg( "k" )'),
                      ('siri-no-return','siriSay(401, "De Siri-sleutel klopt niet. Kijk in de webinterface bij Systeem, Integraties.");\n        return;','siriSay(401, "De Siri-sleutel klopt niet. Kijk in de webinterface bij Systeem, Integraties.");'),
+                     ('matter-timer-key','if (k == K_NONE || k == K_TIMER) { e = "bad-key"; waitMs = 0; return 400; }','if (k == K_NONE) { e = "bad-key"; waitMs = 0; return 400; }'),
+                     ('matter-any-key','if (k == K_NONE || k == K_TIMER) { e = "bad-key"; waitMs = 0; return 400; }',''),
+                     ('matter-page-sequence','return ctlAdmit(k, 0, e, waitMs);','return ctlAdmit(k, 1, e, waitMs);'),
                      ('third-admit-caller-spaced','static void handleRemoteState() { if (!authorize(false, true)) return; remoteBody(200); }','static void handleRemoteState() { const char* e; uint32_t w; ctlAdmit (1, 0, e, w); }')]:
     mutated=web.replace(old,new,1); assert mutated!=web,name
     try: tx_paths_safe(mutated,net,radio,runtime,main_src)

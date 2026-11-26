@@ -1,0 +1,38 @@
+# Matter: own storage, TLS next to Matter, commissioning, control and presentation (docs/MATTER.md).
+
+# Storage: Matter in its own 48 KB NVS at the head of the unused spiffs partition (no partition-table change); a region
+# holding foreign data is refused and Matter stays off (components/orcon_matter/orcon_matter_nvs.cpp).
+CONFIG_CHIP_FACTORY_NAMESPACE_PARTITION_LABEL="chipkvs"
+CONFIG_CHIP_CONFIG_NAMESPACE_PARTITION_LABEL="chipkvs"
+CONFIG_CHIP_COUNTERS_NAMESPACE_PARTITION_LABEL="chipkvs"
+CONFIG_CHIP_KVS_NAMESPACE_PARTITION_LABEL="chipkvs"
+CONFIG_ESP_MATTER_NVS_PART_NAME="chipkvs"
+
+# TLS for Orcon's update check next to Matter: dynamic buffers freed after use, the nine pinned roots on demand
+# (src/fw_update_roots_cb.h) and no kept peer chain. Same roots, same chain and host name checks.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
+CONFIG_MBEDTLS_X509_TRUSTED_CERT_CALLBACK=y
+CONFIG_MBEDTLS_SSL_KEEP_PEER_CERTIFICATE=n
+
+# Commissioning only on the owner's request (the /connect page, behind Orcon's login), with this device's own identity
+# (tools/matter_identity.sh, kept outside the repository) instead of the SDK's public test set; no test setup
+# parameters, no test event triggers.
+CONFIG_CHIP_ENABLE_PAIRING_AUTOSTART=n
+CONFIG_ENABLE_TEST_SETUP_PARAMS=n
+CONFIG_TEST_EVENT_TRIGGER_ENABLED=n
+CONFIG_CUSTOM_DAC_PROVIDER=y
+CONFIG_CUSTOM_COMMISSIONABLE_DATA_PROVIDER=y
+
+# Control: a Matter request goes through Orcon's own admission (ctlAdmit, the checks of the web page and Siri).
+CONFIG_ORCON_MATTER_CONTROL=y
+
+# Presentation: one bridged fan "Orcon ventilator" (Apple Home takes over the names of bridged devices only), honest
+# names, the device name in the commissionable DNS-SD advertisement (components/orcon_matter/orcon_chip_config.h).
+CONFIG_ORCON_MATTER_BRIDGE=y
+CONFIG_SUPPORT_BRIDGED_DEVICE_BASIC_INFORMATION_CLUSTER=y
+CONFIG_CHIP_PROJECT_CONFIG="components/orcon_matter/orcon_chip_config.h"
+# Basic Information SerialNumber: a neutral default; tools/matter_identity.sh gives every device its own in the
+# identity's identity.defaults (tools/build_idf.sh applies it last).
+CONFIG_USE_TEST_SERIAL_NUMBER="ORCON-DEV"

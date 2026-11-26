@@ -1357,5 +1357,26 @@ bool takeLearnedFan(ramses::DeviceId& out) {
 }
 #endif
 
+// Matter (idf/components/orcon_matter) switches the unit through the same admission as the web page and
+// Siri, in ctlAdmit: update, unit, sessions, profile, identity, RF budget, the controller's own rules. Loop task only.
+int matterControl(const char* key, const char*& e, uint32_t& waitMs) {
+#if ORCON_TX_POC
+    const uint8_t k = keyFromName(key);
+    if (k == K_NONE || k == K_TIMER) { e = "bad-key"; waitMs = 0; return 400; }   // five functions, as Siri
+    return ctlAdmit(k, 0, e, waitMs);   // 0: no page sequence; like Siri every Matter request is a new command
+#else
+    (void)key; e = "tx-unavailable"; waitMs = 0; return 501;
+#endif
+}
+uint8_t matterUnitMode(bool& txBusy) {   // the selected unit's own last report (31D9), 0xFF when none
+#if ORCON_TX_POC
+    txBusy = txpoc::controller().status().busy;
+#else
+    txBusy = false;
+#endif
+    const orcon::State& s = orcon::state();
+    return s.fanKnown ? uint8_t(s.mode) : 0xFF;
+}
+
 } // namespace setupweb
 #endif // !ORCON_TX_POC || ORCON_WEB_CONTROL
