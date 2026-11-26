@@ -165,6 +165,52 @@ const hasSvg = el => /<svg[^>]*viewBox="0 0 33 33"/.test(el.qr.innerHTML);   // 
     check(el.cMv.textContent === 'Niet beschikbaar' && el.open.hidden, 'failed: "Niet beschikbaar", no open button');
     check(/update-boot/.test(el.diag.innerHTML), 'failed: the step is in the technical status');
   }
+  // 11. The universal firmware without an identity yet: "Matter activeren" for the logged-in owner only; one POST with
+  //     the CSRF rules, then it waits for the restart. A damaged identity: a new one only after an explicit confirmation.
+  {
+    const NOT = st({ state: 'failed', identity: 'absent', diag: { state: 'failed', step: 'not-activated', err: '0x0' } });
+    const { el, calls } = await run({ 'GET /api/connect': res(200, NOT),
+      'POST /api/connect/activate': res(202, Object.assign({}, NOT, { activating: true })) });
+    check(!el.act.hidden && el.activate.textContent === 'Matter activeren', 'not activated: the activate button for the owner');
+    check(el.cMv.textContent === 'Niet geactiveerd' && /nog niet geactiveerd/.test(el.stText.textContent), 'not activated: chip and status say so');
+    check(el.open.hidden && el.pOpen.hidden, 'not activated: no pairing window, no code');
+    await el.activate.onclick(); await flush();
+    const p = posts(calls)[0];
+    check(p && p.url === '/api/connect/activate' && p.opt.body === '{"action":"activate"}', 'activate: POST {"action":"activate"}');
+    check(p && p.opt.headers['X-Orcon-Token'] === TOKEN && p.opt.headers['Content-Type'] === 'application/json', 'activate: CSRF token and JSON');
+    check(el.activate.disabled && /herstart/.test(el.actMsg.textContent), 'activate: waits for the restart, button stays off');
+  }
+  {
+    const NOT = st({ state: 'failed', identity: 'absent', diag: { state: 'failed', step: 'not-activated', err: '0x0' } });
+    const { el } = await run({ 'GET /api/connect': res(200, NOT) }, { loggedIn: false });
+    check(el.act.hidden, 'not logged in: no activate button');
+  }
+  {
+    const NOT = st({ state: 'failed', identity: 'absent', diag: { state: 'failed', step: 'not-activated', err: '0x0' } });
+    const { el } = await run({ 'GET /api/connect': res(200, NOT), 'POST /api/connect/activate': res(409, { error: 'trial-boot' }) });
+    await el.activate.onclick(); await flush();
+    check(/proefstart/.test(el.actMsg.textContent) && !el.activate.disabled, 'trial-boot: its own message, the button again');
+  }
+  {
+    const BAD = st({ state: 'failed', identity: 'damaged', diag: { state: 'failed', step: 'identity-damaged', err: '0x109' } });
+    const { el, calls } = await run({ 'GET /api/connect': res(200, BAD), 'POST /api/connect/activate': res(202, Object.assign({}, BAD, { activating: true })) });
+    check(el.cMv.textContent === 'Beschadigd' && el.activate.textContent === 'Nieuwe identiteit maken', 'damaged: chip and the replace button');
+    await el.activate.onclick(); await flush();
+    check(posts(calls).length === 0 && !el.actBox.hidden, 'damaged: the first click only asks');
+    el.actNo.onclick(); await flush();
+    check(el.actBox.hidden && posts(calls).length === 0, 'damaged: cancel sends nothing');
+    await el.activate.onclick(); el.actYes.onclick(); await flush();
+    const p = posts(calls)[0];
+    check(p && p.opt.body === '{"action":"replace","confirm":true}', 'damaged: confirmed, POST {"action":"replace","confirm":true}');
+  }
+  {
+    const { el } = await run({ 'GET /api/connect': res(200, st({ state: 'failed', identity: 'absent', activating: true })) });
+    check(el.activate.disabled && /herstart zo/.test(el.actMsg.textContent), 'activating: the button off and why');
+  }
+  {
+    const { el } = await run({ 'GET /api/connect': res(200, st({ identity: 'valid' })) });
+    check(el.act.hidden && el.cMv.textContent === 'Actief', 'activated: no activation block');
+  }
   console.log(`connect page: ${checks} checks, ${fails} failures`);
   process.exit(fails ? 1 : 0);
 })();

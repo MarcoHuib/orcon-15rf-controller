@@ -366,7 +366,7 @@ $('profSub').textContent=p?'Actief profiel':f.items.length?'Kies een profiel':'M
 $('wifiSub').textContent=!w?'':w.connected?'Verbonden met '+w.ssid:'Niet verbonden';
 {const sr=!!(S&&S.caps&&S.caps.siri_supported);$('cSiri').disabled=!sr;$('cSiri').classList.toggle('off',!sr);$('siriSub').textContent=sr?'Bedien de ventilatie met je stem':'Niet beschikbaar in deze firmware'}
 $('sysSub').textContent=sp?'Firmware, herstarten en informatie':'Niet beschikbaar in deze firmware';
-{const m=$('cMat');m.hidden=!MT||!!MT.absent;if(MT&&!MT.absent){const ok=MT.state==='ready',n=MT.fabrics|0;$('matSub').textContent=(ok?'Beschikbaar':'Niet beschikbaar')+' · '+(n?'gekoppeld met '+n+(n===1?' controller':' controllers'):'niet gekoppeld')+(MT.window?' · koppelvenster open':'');m.classList.toggle('on',ok&&n>0)}}
+{const m=$('cMat');m.hidden=!MT||!!MT.absent;if(MT&&!MT.absent){const ok=MT.state==='ready',n=MT.fabrics|0;$('matSub').textContent=MT.identity==='absent'?'Nog niet geactiveerd · activeren op de Matter-pagina':MT.identity==='damaged'?'Identiteit beschadigd · zie de Matter-pagina':(ok?'Beschikbaar':'Niet beschikbaar')+' · '+(n?'gekoppeld met '+n+(n===1?' controller':' controllers'):'niet gekoppeld')+(MT.window?' · koppelvenster open':'');m.classList.toggle('on',ok&&n>0)}}
 for(const i of['cWifi','cSys']){$(i).classList.toggle('off',!sp);$(i).disabled=!sp}
 }
 const dur=ms=>{const s=Math.floor(ms/1000),d=Math.floor(s/86400),h=Math.floor(s%86400/3600);return(d?d+' d ':'')+(d||h?h+' u ':'')+Math.floor(s%3600/60)+' min'};

@@ -973,5 +973,23 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         assert.equal(lq.$('aBack').hidden, true); assert.match(lq.$('aHintOwn').textContent, /kwijtgeraakt.*Fabrieksreset/);
         ok('locked (NVS lost its owner): no login, no setup, no code entry; only the PRG factory reset is explained');
     }
+    // ---- the Matter card on the dashboard: hidden without Matter (the summary route answers 404), else its state from
+    //      the owner's summary (never codes); a universal firmware before activation, and a damaged identity, say so.
+    {
+        const prof = { profiles: PF([PI(2, 'Washok', '29:000101')], 2) };
+        const sum = o => () => [200, { state: 'ready', identity: 'valid', activating: false, fabrics: 0, window: false, window_code: false, window_s: 0, error: '', ...o }];
+        let p = await page({ 'GET /api/setup/state': () => [200, state(CAPS_RX, prof)] }); await p.refresh();   // RX: no remote state poll
+        assert.equal(p.$('cMat').hidden, true); ok('Matter card: hidden on firmware without Matter (404)');
+        for (const [o, want, on] of [[{ fabrics: 1 }, 'Beschikbaar · gekoppeld met 1 controller', true],
+                                     [{ fabrics: 2, window: true }, 'Beschikbaar · gekoppeld met 2 controllers · koppelvenster open', true],
+                                     [{ state: 'starting' }, 'Niet beschikbaar · niet gekoppeld', false],
+                                     [{ state: 'failed', identity: 'absent' }, 'Nog niet geactiveerd · activeren op de Matter-pagina', false],
+                                     [{ state: 'failed', identity: 'damaged' }, 'Identiteit beschadigd · zie de Matter-pagina', false]]) {
+            p = await page({ 'GET /api/setup/state': () => [200, state(CAPS_RX, prof)], 'GET /api/connect': sum(o) }); await p.refresh();
+            assert.equal(p.$('cMat').hidden, false); assert.equal(p.$('matSub').textContent, want); assert.equal(p.$('cMat').classList.contains('on'), on);
+            assert.ok(p.calls.some(c => c.key === 'GET /api/connect?view=summary'));
+        }
+        ok('Matter card: paired, window, starting, not activated yet and a damaged identity, each in its own words');
+    }
     console.log(`setup page: ${n} checks, 0 failures`);
 })().catch(e => { console.error(e); process.exit(1); });

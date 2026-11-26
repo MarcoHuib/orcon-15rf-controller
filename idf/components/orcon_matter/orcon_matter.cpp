@@ -632,6 +632,7 @@ extern "C" void __real__ZN3net4loopEv();
 extern "C" void __wrap__ZN3net4loopEv() {
     __real__ZN3net4loopEv();
     orcon_matter::serviceControl(millis());   // Matter requests to Orcon's admission, the unit's state back
+    orcon_matter::activationService();        // the owner's activation: restart into Matter once it is made
     static uint32_t last = 0;
     if (!orcon_matter::g_waitForNetwork || millis() - last < 5000) return;
     last = millis();

@@ -32,5 +32,6 @@ void probeHandedOver();
 }
 class WebServer;
 namespace orcon_matter {
-void pairingWebBegin(WebServer& s);     // /matter, /api/matter, /api/matter/window (orcon_matter_pairing.cpp)
+void pairingWebBegin(WebServer& s);     // /connect and /api/connect* (orcon_matter_pairing.cpp)
+void activationService();               // Orcon's loop task: restart once the owner's activation made an identity
 }

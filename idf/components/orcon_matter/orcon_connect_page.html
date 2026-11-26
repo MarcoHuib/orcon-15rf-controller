@@ -63,6 +63,15 @@ h1{font-size:clamp(28px,3.8vw,43px);letter-spacing:-1.6px;line-height:1.16;margi
 <div class="chip" id="cF"><b id="cFv">–</b><span>Gekoppeld</span></div>
 <div class="chip" id="cW"><b id="cWv">–</b><span>Koppelvenster</span></div>
 </div>
+<div id="act" hidden>
+<p id="actText"></p>
+<button class="act" id="activate">Matter activeren</button>
+<div class="note err" id="actBox" role="alertdialog" aria-labelledby="actConfirm" hidden style="margin-top:14px">
+<p id="actConfirm">Een nieuwe Matter-identiteit maken? De controller is daarna voor je apps een nieuw apparaat: bestaande koppelingen werken niet meer en je koppelt opnieuw.</p>
+<div class="row"><button class="act danger" id="actYes" style="margin-top:0">Ja, nieuwe identiteit</button><button class="sec" id="actNo">Annuleren</button></div>
+</div>
+<p class="msg" id="actMsg" role="status"></p>
+</div>
 </section>
 <section class="panel" aria-labelledby="hI">
 <h2 id="hI">Koppelen met Apple Woning</h2>
@@ -259,7 +268,15 @@ const MSG = {
   'commissioning-busy': 'Er wordt nu gekoppeld: probeer het daarna opnieuw.',
   'no-such-controller': 'Deze controller bestaat niet (meer).',
   'remove-failed': 'Verwijderen is mislukt.',
-  'answer-too-long': 'Het antwoord van de controller paste niet: herlaad de pagina.'
+  'answer-too-long': 'Het antwoord van de controller paste niet: herlaad de pagina.',
+  'activation-busy': 'De identiteit wordt al gemaakt: even geduld.',
+  'already-activated': 'Matter is al geactiveerd.',
+  'matter-storage-unavailable': 'De opslag van Matter is nu niet bereikbaar: wacht tot de controller op je WiFi is aangemeld.',
+  'identity-not-damaged': 'De identiteit is niet beschadigd: een nieuwe is niet nodig.',
+  'identity-damaged': 'De identiteit is beschadigd: kies Nieuwe identiteit maken.',
+  'trial-boot': 'De controller rondt eerst de proefstart van een update af: probeer het over enkele minuten opnieuw.',
+  'restart-pending': 'De controller herstart zo of schrijft een update: probeer het daarna opnieuw.',
+  'activation-failed': 'Activeren is mislukt: probeer het opnieuw.'
 };
 const UMSG = {
   'not-needed': 'Niet nodig: Controleer op updates werkt nu zonder herstart (Orcon-pagina, Systeem, Firmware).',
@@ -297,12 +314,22 @@ function hideCodes() {   // nothing of a code stays in the page once its window 
 }
 function show(j) {
   S = j; $('err').hidden = true; $('login').hidden = true;
-  const st = STATE[j.state] || [j.state || '?', 'w'], ready = j.state === 'ready', can = ready && !!token;
+  const idAbsent = j.identity === 'absent', idDamaged = j.identity === 'damaged';
+  const st = idAbsent ? ['Niet geactiveerd', 'w'] : idDamaged ? ['Beschadigd', 'n'] : STATE[j.state] || [j.state || '?', 'w'];
+  const ready = j.state === 'ready', can = ready && !!token;
   chip('cM', st[0], st[1]);
   chip('cF', j.fabrics ? String(j.fabrics) : 'Nee', j.fabrics ? 'y' : '');
   chip('cW', j.window ? 'Open' : 'Dicht', j.window ? 'w' : '');
-  $('stText').textContent = !ready ? 'Matter draait nu niet. Bekijk de technische status hieronder.' :
+  $('stText').textContent = idAbsent ? 'Matter is nog niet geactiveerd op deze controller.' :
+    idDamaged ? 'De Matter-identiteit op de controller is beschadigd: Matter staat uit.' :
+    !ready ? 'Matter draait nu niet. Bekijk de technische status hieronder.' :
     j.fabrics ? 'De Orcon is gekoppeld met ' + j.fabrics + (j.fabrics === 1 ? ' controller.' : ' controllers.') : 'Nog niet gekoppeld met een slimme woning.';
+  $('act').hidden = !token || !(idAbsent || idDamaged);   // only the logged-in owner activates
+  $('actText').textContent = idDamaged ? 'Maak alleen een nieuwe identiteit als je opnieuw wilt koppelen: de controller wordt dan voor je apps een nieuw apparaat.' :
+    'Bij het activeren maakt de controller eenmalig een eigen Matter-identiteit, op de controller zelf: een eigen sleutel en een eigen koppelcode. Daarna herstart hij (ongeveer een halve minuut) en kun je koppelen.';
+  $('activate').textContent = idDamaged ? 'Nieuwe identiteit maken' : 'Matter activeren';
+  $('activate').disabled = !!j.activating;
+  if (j.activating) { $('actMsg').textContent = 'De controller maakt zijn identiteit en herstart zo.'; $('actMsg').className = 'msg okt'; }
   const own = !!(j.window && j.window_code && j.qr && j.code);
   if (own) {
     const qr = QR.svg(j.qr);   // first build, then show: never a half-drawn code
@@ -373,6 +400,26 @@ $('rmYes').onclick = async () => {
   catch (e) { conn(false); }
   $('rmYes').disabled = false; $('rmBox').hidden = true; rmIndex = 0;
 };
+async function activate(replace) {   // the identity is made on the controller itself; then it restarts into Matter
+  $('activate').disabled = $('actYes').disabled = true;
+  try {
+    const { r, j } = await post('/api/connect/activate', replace ? { action: 'replace', confirm: true } : { action: 'activate' });
+    conn(true);
+    if (r.ok) {
+      show(j);
+      $('actMsg').textContent = 'De controller maakt zijn identiteit en herstart (ongeveer een halve minuut). Log daarna opnieuw in en open Matter om te koppelen.';
+      $('actMsg').className = 'msg okt';
+      return;   // stays disabled: the controller restarts
+    }
+    refused(j, $('actMsg'));
+  } catch (e) { conn(false); }
+  $('activate').disabled = $('actYes').disabled = false;
+}
+$('activate').onclick = () => {   // a new identity after damage only after an explicit confirmation
+  if (S && S.identity === 'damaged') { $('actBox').hidden = false; $('actNo').focus && $('actNo').focus(); } else activate(false);
+};
+$('actNo').onclick = () => { $('actBox').hidden = true; };
+$('actYes').onclick = () => { $('actBox').hidden = true; activate(true); };
 $('upd').onclick = async () => {
   $('upd').disabled = true;
   try { const { r, j } = await post('/api/update/restart', {});
