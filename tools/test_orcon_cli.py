@@ -129,7 +129,7 @@ check(orcon.rollback_hold('b', 'pw', login_fn=lambda h, pw: hdr, post=lambda *a,
 # written, because a hold that cannot log in would let the test image confirm itself.
 import argparse, getpass, types
 def ota_args(wt): return argparse.Namespace(host='b', worktree=str(wt), env='heltec_v2_sx1276', image=None, mac_file=None, dry_run=False,
-                                             variant_change=False, yes=True, tx_ack='', test_rollback=True)
+                                             variant_change=False, legacy_control=False, yes=True, tx_ack='', test_rollback=True)
 def fake_run(cmd, **kw): return types.SimpleNamespace(stdout='c' * 40 + '\n' if cmd[0] == 'git' else 'VERIFIED', stderr='', returncode=0)
 saved = orcon.subprocess.run, orcon.http, orcon.login, getpass.getpass
 try:
@@ -212,10 +212,19 @@ with tempfile.TemporaryDirectory() as d:
         except SystemExit: check(True, f'dry run: {name} is refused')
     (d / 'mac').write_text('02:00:00:00:00:01\n')
     args = dict(host=None, worktree=str(d), env=None, image=str(img), mac_file=str(d / 'mac'), dry_run=False, variant_change=False,
-                yes=True, tx_ack=orcon.CONTROL_ACK, test_rollback=False)
+                legacy_control=False, yes=True, tx_ack=orcon.CONTROL_ACK, test_rollback=False)
     for name, change in (('--yes', {'yes': False}), ('the control phrase', {'tx_ack': ''})):
         try: orcon.cmd_ota_install(argparse.Namespace(**{**args, **change})); check(False, f'ota-install --image: without {name} refused')
         except SystemExit: check(True, f'ota-install --image: without {name} refused')
+    # --legacy-control: a Matter image for a board from before control-matter, signed as control (that board checks the
+    # control markers); a dry run shows the manifest it would sign
+    img.write_bytes(idf_bin(f'matter-dev-{head[:7]}', head, matter=True)); out = io.StringIO()
+    with contextlib.redirect_stdout(out): orcon.cmd_ota_install(argparse.Namespace(**{**args, 'dry_run': True, 'legacy_control': True}))
+    check('"variant":"control"' in out.getvalue() and '"env":"heltec_v2_sx1276_control"' in out.getvalue(), '--legacy-control: signed as control, once')
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out): orcon.cmd_ota_install(argparse.Namespace(**{**args, 'dry_run': True}))
+    check('"variant":"control-matter"' in out.getvalue(), 'without --legacy-control: the Matter image is control-matter')
+    img.write_bytes(idf_bin(f'matter-dev-{head[:7]}', head))
     sent, saved_http = [], orcon.http
     orcon.http = lambda *a, **k: sent.append(a) or (500, {})
     try:

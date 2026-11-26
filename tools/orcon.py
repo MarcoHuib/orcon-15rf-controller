@@ -16,6 +16,9 @@
                                         (default: this repository); otherwise the same board-bound, signed install
        ota-install ... --variant-change another variant than the board runs (with or without Matter, RX-only):
                                         the board refuses that without this explicit choice
+       ota-install ... --legacy-control a Matter image for a board from before the control-matter variant (v1.0.x,
+                                        the first Matter builds): it knows only control, and checks the control
+                                        markers a Matter image carries too; signed as control, once
        ota-install ... --dry-run        every check, nothing signed or sent: the image, the manifest it would
                                         sign and, with --host, what the board reports (GET /api/ota, read-only)
        ota-install ... --test-rollback  rollback test: the trial boot is told not to confirm itself
@@ -198,6 +201,9 @@ def dry_run(h, env, commit, firmware, mac, get=None, variant_change=False):
         if o.get('variant') != ENV_VARIANT[env][0]:
             print(f"variant change: the board runs {o.get('variant')}, this image is {ENV_VARIANT[env][0]}"
                   + ('' if variant_change else ' (only with --variant-change, the owner\'s explicit choice)'))
+            if o.get('variant') == 'control' and env == MATTER_ENV:
+                print('  a board from before the control-matter variant (v1.0.x, the first Matter builds) refuses it: '
+                      'there, use --legacy-control once instead')
             if not variant_change: blocked.append('a variant change without --variant-change')
         if blocked: raise SystemExit('the board would refuse it now: ' + '; '.join(blocked))
     else:
@@ -292,6 +298,9 @@ def cmd_ota_install(args):
     if args.image:
         firmware = Path(args.image)
         commit, ver, env = idf_image(firmware, wt)
+        if args.legacy_control and env == MATTER_ENV:   # that board refuses control-matter: once, as control
+            env = IDF_ENV
+            print('--legacy-control: signed as variant control for a board from before control-matter')
         print(f'ESP-IDF image {firmware.name}: {ver} ({ENV_VARIANT[env][0]}), built from {wt.name} at {commit[:12]}, '
               f'{firmware.stat().st_size} B, intact')
     else:
@@ -466,6 +475,7 @@ def main(argv=None):
     oi = sub.add_parser('ota-install'); oi.add_argument('--worktree'); oi.add_argument('--env')
     oi.add_argument('--image'); oi.add_argument('--mac-file'); oi.add_argument('--dry-run', action='store_true')
     oi.add_argument('--variant-change', action='store_true')   # e.g. control -> control-matter: the owner's explicit choice
+    oi.add_argument('--legacy-control', action='store_true')   # a Matter image for a board from before control-matter
     oi.add_argument('--yes', action='store_true'); oi.add_argument('--tx-ack', '--rf-ack', dest='tx_ack', default='')
     oi.add_argument('--test-rollback', action='store_true')
     rl = sub.add_parser('release'); rl.add_argument('--worktree', required=True); rl.add_argument('--env', required=True)

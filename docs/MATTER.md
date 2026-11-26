@@ -79,7 +79,7 @@ De firmware doet zich nergens voor als product van Orcon of als gecertificeerd: 
 Een controller met een van de eerste Matter-builds (de identiteit in het image) houdt zijn identiteit, koppelingen en namen zo:
 
 1. Bouw eenmalig een overstap-image met die identiteit: `tools/build_idf.sh --identity ~/.orcon-matter`. Dat image is privé, want het bevat de DAC-sleutel: installeer het alleen op dat apparaat en deel het nooit.
-2. Installeer het. Bij de eerste start zet het zijn identiteit op het apparaat, en controleert het dat de codes daarna gelijk zijn.
+2. Installeer het; vanaf een van de eerste Matter-builds met `--legacy-control` (zie "Installeren"). Bij de eerste start zet het zijn identiteit op het apparaat, en controleert het dat de codes daarna gelijk zijn.
 3. Installeer daarna de universele firmware. Die vindt de identiteit op het apparaat: dezelfde sleutel, koppelcode en serienummer, dezelfde koppelingen en de namen die je koos.
 
 Na stap 3 staat het overstap-image, met sleutel, nog in de andere slot als terugval. Installeer later nog één keer de universele firmware (of de volgende update): dan bevatten beide slots firmware zonder sleutel, en blijft terugvallen mogelijk.
@@ -103,6 +103,9 @@ Na stap 3 staat het overstap-image, met sleutel, nog in de andere slot als terug
    - het bord controleert handtekening, MAC, nonce, hash, markers en het ESP-IDF-image zelf.
 4. De proefstart bevestigt zich alleen als Matter draait (binnen 300 s). Anders zet de bootloader het vorige image terug.
 5. Een andere variant dan het bord draait installeer je alleen bewust: `--variant-change` (de webpagina vraagt het zelf, met uitleg wat er verandert). De eerste Matter-builds hebben variant `control`, de universele firmware `control-matter`.
+   - Een bord met firmware van vóór die variant (v1.0.x, de eerste Matter-builds) kent `control-matter` nog niet en weigert het.
+   - Daar installeer je het Matter-image één keer met `--legacy-control`: het wordt dan als `control` ondertekend. Dat bord controleert de control-markers, en die heeft een Matter-image ook.
+   - Daarna gelden de nieuwe regels.
 6. Terug naar v1.0.1 kan altijd met het officiële `.orconfw`: een ontwikkelbuild draagt release-stempel 0, dus elke officiële release is nieuwer. Dat is een wissel naar `control` (bevestigen); de Matter-gegevens blijven op het apparaat bewaard.
 
 ## Koppelen
@@ -150,6 +153,7 @@ Woning leest de samenstelling van een apparaat niet opnieuw in na een firmware-u
 - De universele firmware is een eigen variant: `control-matter` (env `heltec_v2_matter`, herkenbaar aan een marker in het image). De updatecontrole biedt een Matter-controller alleen Matter-releases aan, en een controller zonder Matter alleen releases zonder Matter. Een update voegt Matter dus nooit vanzelf toe en haalt het nooit vanzelf weg.
 - Wisselen kan alleen bewust: een lokale upload van een andere variant vraagt bevestiging, met uitleg wat er verandert. De controller weigert de wissel zonder die bevestiging.
 - `tools/build_idf.sh --release N [--pre P]` stempelt een Matter-build als release (zoals de PlatformIO-release). Het publiceren via de releaseworkflow volgt.
+- Borden met v1.0.x kennen `control-matter` nog niet. Wie via de webpagina naar Matter wil, heeft dus eerst een control-release met deze regels nodig; daarna kan de wissel.
 
 Bètaversies (`1.2.3-beta.N`) komen alleen binnen met de instelling "Bèta-updates ontvangen" (standaard uit). Een stable release staat altijd boven elke bèta van dezelfde versie.
 
