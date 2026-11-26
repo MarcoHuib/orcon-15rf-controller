@@ -113,6 +113,14 @@
 // route, on the Heltec V2 signed builds. The first password comes from the installation wizard and a
 // forgotten one is reset with the owner's recovery key (ownership model below), never with the
 // firmware signing key. Other boards keep the per-boot token of the setup page.
+// The ESP-IDF 5 build (idf/, docs/MATTER.md) sets these; PlatformIO builds keep 0 and the v1.x behaviour.
+#ifndef ORCON_IDF5
+#define ORCON_IDF5 0
+#endif
+#ifndef ORCON_MATTER
+#define ORCON_MATTER 0
+#endif
+
 #ifndef ORCON_WEB_AUTH
 #if ORCON_SIGNED_OTA
 #define ORCON_WEB_AUTH 1

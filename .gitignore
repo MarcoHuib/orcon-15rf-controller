@@ -54,3 +54,25 @@ _backups/
 captures/
 __pycache__/
 *.pyc
+
+# ESP-IDF / Matter build (idf/, docs/MATTER.md): fetched libraries (tools/fetch_idf_deps.sh), build output, generated
+# configuration. Only the wrappers in idf/components-cmake/ and the own component idf/components/orcon_matter/ are tracked.
+idf/build/
+idf/components/arduino/
+idf/components/ArduinoJson/
+idf/components/RadioLib/
+idf/components/U8g2/
+idf/managed_components/
+idf/sdkconfig
+idf/sdkconfig.old
+*.elf
+*.map
+*.map.gz
+# A device's own Matter identity never belongs in the repository (tools/matter_identity.sh keeps it in ~/.orcon-matter):
+# its header (DAC private key, setup code), its serial number, its pairing codes and its keys.
+orcon_matter_creds.h
+!idf/components/orcon_matter/placeholder/orcon_matter_creds.h
+identity.defaults
+KOPPELCODE.txt
+*.pem
+*.der
