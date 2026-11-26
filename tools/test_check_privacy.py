@@ -27,8 +27,69 @@ with tempfile.TemporaryDirectory() as d:
         r = subprocess.run([sys.executable, str(ROOT / 'tools/check_privacy.py'), str(p)], capture_output=True, text=True)
         check(r.returncode != 0, f'{name}: refused')
 
+# Matter (docs/MATTER.md): a pairing code (the specification's construction: chunks and Verhoeff check digit), a QR
+# payload, identity bytes or values and identity, firmware, key and log files are refused; the CHIP specification's
+# example code and payloads, test values and the zero placeholder are allowed. Assembled at run time, as above.
+VD = [[0,1,2,3,4,5,6,7,8,9],[1,2,3,4,0,6,7,8,9,5],[2,3,4,0,1,7,8,9,5,6],[3,4,0,1,2,8,9,5,6,7],[4,0,1,2,3,9,5,6,7,8],
+      [5,9,8,7,6,0,4,3,2,1],[6,5,9,8,7,1,0,4,3,2],[7,6,5,9,8,2,1,0,4,3],[8,7,6,5,9,3,2,1,0,4],[9,8,7,6,5,4,3,2,1,0]]
+VP = [[0,1,2,3,4,5,6,7,8,9],[1,5,7,6,2,8,3,0,9,4],[5,8,0,3,7,9,6,1,4,2],[8,9,1,6,0,4,3,5,2,7],[9,4,5,3,1,2,6,8,7,0],
+      [4,2,8,6,5,7,3,9,0,1],[2,7,9,3,8,0,6,4,1,5],[7,0,4,6,9,1,3,2,5,8]]
+def pairing_code(pin, disc):   # an independent implementation of the manual code (11 digits) the specification describes
+    s = disc >> 8
+    ten = f'{s >> 2}{((s & 3) << 14) | (pin & 0x3FFF):05d}{pin >> 14:04d}'
+    c = 0
+    for i, ch in enumerate(reversed(ten)): c = VD[c][VP[(i + 1) % 8][int(ch)]]
+    return ten + str([0, 4, 3, 2, 1, 5, 6, 7, 8, 9][c])
+def privacy(*args, cwd=None):
+    return subprocess.run([sys.executable, str(ROOT / 'tools/check_privacy.py'), *args], capture_output=True, text=True, cwd=cwd)
+check(pairing_code(20202021, 3840) == '34970112332', 'the CHIP example code follows from the construction')
+code, q = pairing_code(13572468, 0xF00), '"'
+placeholder = (ROOT / 'idf/components/orcon_matter/placeholder/orcon_matter_creds.h').read_text()
+with tempfile.TemporaryDirectory() as d:
+    for name, (text, want) in {
+        'code.txt': (f'code {code}\n', 'Matter pairing code'),
+        'code-grouped.txt': (f'code {code[:4]}-{code[4:7]}-{code[7:]}\n', 'Matter pairing code'),
+        'code-chip-example.txt': ('code 34970112332 3497-011-2332\n', None),
+        'code-test-values.txt': (f'12345678901 99999999999 {code[:-1]}{(int(code[-1]) + 1) % 10}\n', None),
+        'qr.txt': ('qr MT:' + 'ABCDEFGHIJ' + 'KLMNOPQRS\n', 'Matter QR payload'),
+        'qr-chip-examples.txt': ('qr MT:Y.K9042C00KA0648G00 MT:-24J0AFN00KA0648G00\n', None),
+        'salt.h': ('static const uint8_t k' + 'Salt[16] = {0x00, 0x' + '3a};\n', 'Matter identity bytes'),
+        'dac.h': ('static const uint8_t k' + 'DacPrivate[32] = {\n    0, 0, ' + '17,\n};\n', 'Matter identity bytes'),
+        'passcode.h': ('constexpr uint32_t k' + 'Passcode = ' + '13572468;\n', 'Matter identity value'),
+        'manual.h': ('static const char k' + 'ManualCode[] = ' + q + '1' + q + ';\n', 'Matter identity value'),
+        'placeholder-copy.h': (placeholder, None),
+        'orcon_matter_creds.h': (placeholder, 'a Matter identity header'),
+        'identity.defaults': ('CONFIG_X=y\n', 'never committed'),
+        'KOPPELCODE.txt': ('-\n', 'never committed'),
+        'image.bin': ('-\n', 'never committed'),
+        'night.log': ('-\n', 'raw logs stay local'),
+    }.items():
+        p = Path(d) / name; p.write_text(text)
+        out = privacy(str(p)).stdout
+        check((want in out) if want else 'PRIVACY:' not in out, f"{name}: {'refused' if want else 'allowed'}")
+
+# --history: every commit counts, a secret that a later commit removes again included; a clean range passes.
+with tempfile.TemporaryDirectory() as d:
+    def g(*a):
+        return subprocess.run(['git', '-c', 'user.name=test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false',
+                               *a], cwd=d, capture_output=True, text=True, check=True).stdout.strip()
+    f = Path(d) / 'a.txt'
+    g('init', '-q'); f.write_text('clean\n'); g('add', '.'); g('commit', '-qm', 'base'); base = g('rev-parse', 'HEAD')
+    f.write_text('clean\nqr MT:' + 'ABCDEFGHIJ' + 'KLMNOPQRS\n'); g('commit', '-qam', 'add'); f.write_text('clean\n'); g('commit', '-qam', 'remove')
+    r = privacy('--history', base, cwd=d)
+    check(r.returncode != 0 and 'Matter QR payload' in r.stdout, 'history: a secret removed again is still refused')
+    check(privacy(str(f), cwd=d).returncode == 0, 'history: the final file alone looks clean')
+    tip = g('rev-parse', 'HEAD')
+    g('commit', '-q', '--allow-empty', '-m', f'pairing code {code}')
+    check('message:1: Matter pairing code' in privacy('--history', tip, cwd=d).stdout, 'history: a commit message is checked')
+    tip = g('rev-parse', 'HEAD')
+    (Path(d) / 'identity.defaults').write_text('CONFIG_X=y\n'); g('add', '.'); g('commit', '-qm', 'file')
+    check('identity.defaults: never committed' in privacy('--history', tip, cwd=d).stdout, 'history: an added file name is checked')
+    tip = g('rev-parse', 'HEAD'); f.write_text('clean\nsome more\n'); g('commit', '-qam', 'clean')
+    check(privacy('--history', f'{tip}..HEAD', cwd=d).returncode == 0, 'history: a clean range passes')
+
 if subprocess.run(['openssl', 'version'], capture_output=True).returncode:
-    print('check privacy: NOT TESTED (no openssl)'); sys.exit(0)
+    print(f'check privacy: {ok} checks, {fail} failures (private keys NOT TESTED: no openssl)'); sys.exit(1 if fail else 0)
 
 with tempfile.TemporaryDirectory() as d:
     d = Path(d)
