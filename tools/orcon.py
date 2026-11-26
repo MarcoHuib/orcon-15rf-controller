@@ -14,6 +14,8 @@
                                         an ESP-IDF image of tools/build_idf.sh (docs/MATTER.md) instead of a
                                         PlatformIO package: an intact ESP32 app image, built from DIR's clean HEAD
                                         (default: this repository); otherwise the same board-bound, signed install
+       ota-install ... --variant-change another variant than the board runs (with or without Matter, RX-only):
+                                        the board refuses that without this explicit choice
        ota-install ... --dry-run        every check, nothing signed or sent: the image, the manifest it would
                                         sign and, with --host, what the board reports (GET /api/ota, read-only)
        ota-install ... --test-rollback  rollback test: the trial boot is told not to confirm itself
@@ -47,8 +49,9 @@ INSTALLED = Path.home() / '.orcon' / 'installed.txt'
 RF_ACK = 'RF test image'                      # same phrases as tools/heltec_v2.sh
 CONTROL_ACK = 'control firmware'
 ENV_VARIANT = {'heltec_v2_sx1276': ('rx-only', False), 'heltec_v2_sx1276_rftest': ('rf-test', True),
-               'heltec_v2_sx1276_control': ('control', True)}
-ENV_ACK = {'heltec_v2_sx1276_rftest': ('ORCON_RF_TEST_ACK', RF_ACK), 'heltec_v2_sx1276_control': ('ORCON_CONTROL_ACK', CONTROL_ACK)}
+               'heltec_v2_sx1276_control': ('control', True), 'heltec_v2_matter': ('control-matter', True)}
+ENV_ACK = {'heltec_v2_sx1276_rftest': ('ORCON_RF_TEST_ACK', RF_ACK), 'heltec_v2_sx1276_control': ('ORCON_CONTROL_ACK', CONTROL_ACK),
+           'heltec_v2_matter': ('ORCON_CONTROL_ACK', CONTROL_ACK)}
 
 
 def host(args):
@@ -155,13 +158,16 @@ def write_bundle(path, manifest, sig, firmware):
 
 
 # ---- ESP-IDF images (tools/build_idf.sh, docs/MATTER.md): checked before anything is signed -----------
-IDF_ENV = 'heltec_v2_sx1276_control'   # every ESP-IDF image is a control build (idf/main/CMakeLists.txt)
+IDF_ENV = 'heltec_v2_sx1276_control'   # every ESP-IDF image is a control build (idf/main/CMakeLists.txt) ...
+MATTER_ENV = 'heltec_v2_matter'         # ... and one with this marker the control firmware with Matter (src/ota_policy.h)
+MATTER_MARKER = b'ORCON-MATTER-FIRMWARE v1\0'
 MAC_RE = r'([0-9a-f]{2}:){5}[0-9a-f]{2}'
 
 
 def idf_image(img, wt, run=subprocess.run):
-    """(commit, version) of an ESP-IDF image, refused unless it is an intact ESP32 app image that tools/build_idf.sh
-    built from the worktree's clean HEAD. The board then reports that commit as its firmware."""
+    """(commit, version, env) of an ESP-IDF image, refused unless it is an intact ESP32 app image that tools/build_idf.sh
+    built from the worktree's clean HEAD. The board then reports that commit as its firmware. The env follows the image:
+    with the Matter marker it is the control firmware with Matter (variant control-matter), else plain control."""
     data = Path(img).read_bytes()
     if len(data) < 0x200 or data[0] != 0xE9 or data[12:14] != b'\0\0': raise SystemExit(f'{img}: not an ESP32 app image')
     if data[23] != 1 or hashlib.sha256(data[:-32]).digest() != data[-32:]: raise SystemExit(f'{img}: damaged (its SHA-256 does not match)')
@@ -173,10 +179,10 @@ def idf_image(img, wt, run=subprocess.run):
     if ver not in (f'matter-dev-{head[:7]}', f'idf5-dev-{head[:7]}'):
         raise SystemExit(f'{img}: built as "{ver}", not from {wt} at {head[:7]}: rebuild it there with tools/build_idf.sh')
     if head.encode() not in data: raise SystemExit(f'{img}: commit {head} is not in the image (the board would refuse it)')
-    return head, ver
+    return head, ver, MATTER_ENV if MATTER_MARKER in data else IDF_ENV
 
 
-def dry_run(h, env, commit, firmware, mac, get=None):
+def dry_run(h, env, commit, firmware, mac, get=None, variant_change=False):
     """ota-install without the key, the password or a write: the manifest it would sign (zeros for the board's
     one-time nonce) and, with a host, what the board reports (GET /api/ota, read-only, no login)."""
     size = Path(firmware).stat().st_size
@@ -189,6 +195,10 @@ def dry_run(h, env, commit, firmware, mac, get=None):
         blocked = [why for why, bad in (('no signed OTA', o.get('signed_ota') != 'ORCON-SIGNED-OTA v1'),
                                         ('it is still confirming its running image', o.get('running_state') == 'pending-verify'),
                                         ('the image is larger than the slot', size > int(o.get('slot_size') or 0))) if bad]
+        if o.get('variant') != ENV_VARIANT[env][0]:
+            print(f"variant change: the board runs {o.get('variant')}, this image is {ENV_VARIANT[env][0]}"
+                  + ('' if variant_change else ' (only with --variant-change, the owner\'s explicit choice)'))
+            if not variant_change: blocked.append('a variant change without --variant-change')
         if blocked: raise SystemExit('the board would refuse it now: ' + '; '.join(blocked))
     else:
         print('board not asked (no --host)')
@@ -281,8 +291,9 @@ def cmd_ota_install(args):
     if not args.yes and not args.dry_run: raise SystemExit('refusing without --yes (explicit approval for this update)')
     if args.image:
         firmware = Path(args.image)
-        commit, ver = idf_image(firmware, wt)
-        print(f'ESP-IDF image {firmware.name}: {ver}, built from {wt.name} at {commit[:12]}, {firmware.stat().st_size} B, intact')
+        commit, ver, env = idf_image(firmware, wt)
+        print(f'ESP-IDF image {firmware.name}: {ver} ({ENV_VARIANT[env][0]}), built from {wt.name} at {commit[:12]}, '
+              f'{firmware.stat().st_size} B, intact')
     else:
         commit = subprocess.run(['git', '-C', str(wt), 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
         firmware = wt / '.flashtools' / 'local' / f'{commit}-{env}' / 'firmware.bin'
@@ -294,7 +305,7 @@ def cmd_ota_install(args):
     macf = Path(args.mac_file).expanduser() if args.mac_file else wt / '.flashtools' / 'board.mac'
     mac = macf.read_text().strip().lower() if macf.exists() else ''
     if not re.fullmatch(MAC_RE, mac): raise SystemExit(f"{macf}: the board's MAC, six hex pairs (as 02:00:00:00:00:01); --mac-file names another file")
-    if args.dry_run: return dry_run(h if args.host else None, env, commit, firmware, mac)
+    if args.dry_run: return dry_run(h if args.host else None, env, commit, firmware, mac, variant_change=args.variant_change)
     st, before = http(h, '/api/ota')
     if st != 200 or before.get('signed_ota') != 'ORCON-SIGNED-OTA v1': raise SystemExit(f'board has no signed OTA (HTTP {st}); USB bootstrap first')
     if before.get('running_state') == 'pending-verify': raise SystemExit('board is still confirming its running image; wait')
@@ -309,7 +320,8 @@ def cmd_ota_install(args):
     st, n = http(h, '/api/ota/nonce', {}, headers=hdr)
     if st != 200: raise SystemExit(f'nonce refused: {n}')
     text = build_manifest(mac, env, commit, firmware, n['nonce'])
-    st, b = http(h, '/api/ota/begin', {'manifest': text, 'sig': sign(text)}, headers=hdr)
+    begin = {'manifest': text, 'sig': sign(text), **({'variant_change': True} if args.variant_change else {})}
+    st, b = http(h, '/api/ota/begin', begin, headers=hdr)
     if st != 200: raise SystemExit(f'begin refused: {b}')
     print(f"upload {commit[:7]} {'ESP-IDF image' if args.image else env} -> {b['partition']} ({b['size']} B)")
     boundary = uuid.uuid4().hex
@@ -453,6 +465,7 @@ def main(argv=None):
     lg = sub.add_parser('logs'); lg.add_argument('--minutes', type=float, default=60)
     oi = sub.add_parser('ota-install'); oi.add_argument('--worktree'); oi.add_argument('--env')
     oi.add_argument('--image'); oi.add_argument('--mac-file'); oi.add_argument('--dry-run', action='store_true')
+    oi.add_argument('--variant-change', action='store_true')   # e.g. control -> control-matter: the owner's explicit choice
     oi.add_argument('--yes', action='store_true'); oi.add_argument('--tx-ack', '--rf-ack', dest='tx_ack', default='')
     oi.add_argument('--test-rollback', action='store_true')
     rl = sub.add_parser('release'); rl.add_argument('--worktree', required=True); rl.add_argument('--env', required=True)

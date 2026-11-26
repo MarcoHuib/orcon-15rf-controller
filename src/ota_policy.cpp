@@ -6,7 +6,12 @@
 namespace otap {
 
 const char* variantName(Variant v) {
-    return v == Variant::RxOnly ? "rx-only" : v == Variant::RfTest ? "rf-test" : v == Variant::Control ? "control" : "none";
+    return v == Variant::RxOnly ? "rx-only" : v == Variant::RfTest ? "rf-test" : v == Variant::Control ? "control"
+         : v == Variant::ControlMatter ? "control-matter" : "none";
+}
+
+const char* variantChange(Variant manifest, const char* ownVariant, bool confirmed) {
+    return confirmed || (ownVariant && !strcmp(variantName(manifest), ownVariant)) ? nullptr : "variant-change-unconfirmed";
 }
 
 static bool hexOk(const char* s, size_t n) {
@@ -60,7 +65,7 @@ const char* parseManifest(const char* json, Manifest& m) {
     strcpy(m.env, env); strcpy(m.commit, commit);
     for (int i = 0; i < 32; ++i) m.sha256[i] = uint8_t(nib(sha[2 * i]) << 4 | nib(sha[2 * i + 1]));
     m.variant = !strcmp(var, "rx-only") ? Variant::RxOnly : !strcmp(var, "rf-test") ? Variant::RfTest :
-                !strcmp(var, "control") ? Variant::Control : Variant::None;
+                !strcmp(var, "control") ? Variant::Control : !strcmp(var, "control-matter") ? Variant::ControlMatter : Variant::None;
     if (m.variant == Variant::None) return "variant-not-approved";
     return nullptr;
 }
@@ -89,6 +94,7 @@ const char* checkManifest(const Manifest& m, const char* ownMac, const char* iss
     if (m.variant == Variant::RxOnly && (strcmp(m.env, "heltec_v2_sx1276") || m.allowTx)) return "variant-mismatch";
     if (m.variant == Variant::RfTest && (strcmp(m.env, "heltec_v2_sx1276_rftest") || !m.allowTx)) return "variant-mismatch";
     if (m.variant == Variant::Control && (strcmp(m.env, "heltec_v2_sx1276_control") || !m.allowTx)) return "variant-mismatch";
+    if (m.variant == Variant::ControlMatter && (strcmp(m.env, "heltec_v2_matter") || !m.allowTx)) return "variant-mismatch";
     return nullptr;
 }
 
@@ -106,6 +112,7 @@ static const uint8_t P_L1[] = {0x1b,0x28,0x3e,0x2f,0x33,0x34,0x35,0x15,0x0e,0x1b
 static const uint8_t P_L2[] = {0x3b,0x2f,0x2e,0x32,0x05,0x2f,0x2a,0x36,0x35,0x3b,0x3e};
 static const uint8_t P_L3[] = {0x0f,0x2a,0x3e,0x3b,0x2e,0x3f,0x28,0x74,0x39,0x2a,0x2a};
 static const uint8_t P_VR[] = {0x35,0x28,0x39,0x35,0x34,0x77,0x3b,0x2f,0x2e,0x32,0x77,0x28,0x3f,0x29,0x3f,0x2e};   // the old recovery request kind
+static const uint8_t P_MATTER[] = {0x15,0x08,0x19,0x15,0x14,0x77,0x17,0x1b,0x0e,0x0e,0x1f,0x08,0x77,0x1c,0x13,0x08,0x17,0x0d,0x1b,0x08,0x1f,0x7a,0x2c,0x6b};   // "ORCON...": the Matter build
 static const uint8_t P_OK[] = {0x15,0x08,0x19,0x15,0x14,0x77,0x15,0x0d,0x14,0x1f,0x08,0x77,0x11,0x1f,0x03,0x7a,0x2c,0x6b};   // the owner-key marker (ota_policy.h)
 struct Pat { const uint8_t* p; size_t n; };
 #define PAT(x) Pat{x, sizeof(x)}
@@ -134,6 +141,7 @@ void Scanner::match(const uint8_t* b, size_t n) {
     control |= has(b, n, PAT(P_CTL));
     txCode |= has(b, n, PAT(P_TX)); dryRun |= has(b, n, PAT(P_DRY)); signedOta |= has(b, n, SIGNED_OTA_MARKER);
     ownerModel |= has(b, n, OWNER_MODEL_MARKER); releaseKeyReset |= has(b, n, PAT(P_VR)); ownerKey |= has(b, n, PAT(P_OK));
+    matter |= has(b, n, PAT(P_MATTER));
     for (const Pat& p : LEGACY) legacyOta |= has(b, n, p);
     if (commit_[0]) commitStamp |= has(b, n, commit_);
 }
@@ -183,8 +191,10 @@ const char* checkImage(const Manifest& m, const Scanner& s, uint32_t received, c
         return "image-not-rx-only";
     if (m.variant == Variant::RfTest && !(s.rfTest && s.txCode && !s.control && !s.rxRadio && !s.dryRun))
         return "image-not-rf-test";
-    if (m.variant == Variant::Control && !(s.control && s.txCode && !s.rfTest && !s.rxRadio && !s.dryRun))
+    if (m.variant == Variant::Control && !(s.control && s.txCode && !s.matter && !s.rfTest && !s.rxRadio && !s.dryRun))
         return "image-not-control";
+    if (m.variant == Variant::ControlMatter && !(s.control && s.txCode && s.matter && !s.rfTest && !s.rxRadio && !s.dryRun))
+        return "image-not-control-matter";
     return nullptr;
 }
 

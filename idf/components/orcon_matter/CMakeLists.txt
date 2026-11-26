@@ -23,6 +23,8 @@ target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=_Z5setupv" "-Wl,--w
 # ota::begin(WebServer&) also registers the read-only GET /api/mem (orcon_matter_memweb.cpp) and the owner's Matter
 # routes (/connect). A trial boot confirms only with Matter running (orcon_matter.cpp).
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_ota_mark_app_valid_cancel_rollback")
+# The Matter marker (orcon_matter.cpp): referenced by nothing, so kept explicitly (an image without it is no Matter image).
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,-u,orcon_matter_marker")
 target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=_ZN3ota5beginER9WebServer")
 if(CONFIG_ORCON_MATTER_HEAPMON)
     # Heap monitor: mark RF transmissions (radio::sx1276::txBegin, called from tx_poc_runtime.cpp), register its

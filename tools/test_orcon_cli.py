@@ -129,7 +129,7 @@ check(orcon.rollback_hold('b', 'pw', login_fn=lambda h, pw: hdr, post=lambda *a,
 # written, because a hold that cannot log in would let the test image confirm itself.
 import argparse, getpass, types
 def ota_args(wt): return argparse.Namespace(host='b', worktree=str(wt), env='heltec_v2_sx1276', image=None, mac_file=None, dry_run=False,
-                                             yes=True, tx_ack='', test_rollback=True)
+                                             variant_change=False, yes=True, tx_ack='', test_rollback=True)
 def fake_run(cmd, **kw): return types.SimpleNamespace(stdout='c' * 40 + '\n' if cmd[0] == 'git' else 'VERIFIED', stderr='', returncode=0)
 saved = orcon.subprocess.run, orcon.http, orcon.login, getpass.getpass
 try:
@@ -151,11 +151,11 @@ finally:
 # ESP-IDF images (ota-install --image, docs/MATTER.md): an intact ESP32 app image of tools/build_idf.sh, built from the
 # worktree's clean HEAD; anything else is refused before a key or a password is used.
 import contextlib, io
-def idf_bin(ver, commit, chip=b'\0\0', hashed=True):
+def idf_bin(ver, commit, chip=b'\0\0', hashed=True, matter=False):
     body = bytearray(b'\xe9\x03\x02\x20' + bytes(28))   # header, extended header (chip id at 12, hash flag at 23), segment
     body[12:14] = chip; body[23] = 1 if hashed else 0
     body += bytes.fromhex('3254cdab') + bytes(12) + ver.encode().ljust(32, b'\0') + b'orcon_15rf'.ljust(32, b'\0')
-    body += b'fw=' + commit.encode() + bytes(400)
+    body += b'fw=' + commit.encode() + bytes(400) + (orcon.MATTER_MARKER if matter else b'')
     return bytes(body) + hashlib.sha256(body).digest()
 with tempfile.TemporaryDirectory() as d:
     d = Path(d)
@@ -168,7 +168,13 @@ with tempfile.TemporaryDirectory() as d:
         try: orcon.idf_image(img, d); check(False, name)
         except SystemExit: check(True, name)
     img.write_bytes(idf_bin(f'matter-dev-{head[:7]}', head))
-    check(orcon.idf_image(img, d) == (head, f'matter-dev-{head[:7]}'), 'ESP-IDF image: built from the clean HEAD and intact: accepted')
+    check(orcon.idf_image(img, d) == (head, f'matter-dev-{head[:7]}', orcon.IDF_ENV), 'ESP-IDF image: built from the clean HEAD and intact: accepted')
+    img.write_bytes(idf_bin(f'matter-dev-{head[:7]}', head, matter=True))
+    check(orcon.idf_image(img, d)[2] == orcon.MATTER_ENV, 'ESP-IDF image with the Matter marker: the control-matter variant')
+    m = json.loads(orcon.build_manifest('02:00:00:00:00:01', orcon.MATTER_ENV, head, img, 'b' * 32))
+    check(m['env'] == 'heltec_v2_matter' and m['variant'] == 'control-matter' and m['allow_tx'] is True, 'Matter manifest: its own env and variant')
+    try: orcon.rf_gate(orcon.MATTER_ENV, ''); check(False, 'Matter image needs the control phrase')
+    except SystemExit: check(True, 'Matter image needs the control phrase')
     img.write_bytes(idf_bin(f'idf5-dev-{head[:7]}', head))
     check(orcon.idf_image(img, d)[0] == head, 'ESP-IDF image without Matter: accepted')
     refused(idf_bin(f'matter-dev-{head[:7]}-dirty', head), 'ESP-IDF image: a build with uncommitted changes is refused')
@@ -189,6 +195,14 @@ with tempfile.TemporaryDirectory() as d:
     with contextlib.redirect_stdout(out): orcon.dry_run('b', orcon.IDF_ENV, head, img, '02:00:00:00:00:01', get=lambda h, p, **k: (200, board))
     check('DRY RUN OK' in out.getvalue() and 'writes app0' in out.getvalue() and 'stays in app1' in out.getvalue()
           and '02:00:00:00:00:01' not in out.getvalue(), 'dry run: the slot it writes, the rollback slot, no MAC, nothing signed')
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        orcon.dry_run('b', orcon.MATTER_ENV, head, img, '02:00:00:00:00:01', get=lambda h, p, **k: (200, board), variant_change=True)
+    check('variant change: the board runs control, this image is control-matter' in out.getvalue(), 'dry run: names a variant change')
+    try:
+        with contextlib.redirect_stdout(io.StringIO()): orcon.dry_run('b', orcon.MATTER_ENV, head, img, '02:00:00:00:00:01', get=lambda h, p, **k: (200, board))
+        check(False, 'dry run: a variant change without --variant-change is refused')
+    except SystemExit: check(True, 'dry run: a variant change without --variant-change is refused')
     for name, change in (('a board still confirming', {'running_state': 'pending-verify'}), ('a slot too small', {'slot_size': 100}),
                          ('a board without signed OTA', {'signed_ota': ''})):
         try:
@@ -197,8 +211,8 @@ with tempfile.TemporaryDirectory() as d:
             check(False, f'dry run: {name} is refused')
         except SystemExit: check(True, f'dry run: {name} is refused')
     (d / 'mac').write_text('02:00:00:00:00:01\n')
-    args = dict(host=None, worktree=str(d), env=None, image=str(img), mac_file=str(d / 'mac'), dry_run=False, yes=True,
-                tx_ack=orcon.CONTROL_ACK, test_rollback=False)
+    args = dict(host=None, worktree=str(d), env=None, image=str(img), mac_file=str(d / 'mac'), dry_run=False, variant_change=False,
+                yes=True, tx_ack=orcon.CONTROL_ACK, test_rollback=False)
     for name, change in (('--yes', {'yes': False}), ('the control phrase', {'tx_ack': ''})):
         try: orcon.cmd_ota_install(argparse.Namespace(**{**args, **change})); check(False, f'ota-install --image: without {name} refused')
         except SystemExit: check(True, f'ota-install --image: without {name} refused')

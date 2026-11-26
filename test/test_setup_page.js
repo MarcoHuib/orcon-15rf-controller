@@ -56,13 +56,14 @@ async function page(routes, hash = '') {
     const location = { _h: hash, get hash() { return this._h ? '#' + this._h : ''; }, set hash(v) { this._h = String(v).replace(/^#/, ''); } };
     const fetch = async (url, o = {}) => {
         const key = (o.method || 'GET') + ' ' + url;
-        calls.push({ key, headers: o.headers || {}, body: o.body ? JSON.parse(o.body) : undefined });
+        calls.push({ key, headers: o.headers || {}, body: typeof o.body === 'string' ? JSON.parse(o.body) : o.body });
         const h = routes[key] || routes[key.split('?')[0]];
         if (!h) return { ok: false, status: 404, json: async () => ({ error: 'no-route' }) };
         const [status, body] = h(calls[calls.length - 1]);
         return { ok: status < 300, status, json: async () => body };
     };
     const ctx = { document, location, fetch, setTimeout: () => 0, clearTimeout() {}, addEventListener: (t, f) => { win[t] = f; },
+                  FormData: class { constructor() { this.parts = []; } append(...a) { this.parts.push(a); } },
                   console, Promise, Set, String, JSON, Math, Object, Array, Date: PageDate,
                   confirm: m => { dlg.asked.push(m); return dlg.confirm; }, prompt: m => { dlg.asked.push(m); return dlg.prompt; } };
     vm.runInNewContext(script, ctx);
@@ -990,6 +991,38 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
             assert.ok(p.calls.some(c => c.key === 'GET /api/connect?view=summary'));
         }
         ok('Matter card: paired, window, starting, not activated yet and a damaged identity, each in its own words');
+    }
+    // ---- a firmware upload of another variant (with or without Matter): the dialog says what changes, and only then
+    //      does the begin request carry the owner's variant_change (the controller refuses a switch without it)
+    {
+        const prof = { profiles: PF([PI(2, 'Washok', '29:000101')], 2) };
+        const bundle = variant => {
+            const man = JSON.stringify({ v: 2, kind: 'orcon-release', env: variant === 'control-matter' ? 'heltec_v2_matter' : 'heltec_v2_sx1276_control',
+                                         variant, allow_tx: true, commit: 'c'.repeat(40), version: 1001000, size: 5, sha256: 'a'.repeat(64) });
+            const text = JSON.stringify({ manifest: man, sig: 'ab' }) + '\nIMAGE';
+            return { slice: (a, b) => ({ text: async () => text.slice(a, b) }) };
+        };
+        for (const [own, file, say, change] of [['control', 'control-matter', /heeft Matter.*Matter-pagina/, true],
+                                                 ['control-matter', 'control', /heeft geen Matter.*koppelingen blijven/, true],
+                                                 ['control', 'rx-only', /ander type firmware \(rx-only in plaats van control\)/, true],
+                                                 ['control-matter', 'control-matter', null, false]]) {
+            dlg.asked = []; dlg.confirm = true;
+            const p = await page({ 'GET /api/setup/state': () => [200, state(CAPS_RX, prof)], 'GET /api/ota': () => [200, { variant: own, running: 'app1' }],
+                                   'POST /api/ota/begin': () => [200, { ok: true }], 'POST /api/ota/upload': () => [200, { ok: true }] }, 'firmware');
+            p.$('fwIn').files = [bundle(file)];
+            p.$('fwGo').click(); await flush(); await flush();
+            const begin = p.calls.find(c => c.key === 'POST /api/ota/begin');
+            assert.ok(begin, own + ' -> ' + file + ': the begin request');
+            assert.equal(begin.body.variant_change, change ? true : undefined);
+            assert.deepEqual(Object.keys(begin.body).sort(), change ? ['manifest', 'sig', 'variant_change'] : ['manifest', 'sig']);
+            if (say) assert.match(dlg.asked[0], say); else assert.doesNotMatch(dlg.asked[0], /Matter|ander type/);
+        }
+        dlg.asked = []; dlg.confirm = false;
+        const q = await page({ 'GET /api/setup/state': () => [200, state(CAPS_RX, prof)], 'GET /api/ota': () => [200, { variant: 'control-matter', running: 'app1' }] }, 'firmware');
+        q.$('fwIn').files = [bundle('control')]; q.$('fwGo').click(); await flush(); await flush();
+        assert.ok(!q.calls.some(c => c.key === 'POST /api/ota/begin') && /heeft geen Matter/.test(dlg.asked[0]));
+        dlg.confirm = true;
+        ok('firmware upload: a switch to or from Matter (or another type) is named in the dialog; only then variant_change; cancel sends nothing');
     }
     console.log(`setup page: ${n} checks, 0 failures`);
 })().catch(e => { console.error(e); process.exit(1); });

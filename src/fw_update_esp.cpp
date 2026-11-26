@@ -176,8 +176,13 @@ static void worker(void* arg) {
         TlsTransport t;
         fwup::Limits lim;
         if (c->job == Job::Check) {
+#if ORCON_MATTER   // a Matter board is only offered Matter releases (and a board without Matter only those without)
+            const fwup::Own own = {ORCON_RELEASE_VERSION, otap::Variant::ControlMatter, "heltec_v2_matter", ota::updateSlotSize(),
+                                   ORCON_RELEASE_PRE, c->beta};
+#else
             const fwup::Own own = {ORCON_RELEASE_VERSION, otap::Variant::Control, "heltec_v2_sx1276_control", ota::updateSlotSize(),
                                    ORCON_RELEASE_PRE, c->beta};
+#endif
             fwup::Found f = fwup::Found::None;
             const char* e = fwup::check(t, ota::verifySignature, clockMs, lim, own, c->offer, f, (char*)c->io, sizeof(c->io), c->u, c->h);
             sampleHeap();

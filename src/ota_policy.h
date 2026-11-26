@@ -20,8 +20,9 @@ static const char OWNER_MODEL_MARKER[] = "ORCON-OWNER-MODEL v1";
 // without it stay valid rollback targets.
 static const char OWNER_KEY_MARKER[] = "ORCON-OWNER-KEY v1";
 
-// Only explicitly approved firmware variants can be installed over the air.
-enum class Variant : uint8_t { None, RxOnly, RfTest, Control };
+// Only explicitly approved firmware variants can be installed over the air. ControlMatter is the control firmware with
+// Matter (docs/MATTER.md, env heltec_v2_matter): its own variant, so no update adds or removes Matter by itself.
+enum class Variant : uint8_t { None, RxOnly, RfTest, Control, ControlMatter };
 const char* variantName(Variant v);
 
 // Two signed manifest forms, both verified against the release key compiled into the firmware:
@@ -43,6 +44,10 @@ struct Manifest {
     uint8_t  sha256[32] = {0};
     char     nonce[33] = "";        // one-time value issued by this device (no replay/downgrade)
 };
+
+// A local install of another variant than the running build (with or without Matter, control or RX-only) only with the
+// owner's explicit confirmation (the page names what changes): nullptr when allowed. The update check never offers one.
+const char* variantChange(Variant manifest, const char* ownVariant, bool confirmed);
 
 // Parse the signed manifest text. Returns nullptr or an error code (unknown/missing/bad fields).
 const char* parseManifest(const char* json, Manifest& m);
@@ -74,6 +79,7 @@ public:
     bool ownerKey = false;    // OWNER_KEY_MARKER
     bool releaseKeyReset = false;   // the removed password reset with the firmware signing key (its request kind)
     bool commitStamp = false; // the manifest's 40-hex commit
+    bool matter = false;      // the Matter build's marker (idf/components/orcon_matter: orcon_matter_marker)
 private:
     void match(const uint8_t* buf, size_t n);
     char commit_[41];

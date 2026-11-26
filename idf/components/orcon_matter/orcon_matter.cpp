@@ -595,6 +595,10 @@ esp_err_t begin() {
 }
 }  // namespace orcon_matter
 
+// What tells a Matter image apart (src/ota_policy.cpp: variant control-matter needs it, control refuses it), so no
+// update adds or removes Matter by itself. Kept by the linker (-u, CMakeLists.txt); the policy holds it only encoded.
+extern "C" __attribute__((used)) const char orcon_matter_marker[] = "ORCON-MATTER-FIRMWARE v1";
+
 // The hooks. Orcon's setup() is wrapped whole: the telemetry task (and the monitor) start before its first line.
 extern "C" void __real__Z5setupv();
 extern "C" void __wrap__Z5setupv() {
