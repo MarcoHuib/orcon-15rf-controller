@@ -41,8 +41,46 @@ window.__done = (async () => {
 })();
 window.onerror = (m) => { window.__err = String(m); };
 </script></body></html>`;
+// DevTools answers carry the id of one of our own requests. Anything else (an event, a binary or malformed frame, an
+// id that is not a pending request's) is dropped, and each request's callback runs once (CodeQL alert 3).
+function devtools(send) {
+  const pending = new Map();
+  let next = 0;
+  return {
+    call: (method, params) => new Promise(resolve => {
+      const id = ++next;
+      pending.set(id, resolve);
+      send(JSON.stringify({ id, method, params }));
+    }),
+    onMessage(data) {
+      if (typeof data !== 'string') return false;
+      let m;
+      try { m = JSON.parse(data); } catch (e) { return false; }
+      const id = m !== null && typeof m === 'object' ? m.id : undefined;
+      if (!Number.isSafeInteger(id) || id <= 0) return false;
+      const done = pending.get(id);
+      if (typeof done !== 'function') return false;
+      pending.delete(id);
+      done(m);
+      return true;
+    },
+    pending: () => pending.size,
+  };
+}
 // Chrome over the DevTools protocol (Node's built-in WebSocket): wait for the real decoder, not a virtual clock.
 (async () => {
+  {   // the dispatcher first, on its own: malformed and foreign answers do nothing, a request is answered once
+    const sent = [], t = devtools(s => sent.push(JSON.parse(s)));
+    const first = t.call('Self.test', {});
+    const junk = [undefined, null, 7, '', 'not json', 'null', '[]', '"1"', '{"id":"1"}', '{"id":0}', '{"id":-1}',
+                  '{"id":1.5}', '{"id":"__proto__"}', '{"id":"constructor"}', '{"id":2}', '{"method":"Page.loadEventFired"}'];
+    const dropped = junk.every(d => t.onMessage(d) === false);
+    const once = t.onMessage('{"id":1,"result":"a"}') === true && t.onMessage('{"id":1,"result":"b"}') === false;
+    if (!dropped || !once || t.pending() !== 0 || sent[0].id !== 1 || (await first).result !== 'a') {
+      console.log('FAIL devtools dispatcher');
+      process.exit(1);
+    }
+  }
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qrtest-'));
   const file = path.join(dir, 'qr.html');
   fs.writeFileSync(file, html);
@@ -59,9 +97,9 @@ window.onerror = (m) => { window.__err = String(m); };
     }
     const ws = new WebSocket(target.webSocketDebuggerUrl);
     await new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = bad; });
-    let id = 0; const wait = {};
-    ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && wait[m.id]) wait[m.id](m); };
-    const call = (method, params) => new Promise(r => { wait[++id] = r; ws.send(JSON.stringify({ id, method, params })); });
+    const dt = devtools(text => ws.send(text));
+    ws.onmessage = e => { dt.onMessage(e.data); };
+    const call = dt.call;
     for (let i = 0; i < 50; i++) {   // the page's script defines __done once it has loaded
       const r = await call('Runtime.evaluate', { expression: 'typeof window.__done', returnByValue: true });
       if (r.result && r.result.result && r.result.result.value === 'object') break;
