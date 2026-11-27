@@ -7,7 +7,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'setup_page.html'), 'utf8');
-const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
+// The page's one inline script, found without a tag regex (CodeQL alert 2). A script tag in another form (any case,
+// attributes) would escape this test, so the page may hold exactly this one.
+const lower = html.toLowerCase();
+const open = lower.indexOf('<script>'), close = lower.lastIndexOf('</script>');
+assert.ok(open >= 0 && close > open && lower.split('<script').length === 2 && lower.split('</script').length === 2,
+          'setup_page.html holds exactly one plain <script> block');
+const script = html.slice(open + '<script>'.length, close);
 const flush = async () => { for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r)); };
 
 function el(attrs) {
