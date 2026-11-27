@@ -142,6 +142,10 @@ if cfg == "migration":
     same = all(b in m2["blobs"] for b in ("dac", "pai", "cd")) and bytes.fromhex(m2["blobs"]["dac"]) == der(f"{idd}/dac-cert.pem") \
         and bytes.fromhex(m2["blobs"]["pai"]) == der(f"{idd}/pai-cert.pem") and bytes.fromhex(m2["blobs"]["cd"]) == Path(f"{idd}/cd.der").read_bytes()
     check("the moved DAC, PAI and certification declaration are byte-identical to the original identity", same)
+    mark = b"ORCON-MATTER-EMBEDDED-IDENTITY v1"   # orcon_matter_identity_marker: what Orcon's factory reset looks for
+    apps = [(p / "idf" / "orcon_qemu_memtest.bin").read_bytes() for p in (out, out.parent / "bridge")]
+    check("the migration image carries the embedded-identity marker, the universal image does not",
+          mark in apps[0] and mark not in apps[1])
 # Every generated chain through CHIP's chip-cert (OpenSSL), apart from the device's own mbedTLS and CHIP checks.
 chains = [b for b in boots if all(k in b["blobs"] for k in ("paa", "pai", "dac"))]
 for b in chains:

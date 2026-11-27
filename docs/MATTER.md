@@ -82,7 +82,11 @@ Een controller met een van de eerste Matter-builds (de identiteit in het image) 
 2. Installeer het; vanaf een van de eerste Matter-builds met `--legacy-control` (zie "Installeren"). Bij de eerste start zet het zijn identiteit op het apparaat, en controleert het dat de codes daarna gelijk zijn.
 3. Installeer daarna de universele firmware. Die vindt de identiteit op het apparaat: dezelfde sleutel, koppelcode en serienummer, dezelfde koppelingen en de namen die je koos.
 
-Na stap 3 staat het overstap-image, met sleutel, nog in de andere slot als terugval. Installeer later nog één keer de universele firmware (of de volgende update): dan bevatten beide slots firmware zonder sleutel, en blijft terugvallen mogelijk.
+Na stap 3 staat het overstap-image, met sleutel, nog in de andere slot als terugval. Zolang dezelfde identiteit op het apparaat staat, is dat geen extra blootstelling: de sleutel staat ook in de opslag. De terugval blijft dus bewaard tot de volgende update hem vervangt. Wil je hem eerder kwijt, installeer dan nog één keer de universele firmware: dan bevatten beide slots firmware zonder sleutel, en blijft terugvallen mogelijk.
+
+Een fabrieksreset vervangt een overstap-image in de andere slot door een kopie van de draaiende, bevestigde firmware. Zo'n image draagt een eigen merkteken, `ORCON-MATTER-EMBEDDED-IDENTITY v1`; `tools/build_idf.sh` meldt "identity marker yes". Na de reset zou dat image anders de identiteit van de vorige eigenaar opnieuw op het apparaat zetten.
+
+Grens: draait het overstap-image zelf tijdens de fabrieksreset, dan blijft de identiteit in dat image. Installeer daarom eerst de universele firmware, en geef een apparaat pas daarna door.
 
 `tools/matter_identity.sh` maakt zo'n identiteit op de Mac. Voor een nieuw apparaat is dat niet meer nodig; de QEMU-test van deze overstap gebruikt het voor een wegwerpidentiteit.
 

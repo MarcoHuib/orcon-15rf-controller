@@ -80,6 +80,7 @@ public:
     bool releaseKeyReset = false;   // the removed password reset with the firmware signing key (its request kind)
     bool commitStamp = false; // the manifest's 40-hex commit
     bool matter = false;      // the Matter build's marker (idf/components/orcon_matter: orcon_matter_marker)
+    bool matterIdentity = false;   // an image that itself holds a Matter identity (a private migration build)
 private:
     void match(const uint8_t* buf, size_t n);
     char commit_[41];
@@ -92,6 +93,9 @@ const char* checkImage(const Manifest& m, const Scanner& s, uint32_t received, c
 // keys), or one of the two older ownership images (b75fad3, 2edb423) whose recovery still trusted the release key.
 // Never a build without the ownership model that only carries OWNER_MODEL_MARKER (Codex legacy r4).
 inline bool ownerRecovery(const Scanner& s) { return s.ownerModel && (s.ownerKey || s.releaseKeyReset); }
+// A rollback image that may stay after a factory reset: one with an owner recovery, without an embedded Matter identity.
+// A migration build booted after the reset would move its identity onto the device again: the previous owner's.
+inline bool keepAfterReset(const Scanner& s) { return ownerRecovery(s) && !s.matterIdentity; }
 
 // One trial-boot decision per main-loop pass (ota_signed.cpp tick). A healthy image may try to confirm itself after
 // confirmAfter ms, at most once per second; the caller reads the owner key right before each attempt. Past rollbackAfter

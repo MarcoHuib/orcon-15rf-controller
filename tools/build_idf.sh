@@ -52,4 +52,5 @@ docker run --rm "${mounts[@]}" ${envs[@]+"${envs[@]}"} "$image" bash -c "
          -D ORCON_FW_VERSION=$commit -D ORCON_DIRTY=$dirty -D ORCON_RELEASE=$release -D ORCON_PRE=$pre build
   idf.py -B $b -D SDKCONFIG=$b/sdkconfig size
 "
-echo "image: idf/$b/orcon_15rf.bin (FW_VERSION $commit$dirty, Matter $matter$([ -n "$identity" ] && echo ", own identity" || true))"
+embedded=$(LC_ALL=C grep -a -q "ORCON-MATTER-EMBEDDED-IDENTITY v1" "$root/idf/$b/orcon_15rf.bin" && echo yes || echo no)   # orcon_matter_identity_marker
+echo "image: idf/$b/orcon_15rf.bin (FW_VERSION $commit$dirty, Matter $matter$([ -n "$identity" ] && echo ", own identity" || true), identity marker $embedded)"

@@ -140,6 +140,20 @@ int main() {
     { Manifest x; parseManifest(manifest("control", "heltec_v2_sx1276_control", true, (unsigned)mtr.size()).c_str(), x);
       CHECK(!strcmp(checkImage(x, scan(mtr, 300), (uint32_t)mtr.size(), x.sha256), "image-not-control"), "Matter image labelled control refused: never Matter unseen");
       CHECK(!scan(ctl, 300).matter, "the control image carries no Matter marker"); }
+    // ---- a private migration build (it holds a Matter identity itself): installable, never kept after a factory reset
+    { const auto mig = image({COMMIT, "SX1276 direct RX + txpoc packet TX (CONTROL: max 10/min, 60/h)", "ORCON-MATTER-FIRMWARE v1",
+                              "ORCON-MATTER-EMBEDDED-IDENTITY v1", SIGNED_OTA_MARKER});
+      Manifest x; parseManifest(manifest("control-matter", "heltec_v2_matter", true, (unsigned)mig.size()).c_str(), x);
+      bool all = true;
+      for (size_t chunk : {1u, 32u, 33u, 34u, 256u, 1436u}) {
+          const Scanner s = scan(mig, chunk);
+          all = all && s.matter && s.matterIdentity && ownerRecovery(s) && !keepAfterReset(s) &&
+                !checkImage(x, s, (uint32_t)mig.size(), x.sha256);
+      }
+      CHECK(all, "migration build: its identity marker found for every chunk size; installable, never kept after a reset");
+      const Scanner u = scan(mtr, 300), c = scan(ctl, 300);
+      CHECK(!u.matterIdentity && keepAfterReset(u), "the universal Matter image holds no identity marker: it stays the rollback target");
+      CHECK(!c.matterIdentity && keepAfterReset(c), "the control image neither"); }
     { Manifest x; parseManifest(manifest("control-matter", "heltec_v2_sx1276_control", true).c_str(), x);
       CHECK(!strcmp(checkManifest(x, MAC, NONCE, 0x330000), "variant-mismatch"), "control-matter with the control env refused"); }
     { Manifest x; parseManifest(manifest("control-matter", "heltec_v2_matter", false).c_str(), x);

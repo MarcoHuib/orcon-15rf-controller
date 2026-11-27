@@ -252,9 +252,10 @@ struct Ops : provision::ResetOps {
         return e == ESP_OK || e == ESP_ERR_NOT_FOUND || e == ESP_ERR_INVALID_SIZE;
     }
     // The other slot holds the rollback image. One from before the ownership model would trust the
-    // release key for password recovery again. It is not erased but overwritten with a copy of the
-    // running, confirmed image: no pre-owner firmware remains, and the device keeps two bootable
-    // owner-model images (bootloader fallback, and a rollback target for the next OTA, both intact).
+    // release key for password recovery again; a private Matter migration build would move its embedded
+    // identity (the previous owner's) onto the device again (otap::keepAfterReset). It is not erased but
+    // overwritten with a copy of the running, confirmed image: no such firmware remains, and the device keeps
+    // two bootable owner-model images (bootloader fallback, and a rollback target for the next OTA, both intact).
     // Also without Matter: after a switch back from Matter firmware the region still holds its identity and fabrics.
     bool eraseMatter() override { return orcon_matter::wipeMatterStorage(); }
     bool retirePreOwnerSlot() override {
@@ -276,12 +277,13 @@ struct Ops : provision::ResetOps {
             if (esp_partition_read(other, off, buf, n) != ESP_OK) return false;
             s.feed(buf, n);
         }
-        if (otap::ownerRecovery(s)) return true;        // an image with owner recovery: it stays as the rollback target
+        if (otap::keepAfterReset(s)) return true;       // owner recovery, no embedded Matter identity: it stays the rollback target
         esp_image_metadata_t rm;
         const esp_partition_pos_t rpos{run->address, run->size};
         if (esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &rpos, &rm) != ESP_OK) return false;   // never copy a bad image
-        Serial.printf("[reset] %s holds firmware from before the ownership model: replacing it with a copy of %s\n",
-                      other->label, run->label);
+        Serial.printf("[reset] %s holds %s: replacing it with a copy of %s\n", other->label,
+                      otap::ownerRecovery(s) ? "firmware with an embedded Matter identity" : "firmware from before the ownership model",
+                      run->label);
         esp_ota_handle_t h;
         if (esp_ota_begin(other, rm.image_len, &h) != ESP_OK) return false;   // erases what the copy needs
         for (uint32_t off = 0; off < rm.image_len; off += cap) {

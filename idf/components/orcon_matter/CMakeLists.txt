@@ -12,6 +12,9 @@ idf_component_register(SRCS ${srcs} INCLUDE_DIRS "."
 # repository): it moves that identity onto the device once. Never commit an identity or an image built with one.
 if(DEFINED ENV{ORCON_MATTER_IDENTITY} AND EXISTS "$ENV{ORCON_MATTER_IDENTITY}/orcon_matter_creds.h")
     target_include_directories(${COMPONENT_LIB} PRIVATE "$ENV{ORCON_MATTER_IDENTITY}")
+    # This image itself holds that identity: its own marker (orcon_matter_identity.cpp), so Orcon's factory reset
+    # replaces a rollback slot that holds it (src/owner_store.cpp, otap::keepAfterReset).
+    target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,-u,orcon_matter_identity_marker")
 else()
     target_include_directories(${COMPONENT_LIB} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/placeholder")
     message(STATUS "orcon_matter: universal firmware (no identity in the image; made on the device at activation)")

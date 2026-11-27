@@ -251,6 +251,12 @@ bool embeddedPresent() {
     return true;
 #endif
 }
+#ifndef ORCON_MATTER_PLACEHOLDER_IDENTITY
+// A migration build: this image itself holds a device's identity. Orcon's factory reset looks for this marker in the
+// rollback slot and replaces such an image (otap::keepAfterReset): booted after the reset, it would move the previous
+// owner's identity onto the device again. Kept by -u (CMakeLists.txt): nothing references it.
+extern "C" __attribute__((used)) const char orcon_matter_identity_marker[] = "ORCON-MATTER-EMBEDDED-IDENTITY v1";
+#endif
 bool embeddedCodesMatch() {
     return embeddedPresent() && g_state == State::Valid && !strcmp(g_manual, orcon_matter_creds::kManualCode) &&
            !strcmp(g_qr, orcon_matter_creds::kQrCode);

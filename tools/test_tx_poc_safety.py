@@ -437,12 +437,14 @@ def legacy_recovery_safe(files,ota):
     for path,text in files.items():
         if path.endswith('ota_policy.h'): assert text.count('"ORCON-OWNER-KEY v1"')==1,path; continue
         assert 'ORCON-OWNER-KEY' not in text,(path,'plain owner-key marker')
+        assert 'ORCON-MATTER-EMBEDDED-IDENTITY' not in text,(path,'plain embedded-identity marker: every image would read as a migration build')
         if 'OWNER_KEY_MARKER' in text: assert path.endswith('ota_signed.cpp') and text.count('OWNER_KEY_MARKER')==1 and '#if ORCON_OWNER_MODEL\n             otap::OWNER_KEY_MARKER,' in text,(path,'owner-key marker outside an ownership build')
     own=files['src/owner_store.cpp']
     assert 'return ok && onCurve(q);' in fn(own,'bool ownerKey(uint8_t q[65]) {') and 'mbedtls_ecp_check_pubkey(&g, &p) == 0' in fn(own,'static bool onCurve('),'only a usable key counts (Codex legacy r3)'
     assert 'bool recoveryActive() { return g_boot == Mode::Recovery && physicalActive(); }' in own,'WiFi wissen opens no recovery (Codex legacy r3)'
     assert 'inline bool ownerRecovery(const Scanner& s) { return s.ownerModel && (s.ownerKey || s.releaseKeyReset); }' in files['src/ota_policy.h'],'rollback-target classifier (host-tested)'
-    assert 'if (otap::ownerRecovery(s)) return true;' in own and 'return otap::ownerRecovery(s) && s.signedOta && !s.legacyOta;' in fn(ota,'bool previousIsOwnerModel() {'),'a model-only build is never kept or chosen as a rollback target (Codex legacy r4)'
+    assert 'inline bool keepAfterReset(const Scanner& s) { return ownerRecovery(s) && !s.matterIdentity; }' in files['src/ota_policy.h'],'a factory reset never keeps an image with an embedded Matter identity (host-tested)'
+    assert 'if (otap::keepAfterReset(s)) return true;' in own and 'return otap::ownerRecovery(s) && s.signedOta && !s.legacyOta;' in fn(ota,'bool previousIsOwnerModel() {'),'a model-only build is never kept or chosen as a rollback target (Codex legacy r4)'
     web=files['src/setup_web.cpp']
     assert 'physicalActive' not in web and 'c.physical = ownerstore::recoveryActive();' in fn(web,'static bool provGate('),'the key and recovery routes follow the Herstelmodus only'
     h=re.sub(r'\s+',' ',fn(ota,'void tick(uint32_t now) {'))
@@ -514,7 +516,10 @@ for name,where,old,new in (('reset-route-back','src/setup_web.cpp','    s.on("/a
                            ('wifi-reset-recovers','src/owner_store.cpp','bool recoveryActive() { return g_boot == Mode::Recovery && physicalActive(); }','bool recoveryActive() { return physicalActive(); }'),
                            ('gate-on-physical','src/setup_web.cpp','c.physical = ownerstore::recoveryActive();','c.physical = ownerstore::physicalActive();'),
                            ('classifier-model-only','src/ota_policy.h','return s.ownerModel && (s.ownerKey || s.releaseKeyReset);','return s.ownerModel;'),
-                           ('reset-keeps-model-only','src/owner_store.cpp','if (otap::ownerRecovery(s)) return true;','if (s.ownerModel) return true;'),
+                           ('reset-keeps-model-only','src/owner_store.cpp','if (otap::keepAfterReset(s)) return true;','if (s.ownerModel) return true;'),
+                           ('reset-keeps-embedded-identity','src/ota_policy.h','{ return ownerRecovery(s) && !s.matterIdentity; }','{ return ownerRecovery(s); }'),
+                           ('reset-by-recovery-only','src/owner_store.cpp','if (otap::keepAfterReset(s)) return true;','if (otap::ownerRecovery(s)) return true;'),
+                           ('plain-identity-marker-in-scanner','src/ota_policy.cpp','matterIdentity |= has(b, n, PAT(P_MATTER_ID));','matterIdentity |= has(b, n, "ORCON-MATTER-EMBEDDED-IDENTITY v1");'),
                            ('tick-not-called','src/main.cpp','    ota::tick(millis());','    (void)0;'),
                            ('tick-disabled-block','src/main.cpp','#if ORCON_SIGNED_OTA\n    ota::tick(millis());','#if 0\n    ota::tick(millis());'),
                            ('tick-wrapped-out','src/main.cpp','\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());               // confirm a freshly installed image, or roll back\n#endif\n','\n#if 0\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());               // confirm a freshly installed image, or roll back\n#endif\n#endif\n'),
