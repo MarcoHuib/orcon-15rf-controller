@@ -90,11 +90,13 @@ python3 tools/test_sx1276_tx.py
 python3 tools/gen_setup_page.py --check
 node test/test_setup_page.js | tail -1
 # Matter (idf/, docs/MATTER.md): the control rules, the state machine, the NVS ownership check (synthetic regions),
-# the update restart and the release channels, the owner's /connect page and its gzip header.
+# the bounded text of every Matter answer, the update restart and the release channels, the owner's /connect page and
+# its gzip header.
 MI=idf/components/orcon_matter
 run matter_control     -Wall -Wextra -Werror -I $MI test/matter/test_control.cpp
 run matter_state       -Wall -Wextra -Werror -I $MI test/matter/test_state.cpp
 run matter_nvs         -Wall -Wextra -Werror -I $MI test/matter/test_nvs_check.cpp
+run matter_out         -Wall -Wextra -Werror -I $MI test/matter/test_out.cpp
 if [ -d "$AJ" ]; then
     run matter_update_boot -Wall -Wextra -Werror -I src -I $AJ test/matter/test_update_boot.cpp
     run matter_channels    -Wall -Wextra -Werror -I src -I $AJ test/matter/test_channels.cpp src/ota_policy.cpp src/fw_update.cpp

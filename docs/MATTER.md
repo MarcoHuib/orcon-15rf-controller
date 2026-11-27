@@ -204,6 +204,7 @@ De officiële releases (zonder Matter), met dezelfde instellingen gebouwd uit `m
 
 - `test/run_host_tests.sh`: alle bestaande suites plus `test/matter/`:
   - de bedieningsregels, de toestandsmachine, de NVS-eigendomscontrole, de updateherstart en de kanalen;
+  - de begrensde tekst (`orcon_matter_out.h`) waarin elk Matter-antwoord en elke `[mem]`-regel wordt opgebouwd: elke `vsnprintf`-uitkomst wordt gecontroleerd en nooit wordt er voorbij de buffer geschreven; een te lang antwoord wordt een fout in plaats van kapotte JSON (grensgevallen: precies passend, één te veel, negatief, lege buffer, halve escapes);
   - de `/connect`-pagina (CSRF, codes, bevestiging, escaping);
   - de controle dat `orcon_connect_page.h` bij de HTML hoort (`tools/gen_connect_page.py --check`).
 - `node test/matter/test_qr_decode.js`: de QR-encoder van de pagina tegen een onafhankelijke decoder (Chrome's BarcodeDetector; op macOS Apple's Vision). Synthetische codes, nooit de eigen code.

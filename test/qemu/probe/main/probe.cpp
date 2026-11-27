@@ -432,8 +432,9 @@ static void testTask(void*) {
            (unsigned long)readyMs);
     for (int i = 0; i < 60; ++i) printf(" %d/%d", sm[i], so[i]);
     char fc[160];
-    orcon_matter::fanCheckJson(fc, sizeof fc);
-    printf("\nPROBE fan-check=%s\n", fc);
+    orcon_matter::Out fo{fc, sizeof fc};
+    orcon_matter::fanCheckJson(fo);
+    printf("\nPROBE fan-check=%s\n", fo.full ? "too-long" : fc);
     delay(500);
     printf("PROBE heap ready_free=%u ready_min=%u largest=%u\n", unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
            unsigned(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
@@ -477,8 +478,9 @@ static void testTask(void*) {
         checkText("user-root-label-stored", b, kUserRoot);
     }
     char j[256];
-    orcon_matter::controlJson(j, sizeof j);
-    printf("PROBE control=%s\n", j);
+    orcon_matter::Out jo{j, sizeof j};
+    orcon_matter::controlJson(jo);
+    printf("PROBE control=%s\n", jo.full ? "too-long" : j);
     printf("PROBE heap end_free=%u end_min=%u\n", unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
            unsigned(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
     printf("PROBE DONE boot=%d pass=%d fail=%d\n", boot, g_pass, g_fail);

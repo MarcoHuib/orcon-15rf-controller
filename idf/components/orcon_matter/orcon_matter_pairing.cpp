@@ -69,31 +69,9 @@ Status status() {   // CHIP's state under its stack lock, only while Matter runs
     return s;
 }
 
-// JSON into the shared response buffer; a full buffer turns the answer into an error, never into broken JSON.
-struct Out {
-    char* b;
-    size_t cap, n = 0;
-    bool full = false;
-    void fmt(const char* f, ...) __attribute__((format(printf, 2, 3))) {
-        if (full) return;
-        va_list ap;
-        va_start(ap, f);
-        const int k = vsnprintf(b + n, cap - n, f, ap);
-        va_end(ap);
-        if (k < 0 || size_t(k) >= cap - n) { full = true; return; }
-        n += size_t(k);
-    }
-    void str(const char* s, size_t len) {   // a JSON string; controller labels are a controller's free text
-        fmt("\"");
-        for (size_t i = 0; i < len && !full; ++i) {
-            const unsigned char c = (unsigned char)s[i];
-            if (c == '"' || c == '\\') fmt("\\%c", c);
-            else if (c < 0x20 || c == 0x7F) fmt("\\u%04x", c);
-            else fmt("%c", c);
-        }
-        fmt("\"");
-    }
-};
+// JSON into the shared response buffer (orcon_matter_out.h): a full buffer turns the answer into an error, never
+// into broken JSON.
+using orcon_matter::Out;
 
 void send(int code, Out& o) {
     g_srv->sendHeader("Cache-Control", "no-store");
@@ -131,11 +109,12 @@ void reply(int code, const char* err, bool summary = false) {
             }
             chip::DeviceLayer::PlatformMgr().UnlockChipStack();
         }
-        char diag[256];
-        orcon_matter::stateJson(diag, sizeof diag);
-        o.fmt("],\"diag\":%s", diag);
-        if (orcon_matter::controlJson(diag, sizeof diag) < int(sizeof diag)) o.fmt(",\"control\":%s", diag);
-        if (orcon_matter::fanCheckJson(diag, sizeof diag) < int(sizeof diag)) o.fmt(",\"fan\":%s", diag);
+        o.fmt("],\"diag\":");
+        orcon_matter::stateJson(o);
+        o.fmt(",\"control\":");
+        orcon_matter::controlJson(o);
+        o.fmt(",\"fan\":");
+        orcon_matter::fanCheckJson(o);
     }
     o.fmt("}");
     send(code, o);
@@ -143,9 +122,9 @@ void reply(int code, const char* err, bool summary = false) {
 
 void handlePublicState() {   // no login: no secrets, only why Matter is (not) ready (a trial boot's confirmation)
     char b[200];
-    orcon_matter::stateJson(b, sizeof b);
-    g_srv->sendHeader("Cache-Control", "no-store");
-    g_srv->send(200, "application/json", b);
+    Out o{b, sizeof b};
+    orcon_matter::stateJson(o);
+    send(200, o);
 }
 
 void handleStatus() {

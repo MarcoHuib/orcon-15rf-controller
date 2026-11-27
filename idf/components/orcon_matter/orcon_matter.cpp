@@ -225,31 +225,26 @@ void telemetryTask(void*) {
         const int64_t r0 = esp_timer_get_time();   // rep_us: this report's own cost (stack and NVS inspection)
         char line[768];
         const orcon_matter::MatterState::S st = g_mtr.state();
-        int n = snprintf(line, sizeof line,
-                         "[mem] t=%lu free=%u min=%u largest=%u dma=%u start=%u after=%u mtr=%s mtr_step=%s mtr_err=0x%x "
-                         "mtr_ms=%u ev=%d q=%lu ref=%lu busy=%lu",
-                         (unsigned long)(millis() / 1000),
-                         unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
-                         unsigned(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
-                         unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
-                         unsigned(heap_caps_get_free_size(MALLOC_CAP_DMA)), unsigned(g_startHeap),
-                         unsigned(g_afterStartHeap), orcon_matter::MatterState::name(st), g_mtr.step(),
-                         unsigned(g_mtr.err()), unsigned(g_mtr.sinceMs()), g_lastEvent, (unsigned long)g_queued,
-                         (unsigned long)g_refused, (unsigned long)g_busy);
-        if (n > 0 && n < int(sizeof line)) n += orcon_matter::heapMonitorReport(line + n, sizeof line - n);
-        for (const char* name : kTasks) {
-            TaskHandle_t h = xTaskGetHandle(name);
-            if (h && n > 0 && n < int(sizeof line) - 24)
-                n += snprintf(line + n, sizeof line - n, " %s=%u", name, unsigned(uxTaskGetStackHighWaterMark(h)));
-        }
+        orcon_matter::Out o{line, sizeof line};   // too long: the line ends at its last whole field
+        o.fmt("[mem] t=%lu free=%u min=%u largest=%u dma=%u start=%u after=%u mtr=%s mtr_step=%s mtr_err=0x%x "
+              "mtr_ms=%u ev=%d q=%lu ref=%lu busy=%lu",
+              (unsigned long)(millis() / 1000),
+              unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+              unsigned(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+              unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+              unsigned(heap_caps_get_free_size(MALLOC_CAP_DMA)), unsigned(g_startHeap),
+              unsigned(g_afterStartHeap), orcon_matter::MatterState::name(st), g_mtr.step(),
+              unsigned(g_mtr.err()), unsigned(g_mtr.sinceMs()), g_lastEvent, (unsigned long)g_queued,
+              (unsigned long)g_refused, (unsigned long)g_busy);
+        orcon_matter::heapMonitorReport(o);
+        for (const char* name : kTasks)
+            if (TaskHandle_t h = xTaskGetHandle(name)) o.fmt(" %s=%u", name, unsigned(uxTaskGetStackHighWaterMark(h)));
         for (const char* part : {"nvs", orcon_matter::kMatterNvsLabel}) {   // NVS entries used/total per partition
             nvs_stats_t ns;
-            if (nvs_get_stats(part, &ns) == ESP_OK && n > 0 && n < int(sizeof line) - 32)
-                n += snprintf(line + n, sizeof line - n, " %s=%u/%u", part, unsigned(ns.used_entries),
-                              unsigned(ns.total_entries));
+            if (nvs_get_stats(part, &ns) == ESP_OK)
+                o.fmt(" %s=%u/%u", part, unsigned(ns.used_entries), unsigned(ns.total_entries));
         }
-        if (n > 0 && n < int(sizeof line) - 16)
-            n += snprintf(line + n, sizeof line - n, " rep_us=%u", unsigned(esp_timer_get_time() - r0));
+        o.fmt(" rep_us=%u", unsigned(esp_timer_get_time() - r0));
         printf("%s\n", line);   // stdout works before Orcon's Serial.begin(), like the monitor's own lines
         orcon_matter::memWebPublish(line);   // B1-web: the same line for GET /api/mem
     }
@@ -309,12 +304,12 @@ void onChipEvent(const chip::DeviceLayer::ChipDeviceEvent* e, intptr_t) {
 bool serverReadySeen() { return g_mtr.serverReadySeen(); }
 bool matterReady() { return g_mtr.state() == MatterState::Ready; }
 uint32_t g_confirmRefused = 0;   // trial-boot confirmations refused because Matter was not ready (loop task only)
-// Public, read-only, no secrets: why a trial boot does or does not confirm, readable over WiFi (GET /api/matter/state).
-int stateJson(char* out, size_t n) {
-    return snprintf(out, n, "{\"state\":\"%s\",\"step\":\"%s\",\"err\":\"0x%x\",\"since_ms\":%u,\"server_ready\":%s,"
-                    "\"confirm_refused\":%u,\"uptime_ms\":%u}", MatterState::name(g_mtr.state()), g_mtr.step(),
-                    unsigned(g_mtr.err()), unsigned(g_mtr.sinceMs()), g_mtr.serverReadySeen() ? "true" : "false",
-                    unsigned(g_confirmRefused), unsigned(millis()));
+// Public, read-only, no secrets: why a trial boot does or does not confirm, readable over WiFi (GET /api/connect/state).
+void stateJson(Out& o) {
+    o.fmt("{\"state\":\"%s\",\"step\":\"%s\",\"err\":\"0x%x\",\"since_ms\":%u,\"server_ready\":%s,"
+          "\"confirm_refused\":%u,\"uptime_ms\":%u}", MatterState::name(g_mtr.state()), g_mtr.step(),
+          unsigned(g_mtr.err()), unsigned(g_mtr.sinceMs()), g_mtr.serverReadySeen() ? "true" : "false",
+          unsigned(g_confirmRefused), unsigned(millis()));
 }
 const char* matterStateName() { return MatterState::name(g_mtr.state()); }
 
@@ -432,23 +427,23 @@ void probeStarting() { g_mtr.start(millis()); }
 void probeHandedOver() { g_mtr.handedOver(millis()); }
 #endif
 
-int fanCheckJson(char* out, size_t n) {   // the fan endpoint's first look this boot (loop task)
+void fanCheckJson(Out& o) {   // the fan endpoint's first look this boot (loop task)
     const FanCheck& c = g_fanCheck;
-    return snprintf(out, n, "{\"ep\":%u,\"t_ms\":%lu,\"tries\":%u,\"fanmode\":\"%s\",\"err\":\"0x%lx\",\"onoff\":%d,"
-                    "\"shown\":%d,\"fixed\":%s}",
-                    unsigned(g_fanEp), (unsigned long)c.ms, unsigned(g_fanTries),
-                    !g_fanTries ? "not-yet" : c.err == uint32_t(CHIP_ERROR_PERSISTED_STORAGE_VALUE_NOT_FOUND.AsInteger())
-                                                  ? "never-stored" : c.err == 0 ? "stored" : "unreadable",
-                    (unsigned long)c.err, int(c.on), int(c.shown), c.fixed ? "true" : "false");
+    o.fmt("{\"ep\":%u,\"t_ms\":%lu,\"tries\":%u,\"fanmode\":\"%s\",\"err\":\"0x%lx\",\"onoff\":%d,"
+          "\"shown\":%d,\"fixed\":%s}",
+          unsigned(g_fanEp), (unsigned long)c.ms, unsigned(g_fanTries),
+          !g_fanTries ? "not-yet" : c.err == uint32_t(CHIP_ERROR_PERSISTED_STORAGE_VALUE_NOT_FOUND.AsInteger())
+                                        ? "never-stored" : c.err == 0 ? "stored" : "unreadable",
+          (unsigned long)c.err, int(c.on), int(c.shown), c.fixed ? "true" : "false");
 }
 
-int controlJson(char* out, size_t n) {   // for the owner's GET /api/matter (loop task, like serviceControl)
-    return snprintf(out, n, "{\"enabled\":%s,\"last\":\"%s\",\"code\":%d,\"error\":\"%s\",\"age_s\":%lu,"
-                    "\"pending\":%s,\"return_to\":\"%s\",\"queued\":%lu,\"refused\":%lu,\"replaced\":%lu}",
-                    kControlBuild ? "true" : "false", kReqName[unsigned(g_last.req) % 7], g_last.code,
-                    g_last.err, (unsigned long)(g_last.ms ? (millis() - g_last.ms) / 1000 : 0),
-                    g_pend.req != Req::None ? "true" : "false", g_lastStand ? g_lastStand : "",
-                    (unsigned long)g_queued, (unsigned long)g_refused, (unsigned long)g_busy);
+void controlJson(Out& o) {   // for the owner's GET /api/connect (loop task, like serviceControl)
+    o.fmt("{\"enabled\":%s,\"last\":\"%s\",\"code\":%d,\"error\":\"%s\",\"age_s\":%lu,"
+          "\"pending\":%s,\"return_to\":\"%s\",\"queued\":%lu,\"refused\":%lu,\"replaced\":%lu}",
+          kControlBuild ? "true" : "false", kReqName[unsigned(g_last.req) % 7], g_last.code,
+          g_last.err, (unsigned long)(g_last.ms ? (millis() - g_last.ms) / 1000 : 0),
+          g_pend.req != Req::None ? "true" : "false", g_lastStand ? g_lastStand : "",
+          (unsigned long)g_queued, (unsigned long)g_refused, (unsigned long)g_busy);
 }
 
 esp_err_t createModel() {

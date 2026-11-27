@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sdkconfig.h>
+#include "orcon_matter_out.h"
 // Heap monitor for hardware measurements (diagnostics); see orcon_matter_heapmon.cpp.
 // Without CONFIG_ORCON_MATTER_HEAPMON every call below is an empty inline function.
 namespace chip { namespace DeviceLayer { struct ChipDeviceEvent; } }
@@ -11,7 +12,7 @@ enum class MonPhase : uint8_t { MatterStart, Window, Commission };   // phases t
 constexpr unsigned kHeapMonitorPeriodMs = 20;
 void heapMonitorStart();                          // once, before Wi-Fi and Matter: hook, event marks, first sample
 void heapMonitorSample();                         // every kHeapMonitorPeriodMs, from the telemetry task only
-int heapMonitorReport(char* out, size_t cap);     // same task: prints the active phases, returns its [mem] fields
+void heapMonitorReport(Out& o);                   // same task: prints the active phases, adds its [mem] fields
 void heapMonitorSet(MonPhase p, bool on);         // any task
 void heapMonitorChipEvent(const chip::DeviceLayer::ChipDeviceEvent* e);   // the esp_matter event callback (CHIP task)
 bool heapMonitorAllocHookOk();                    // the failed-allocation hook is registered
@@ -19,7 +20,7 @@ bool heapMonitorEventsOk();                       // Wi-Fi/IP event marks regist
 #else
 inline void heapMonitorStart() {}
 inline void heapMonitorSample() {}
-inline int heapMonitorReport(char*, size_t) { return 0; }
+inline void heapMonitorReport(Out&) {}
 inline void heapMonitorSet(MonPhase, bool) {}
 inline void heapMonitorChipEvent(const chip::DeviceLayer::ChipDeviceEvent*) {}
 inline bool heapMonitorAllocHookOk() { return true; }

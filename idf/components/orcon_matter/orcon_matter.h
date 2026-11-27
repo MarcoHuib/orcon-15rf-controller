@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <esp_err.h>
 #include <sdkconfig.h>   // CONFIG_ORCON_PROBE_CONTROL below
+#include "orcon_matter_out.h"
 namespace chip { namespace DeviceLayer { struct ChipDeviceEvent; } }
 namespace orcon_matter {
 void earlyBegin();   // once, at the start of Orcon's setup(): the Matter mailbox and the telemetry task (+ heap monitor)
@@ -14,15 +15,15 @@ void memWebPublish(const char* line);   // B1-web: the telemetry task's last [me
 // Running Matter, its state and its identity
 bool matterReady();                     // Matter runs: CHIP's server is up and Wi-Fi is Orcon's
 const char* matterStateName();          // waiting | starting | ready | failed
-int stateJson(char* out, size_t n);     // public GET /api/matter/state: state, step, err, confirm refusals
+void stateJson(Out& o);                 // public GET /api/connect/state: state, step, err, confirm refusals
 void setCredentialProviders();          // this controller's own DAC and setup data (orcon_matter_creds.cpp)
 bool identityPresent();                 // false: built with the placeholder identity, Matter stays off
 const char* manualCode();               // its pairing codes, for the owner's /matter page only
 const char* qrCode();
 // Orcon's loop task only: Matter requests to Orcon's admission, the unit's own state back to Matter
 void serviceControl(uint32_t nowMs);
-int controlJson(char* out, size_t n);   // the last request and its result, for the owner's GET /api/matter
-int fanCheckJson(char* out, size_t n);  // the fan endpoint's first look this boot (new endpoint, stale On/Off)
+void controlJson(Out& o);               // the last request and its result, for the owner's GET /api/connect
+void fanCheckJson(Out& o);              // the fan endpoint's first look this boot (new endpoint, stale On/Off)
 // The root NodeLabel default, once and only while no label is stored (CHIP task, stack locked; at kServerReady)
 const char* applyDefaultNodeLabel();
 #if CONFIG_ORCON_PROBE_CONTROL

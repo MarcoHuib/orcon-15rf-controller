@@ -210,30 +210,27 @@ void heapMonitorSample() {
     if (g_lowPending && t - g_lowLoggedMs >= 1000) {
         g_lowPending = false;
         g_lowLoggedMs = t;
-        char ph[96] = "-";
-        int n = 0;
+        char ph[96];
+        Out o{ph, sizeof ph};   // more names than fit: the list ends at its last whole name
         for (int p = 0; p < kPhases; ++p)
-            if (g_lowMask & (1u << p)) n += snprintf(ph + n, sizeof ph - n, "%s%s", n ? "," : "", kName[p]);
+            if (g_lowMask & (1u << p)) o.fmt("%s%s", o.n ? "," : "", kName[p]);
         printf("[mem-low] t_ms=%u free8=%u block=%u phases=%s\n", unsigned(g_lowMs), unsigned(g_low8),
-               unsigned(g_lowBlock), ph);
+               unsigned(g_lowBlock), o.n ? ph : "-");
     }
     g_monUs += uint32_t(esp_timer_get_time() - s0);
 }
 
-int heapMonitorReport(char* out, size_t cap) {
+void heapMonitorReport(Out& o) {
     const uint32_t t = nowMs();
     for (int p = 0; p < kPhases; ++p)
         if (g_win[p].active) phaseLine(p, t, "active");
-    const int n = snprintf(out, cap,
-                           " lo8=%u loblk=%u minblk=%u minblk_t=%u fails=%u walk_us=%u mon_us=%u gap_ms=%u gaps=%u "
-                           "ev_reg=%d ev_err=%d",
-                           unsigned(g_low8), unsigned(g_lowBlock), unsigned(g_minBlk), unsigned(g_minBlkMs),
-                           unsigned(g_fails.load()), unsigned(g_walkUsMax), unsigned(g_monUs), unsigned(g_gapMax),
-                           unsigned(g_gaps), g_evReg.load() ? 1 : 0, int(g_evErr.load()));
+    o.fmt(" lo8=%u loblk=%u minblk=%u minblk_t=%u fails=%u walk_us=%u mon_us=%u gap_ms=%u gaps=%u ev_reg=%d ev_err=%d",
+          unsigned(g_low8), unsigned(g_lowBlock), unsigned(g_minBlk), unsigned(g_minBlkMs), unsigned(g_fails.load()),
+          unsigned(g_walkUsMax), unsigned(g_monUs), unsigned(g_gapMax), unsigned(g_gaps), g_evReg.load() ? 1 : 0,
+          int(g_evErr.load()));
     g_walkUsMax = 0;   // per [mem] period: one early outlier does not hide the steady cost
     g_gapMax = 0;
     g_monUs = 0;
-    return n;
 }
 }  // namespace orcon_matter
 

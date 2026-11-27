@@ -50,13 +50,13 @@ void handleMem() {
     }
     g_low = std::min(g_low, in);
     char tail[128];
-    const int t = snprintf(tail, sizeof tail, " boot=%lu web_req=%lu web_route=%ld web_low=%lu web_drop=%lu\n",
-                           (unsigned long)g_boot, (unsigned long)(g_req + 1), (long)g_route, (unsigned long)g_low,
-                           (unsigned long)g_drop);
+    orcon_matter::Out t{tail, sizeof tail};   // its length is checked: never more than tail holds
+    t.fmt(" boot=%lu web_req=%lu web_route=%ld web_low=%lu web_drop=%lu\n", (unsigned long)g_boot,
+          (unsigned long)(g_req + 1), (long)g_route, (unsigned long)g_low, (unsigned long)g_drop);
     g_srv->sendHeader("Cache-Control", "no-store");
-    g_srv->setContentLength(g_len + size_t(t));
+    g_srv->setContentLength(g_len + t.n);
     g_srv->send_P(200, "text/plain", g_line, g_len);   // straight from the buffer: no copy on the heap
-    g_srv->sendContent(tail, size_t(t));
+    g_srv->sendContent(tail, t.n);
     g_owner.store(0);
     const uint32_t out = free8();
     ++g_req;

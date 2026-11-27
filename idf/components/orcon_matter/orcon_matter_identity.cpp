@@ -6,6 +6,7 @@
 //   0xFFF1 (this project has no vendor ID and is not certified: a controller says "uncertified"). The PAA and PAI keys
 //   are used once and never stored: only the DAC key stays. Nothing here logs the passcode or a key.
 #include "orcon_matter_identity.h"
+#include "orcon_matter_out.h"
 #include "orcon_matter_creds.h"   // a migration build's embedded identity (the placeholder holds zeros)
 
 #include <esp_heap_caps.h>
@@ -212,13 +213,15 @@ int makeCert(Key& subject, Key& issuer, const char* subjectName, const char* iss
     return rc;
 }
 // A distinguished name with Matter's vendor (and product) attribute: UTF8String of four upper-case hex digits.
-void dn(char* out, size_t n, const char* cn, bool withPid) {
+// False when it does not fit: a cut name would certify another subject.
+bool dn(char* out, size_t n, const char* cn, bool withPid) {
     char vid[5], pid[5];
     snprintf(vid, sizeof vid, "%04X", unsigned(kVid));
     snprintf(pid, sizeof pid, "%04X", unsigned(kPid));
-    int k = snprintf(out, n, "CN=%s,1.3.6.1.4.1.37244.2.1=#0C04%02X%02X%02X%02X", cn, vid[0], vid[1], vid[2], vid[3]);
-    if (withPid && k > 0 && size_t(k) < n)
-        snprintf(out + k, n - size_t(k), ",1.3.6.1.4.1.37244.2.2=#0C04%02X%02X%02X%02X", pid[0], pid[1], pid[2], pid[3]);
+    Out o{out, n};
+    o.fmt("CN=%s,1.3.6.1.4.1.37244.2.1=#0C04%02X%02X%02X%02X", cn, vid[0], vid[1], vid[2], vid[3]);
+    if (withPid) o.fmt(",1.3.6.1.4.1.37244.2.2=#0C04%02X%02X%02X%02X", pid[0], pid[1], pid[2], pid[3]);
+    return !o.full;
 }
 }  // namespace
 
@@ -336,11 +339,11 @@ esp_err_t generate() {
     uint8_t *paaC = certs, *paiC = certs + kCertMax, *dacC = certs + 2 * kCertMax;
     size_t paaL = 0, paiL = 0, dacL = 0;
     char paaN[96], paiN[128], dacN[128];
-    dn(paaN, sizeof paaN, "Orcon 15RF zelfbouw PAA", false);
-    dn(paiN, sizeof paiN, "Orcon 15RF zelfbouw PAI", true);
-    dn(dacN, sizeof dacN, "Orcon 15RF controller", true);
+    const bool named = dn(paaN, sizeof paaN, "Orcon 15RF zelfbouw PAA", false) &&
+                       dn(paiN, sizeof paiN, "Orcon 15RF zelfbouw PAI", true) &&
+                       dn(dacN, sizeof dacN, "Orcon 15RF controller", true);
     uint8_t paaPriv[32], paaPub[65], dacPriv[32], dacPub[65];
-    int rc = r.seed();
+    int rc = named ? r.seed() : MBEDTLS_ERR_X509_BUFFER_TOO_SMALL;
     if (!rc) rc = paa.make(r);
     if (!rc) rc = pai.make(r);
     if (!rc) rc = dac.make(r);
@@ -375,7 +378,9 @@ esp_err_t generate() {
         e.DeviceTypeId = kDeviceType;
         uint8_t id[5];
         rc = r.bytes(id, sizeof id);
-        snprintf(e.CertificateId, sizeof e.CertificateId, "ZELFBOUW-%02X%02X%02X%02X%02X", id[0], id[1], id[2], id[3], id[4]);
+        if (!rc && snprintf(e.CertificateId, sizeof e.CertificateId, "ZELFBOUW-%02X%02X%02X%02X%02X", id[0], id[1], id[2],
+                            id[3], id[4]) != int(chip::Credentials::kCertificateIdLength))
+            rc = -1;   // a certification declaration's id is exactly 19 characters
         e.SecurityLevel = 0;
         e.SecurityInformation = 0;
         e.VersionNumber = 1;
