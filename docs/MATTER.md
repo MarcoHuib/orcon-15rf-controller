@@ -157,7 +157,9 @@ Woning leest de samenstelling van een apparaat niet opnieuw in na een firmware-u
 - Lokale uploads (`.orconfw`, ondertekende OTA) blijven gewoon werken.
 - De universele firmware is een eigen variant: `control-matter` (env `heltec_v2_matter`, herkenbaar aan een marker in het image). De updatecontrole biedt een Matter-controller alleen Matter-releases aan, en een controller zonder Matter alleen releases zonder Matter. Een update voegt Matter dus nooit vanzelf toe en haalt het nooit vanzelf weg.
 - Wisselen kan alleen bewust: een lokale upload van een andere variant vraagt bevestiging, met uitleg wat er verandert. De controller weigert de wissel zonder die bevestiging.
-- `tools/build_idf.sh --release N [--pre P]` stempelt een Matter-build als release (zoals de PlatformIO-release). Het publiceren via de releaseworkflow volgt.
+- Een Matter-controller leest zijn eigen update-index, `orcon-update-matter.json`. Een controller zonder Matter leest `orcon-update.json`, zoals v1.0.x dat al deed. Eén release kan zo beide varianten dragen, elk met een eigen ondertekend manifest.
+- `tools/build_idf.sh --release N [--pre P]` stempelt een Matter-build als release (zoals de PlatformIO-release). Een bèta draagt zijn nummer in de stempel (`ORCON-RELEASE N-beta.P;`), en kan dus nooit voor de stabiele versie doorgaan.
+- `tools/release_ci.py` controleert, ondertekent en verpakt beide varianten als één release. Dat geldt voor stabiel en bèta, en het wordt getest in `tools/test_release_ci.py`. De releaseworkflow (`release-control.yml`) publiceert voorlopig alleen de control-variant: de Matter-variant in de workflow volgt.
 - Borden met v1.0.x kennen `control-matter` nog niet. Wie via de webpagina naar Matter wil, heeft dus eerst een control-release met deze regels nodig; daarna kan de wissel.
 
 Bètaversies (`1.2.3-beta.N`) komen alleen binnen met de instelling "Bèta-updates ontvangen" (standaard uit). Een stable release staat altijd boven elke bèta van dezelfde versie.
