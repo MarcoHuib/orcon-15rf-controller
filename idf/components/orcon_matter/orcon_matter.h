@@ -23,6 +23,8 @@ const char* qrCode();
 // Orcon's loop task only: Matter requests to Orcon's admission, the unit's own state back to Matter
 void serviceControl(uint32_t nowMs);
 void controlJson(Out& o);               // the last request and its result, for the owner's GET /api/connect
+void pairingEvent(const chip::DeviceLayer::ChipDeviceEvent& event);  // CHIP task
+void liveFanJson(Out& o);              // CHIP stack lock held, owner's diagnostic snapshot
 void fanCheckJson(Out& o);              // the fan endpoint's first look this boot (new endpoint, stale On/Off)
 // The root NodeLabel default, once and only while no label is stored (CHIP task, stack locked; at kServerReady)
 const char* applyDefaultNodeLabel();
