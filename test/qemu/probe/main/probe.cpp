@@ -14,7 +14,9 @@
 // The identity lives on the device (orcon_matter_identity.h): a boot without one makes it, as the owner's "Matter
 // activeren" does. tools/qemu_memtest.sh picks each boot's scenario with one byte in the unused middle of spiffs:
 //   N (or erased) normal; I an activation cut off before its digest; D one stored byte changed; X the boot after that
-//   (damaged: Matter off, the image still confirms); R the owner's new identity after damage; F Orcon's factory wipe.
+//   (damaged: Matter off, the image still confirms); R the owner's new identity after damage; F Orcon's factory wipe;
+//   K a real commissioner (chip-tool over a TAP link: the window, attestation, a read and a write); L the boot after an
+//   app update with that controller (still there, read and write over CASE).
 // A boot that makes or keeps an identity prints its facts and certificates (throwaway QEMU identities only), so the
 // runner can compare devices and boots and check the chain with CHIP's own chip-cert.
 #include <Arduino.h>
@@ -39,6 +41,7 @@
 #include <app/clusters/on-off-server/on-off-server.h>
 #include <app/data-model-provider/OperationTypes.h>
 #include <app/persistence/AttributePersistenceProviderInstance.h>
+#include <app/server/Server.h>
 #include <lib/core/TLV.h>
 #include <platform/CHIPDeviceLayer.h>
 #include <platform/DeviceInstanceInfoProvider.h>
@@ -100,6 +103,8 @@ static void onEth(void*, esp_event_base_t, int32_t id, void*) {
     if (id == ETHERNET_EVENT_CONNECTED) esp_netif_create_ip6_linklocal(g_netif);   // Matter needs IPv6 link-local
 }
 static void onGotIp(void*, esp_event_base_t, int32_t, void*) { g_netUp = true; }
+static volatile bool g_ip6Up = false;   // K, L: the TAP link has no DHCP server; Matter needs only IPv6 (link-local)
+static void onGotIp6(void*, esp_event_base_t, int32_t, void*) { g_ip6Up = true; }
 static void startEthernet() {   // as ESP-IDF's protocol_examples_common with OpenETH
     ESP_ERROR_CHECK(esp_netif_init());
     const esp_err_t ev = esp_event_loop_create_default();
@@ -117,6 +122,7 @@ static void startEthernet() {   // as ESP-IDF's protocol_examples_common with Op
     ESP_ERROR_CHECK(esp_netif_attach(g_netif, esp_eth_new_netif_glue(eth)));
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ETHERNET_EVENT_CONNECTED, onEth, nullptr));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, onGotIp, nullptr));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_GOT_IP6, onGotIp6, nullptr));
     ESP_ERROR_CHECK(esp_eth_start(eth));
 }
 
@@ -487,19 +493,77 @@ static void testTask(void*) {
     vTaskDelete(nullptr);
 }
 
+// ---- K and L: a real commissioner (chip-tool beside QEMU on a TAP link; tools/qemu_memtest.sh --commission) --------
+// K: the window opens as the owner's /connect opens it (a basic window with this device's own code, 15 minutes). The
+// runner commissions with chip-tool and its full attestation (this device's PAA and its declaration's signer are its only
+// trust anchors), then reads Basic Information and writes FanMode. L: the boot after the app slot was rewritten (an
+// update): the controller is still there, and chip-tool reads and writes over CASE. The probe answers each admitted request
+// as the unit and reports the boot's memory, CHIP's stack included. The runner reads the setup code from the emulated
+// flash: nothing prints it.
+static unsigned fabricCount() { Lock l; return chip::Server::GetInstance().GetFabricTable().FabricCount(); }
+static bool failSafeArmed() { Lock l; return chip::Server::GetInstance().GetFailSafeContext().IsFailSafeArmed(); }
+static uint8_t unitStand(const char* key) {   // the stand a request asked for, as the unit then reports it (31D9)
+    return !strcmp(key, "1") ? 1 : !strcmp(key, "2") ? 2 : !strcmp(key, "3") ? 3 : !strcmp(key, "auto") ? 4 : 0;
+}
+static void commissionTask(void* arg) {
+    const char sc = char(uintptr_t(arg));
+    for (int i = 0; i < 3000 && !orcon_matter::matterReady(); ++i) delay(10);
+    checkPlain("matter-ready", orcon_matter::matterReady());
+    const unsigned atStart = fabricCount();
+    if (sc == 'K') {
+        checkPlain("no-controller-before-commissioning", atStart == 0);
+        CHIP_ERROR e = CHIP_ERROR_INCORRECT_STATE;
+        {
+            Lock l;
+            e = chip::Server::GetInstance().GetCommissioningWindowManager().OpenBasicCommissioningWindow(
+                chip::System::Clock::Seconds32(900), chip::CommissioningWindowAdvertisement::kDnssdOnly);
+        }
+        checkPlain("window-opened-with-own-code", e == CHIP_NO_ERROR);
+    } else {
+        checkPlain("controller-kept-across-the-update", atStart == 1);
+    }
+    const unsigned readyMin = unsigned(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    printf("PROBE %s ready_min=%u\n", sc == 'K' ? "window-open" : "operational", readyMin);   // the runner starts chip-tool
+    bool commissioned = sc == 'L';
+    int served = 0;
+    for (const uint32_t t0 = millis(); millis() - t0 < 300000 && !(commissioned && served >= 1);) {
+        if (!commissioned && fabricCount() == 1 && !failSafeArmed()) {
+            commissioned = true;
+            printf("PROBE commissioned after_ms=%lu\n", (unsigned long)(millis() - t0));
+        }
+        if (sim::txBusy) {   // an admitted request: the unit confirms it a moment later
+            delay(400);
+            printf("PROBE control key=%s\n", sim::lastKey);
+            unitReports(unitStand(sim::lastKey));
+            ++served;
+        }
+        delay(100);
+    }
+    checkPlain(sc == 'K' ? "commissioned-by-chip-tool" : "operational-after-the-update", commissioned && fabricCount() == 1);
+    checkPlain("control-from-the-commissioner", served >= 1);
+    TaskHandle_t chipTask = xTaskGetHandle("CHIP");
+    printf("PROBE commission fabrics=%u served=%d ready_min=%u end_min=%u largest=%u chip_stack_free=%u\n", fabricCount(), served,
+           readyMin, unsigned(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+           unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+           chipTask ? unsigned(uxTaskGetStackHighWaterMark(chipTask)) : 0u);
+    printf("PROBE DONE boot=%c pass=%d fail=%d\n", sc, g_pass, g_fail);
+    vTaskDelete(nullptr);
+}
+
 void setup() {
     Serial.begin(115200);
-    startEthernet();
-    for (int i = 0; i < 300 && !g_netUp; ++i) delay(100);
-    printf("PROBE net=%s\n", g_netUp ? "up" : "DOWN");
-    const unsigned before = unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     const char sc = scenario();
+    const bool tap = sc == 'K' || sc == 'L';   // chip-tool beside QEMU on a TAP link (tools/qemu_memtest.sh --commission)
+    startEthernet();
+    for (int i = 0; i < 300 && !g_netUp && !(tap && g_ip6Up); ++i) delay(100);
+    printf("PROBE net=%s\n", g_netUp ? "up" : tap && g_ip6Up ? "ipv6" : "DOWN");
+    const unsigned before = unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     printf("PROBE scenario=%c\n", sc);
     if (sc == 'F') checkPlain("factory-wipe", orcon_matter::wipeMatterStorage());   // as provision::resume() at boot
     esp_err_t err = orcon_matter::matterNvsBegin();
     const mid::State st = err == ESP_OK ? mid::load() : mid::State::Unknown;
     printf("PROBE identity-loaded=%s\n", mid::stateName());
-    if (sc != 'N') { scenarioOnly(sc, st); return; }
+    if (sc != 'N' && !tap) { scenarioOnly(sc, st); return; }
     if (st == mid::State::Absent && mid::embeddedPresent()) {   // a migration build: its identity moves onto the device
         const esp_err_t m = mid::migrateEmbedded();
         printf("PROBE migrate=%s\n", esp_err_to_name(m));
@@ -543,7 +607,8 @@ void setup() {
     orcon_matter::probeHandedOver();
     printf("PROBE matter-start=%s heap before_model=%u after_model=%u model_cost=%d\n", esp_err_to_name(err), before,
            model, int(before) - int(model));
-    xTaskCreatePinnedToCore(testTask, "probe", 6144, nullptr, 1, nullptr, 0);
+    if (tap) xTaskCreatePinnedToCore(commissionTask, "probe", 6144, reinterpret_cast<void*>(uintptr_t(sc)), 1, nullptr, 0);
+    else xTaskCreatePinnedToCore(testTask, "probe", 6144, nullptr, 1, nullptr, 0);
 }
 
 void loop() {   // Orcon's loop task. What the component's net::loop() hook does each pass (a --wrap never applies to a

@@ -25,6 +25,7 @@ Getest op één Heltec WiFi LoRa 32 V2 (ESP32-D0WDQ6, 8 MB, geen PSRAM) in novem
 | Stable- en bètakanaal | Experimenteel (host-tests; nog geen bètarelease) |
 | Universele firmware: de identiteit op het apparaat maken, bewaren, controleren, en wissen bij een fabrieksreset | Experimenteel (QEMU: drie apparaten met hetzelfde image, negen starts; host-tests) |
 | Overstap van een image met identiteit naar de universele firmware: identiteit, codes en namen blijven | Experimenteel (QEMU) |
+| Koppelen door een echte commissioner (chip-tool): attestatie, bediening, de controller blijft na een update | Experimenteel (QEMU, beide identiteiten: overgezet en op het apparaat gemaakt) |
 | Eigen variant `control-matter`: een update voegt Matter nooit vanzelf toe en haalt het nooit vanzelf weg | Experimenteel (host-tests) |
 | Releasenummers voor Matter-builds | Experimenteel (build); de releasepijplijn volgt |
 
@@ -175,7 +176,7 @@ Statisch DRAM 118.576 B. Vrije heap op het bord in rust ongeveer 139,7 KB totaal
 | De updategrens meet de byte-adresseerbare interne heap (niet de IRAM-only heap) | `src/fw_update_esp.cpp` (alle builds) |
 | Geen stopcontact-endpoint meer: ongeveer 2 KB heap minder; de bridge kost ongeveer 1,4 KB terug (QEMU) | `orcon_matter.cpp` |
 
-- De CHIP-stack wordt niet verkleind: tijdens het koppelen bleef daar 1.824 B over.
+- De CHIP-stack wordt niet verkleind: tijdens het koppelen bleef daar 1.824 B over. In QEMU, met chip-tool als commissioner, blijft daar 1.716–1.952 B over, en zakt de vrije interne heap tijdens het koppelen van ongeveer 171,7 naar 161,9 KB.
 - De pagina `/connect` (10,4 KB gzip) komt uit flash en kost geen RAM.
 - De identiteit maken (eenmalig, vóór Matter start) gebruikt tijdelijk ongeveer 10 KB heap en duurt in QEMU ruim 6 s. Daarvoor is de firmware ongeveer 17 KB groter (X.509, CMS, SPAKE2+, de setup codes). Daarna kost de identiteit geen RAM: CHIP leest elk deel uit NVS wanneer het dat nodig heeft.
 - De QEMU-geheugentest (`tools/qemu_memtest.sh`, ook in CI) bewaakt de Matter-component: het laagste punt van de vrije interne heap zodra Matter klaar is, is in QEMU ongeveer 173,2 KB met de bridge en 174,6 KB zonder. De test faalt onder 171.000 B. QEMU is een benadering: zonder WiFi en zonder koppeling ligt de heap daar hoger dan op het bord.
@@ -216,14 +217,22 @@ De officiële releases (zonder Matter), met dezelfde instellingen gebouwd uit `m
   - Matter bereikt RF alleen via `setupweb::matterControl` → `ctlAdmit`, met dezelfde vijf standen als Siri en precies één aanroeper;
   - de updatecontrole van een Matter-build vertrouwt alleen de vastgezette roots (`VERIFY_REQUIRED`; de DER-roots worden opnieuw gegenereerd en moeten gelijk zijn aan de PEM-roots);
   - mutaties bewijzen dat elke versoepeling van die regels faalt.
-- `tools/qemu_memtest.sh`: de Matter-component in Espressif QEMU, als benadering van het bord (Ethernet in plaats van WiFi, geen RF; toelating en unit gesimuleerd; niets wordt gekoppeld). Eén image op drie geëmuleerde apparaten, elke start met een scenario:
+- `tools/qemu_memtest.sh`: de Matter-component in Espressif QEMU, als benadering van het bord (Ethernet in plaats van WiFi, geen RF; toelating en unit gesimuleerd). Eén image op drie geëmuleerde apparaten, elke start met een scenario:
   - A: activeren (identiteit op het apparaat gemaakt; namen, bediening en de labels van "een gebruiker", 53 controles), herstart (dezelfde identiteit en labels, 20), één opgeslagen byte veranderd, de schade gezien (Matter uit, het image bevestigt zich), een nieuwe identiteit door de eigenaar, Orcon's fabrieksreset (geen identiteit meer);
   - B: hetzelfde image op een tweede apparaat: een eigen identiteit;
   - C: een onderbroken activering, daarna een volledige;
   - over de starts heen: de identiteit blijft op A, verschilt tussen alle apparaten, en is nieuw na de vervanging. Elke keten slaagt bij `chip-cert validate-att-cert` (CHIP's eigen hulpmiddel, los van mbedTLS op het apparaat);
   - het laagste punt van de vrije interne heap zodra Matter klaar is, moet boven een ondergrens blijven: de gemeten waarde min 2 KB. Daaronder is de component of CHIP gegroeid;
   - `--migration`: een image met een (wegwerp)identiteit zet die op het apparaat; daarna vervangt de universele firmware het image (zoals een OTA), en blijven identiteit, codes en labels gelijk. DAC, PAI en declaration zijn byte voor byte die van het origineel;
-  - `--nobridge`: dezelfde ventilator zonder bridge, voor de RAM-vergelijking.
+  - `--nobridge`: dezelfde ventilator zonder bridge, voor de RAM-vergelijking;
+  - `--commission`: een echte commissioner. chip-tool draait naast QEMU op een TAP-verbinding in dezelfde container, en vindt het apparaat via DNS-SD.
+    - Eerst strikt, met de PAA van het apparaat als enige vertrouwde root. CHIP's attestatiecontrole moet slagen voor de handtekening van de DAC-sleutel over de uitdaging van de commissioner, de keten PAA → PAI → DAC, vendor en product, en de nonce. Daarna stopt ze op precies één fout, 601: geen vertrouwde sleutel voor de certificeringsverklaring. Een zelfgemaakte verklaring heeft geen door de CSA ondertekende signer; daarom meldt Apple Woning een niet-gecertificeerd accessoire.
+    - Daarna met de toestemming van de eigenaar, zoals 'Voeg toch toe' in Woning. De controle draait opnieuw, meldt alleen 601, en het koppelen voltooit.
+    - De verklaring zelf wordt apart gecontroleerd: OpenSSL controleert de CMS-handtekening met haar signer, en `chip-cert print-cd` de inhoud (vendor, product, apparaattype, certificeringstype, signer).
+    - Dan leest chip-tool Basic Information en schrijft het FanMode, via Orcon's (gesimuleerde) toelating.
+    - P: een overstap-image zet zijn identiteit op het apparaat; chip-tool koppelt het. Daarna wordt het app-slot met de universele firmware herschreven, zoals een OTA dat doet. De controller blijft en leest en schrijft via CASE.
+    - Q: een identiteit die op het apparaat is gemaakt, gekoppeld.
+    - Koppelcode en PAA komen uit de geëmuleerde flash (ESP-IDF's `nvs_tool`): geen logregel bevat een code.
 - `python3 -I tools/check_privacy.py`: geen gegevens die niet openbaar mogen worden:
   - geen apparaat-ID's, MAC- of LAN-adressen, persoonlijke paden of privésleutels;
   - geen Matter-identiteit (DAC-sleutel, verifier, salt, certificaten, koppelcode), geen koppelcodes of QR-payloads (alleen de voorbeelden uit de CHIP-specificatie);

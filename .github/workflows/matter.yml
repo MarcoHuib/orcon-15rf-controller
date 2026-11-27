@@ -3,8 +3,9 @@ name: Matter (ESP-IDF 5) checks
 # Unprivileged checks of the experimental Matter build (docs/MATTER.md), in four independent jobs: the safety and privacy
 # checks (every step runs, also when another step or job fails; the privacy check also reads every commit of the pull
 # request), the host tests (all suites, including test/matter/), the ESP-IDF/Matter build with the PLACEHOLDER identity,
-# and the QEMU memory test of the Matter component. No secrets, no keys, nothing published: a placeholder image never
-# starts Matter, and no artifact is uploaded. Reviewed and pinned by content in tools/test_tx_poc_safety.py (WORKFLOWS),
+# and the QEMU tests of the Matter component (memory, the identity on the device, the migration, a real commissioner:
+# chip-tool on a TAP link inside its container). No secrets, no keys, nothing published: throwaway identities only, and
+# no artifact is uploaded. Reviewed and pinned by content in tools/test_tx_poc_safety.py (WORKFLOWS),
 # like every workflow of this repository.
 on:
   pull_request:
@@ -113,7 +114,7 @@ jobs:
   qemu:
     name: QEMU memory test of the Matter component (placeholder identity)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
@@ -138,3 +139,6 @@ jobs:
       - name: From an image with an identity to the universal firmware (a throwaway identity; identity, codes, labels kept)
         if: ${{ !cancelled() }}
         run: bash tools/qemu_memtest.sh --migration
+      - name: A real commissioner (chip-tool on a TAP link; attestation, consent, control, the controller kept across an update)
+        if: ${{ !cancelled() }}
+        run: bash tools/qemu_memtest.sh --commission
