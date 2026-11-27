@@ -170,19 +170,20 @@ static void progress(uint32_t done, uint32_t total) { sampleHeap(); LOCKED(g_st.
 
 struct Ctx { fwup::Url u; fwup::Head h; uint8_t io[4096]; fwup::Offer offer; Job job; bool beta; };   // beta: the owner's channel
 
+#if ORCON_MATTER   // a Matter board is only offered Matter releases (and a board without Matter only those without)
+static constexpr otap::Variant kOwnVariant = otap::Variant::ControlMatter;
+static constexpr const char* kOwnEnv = "heltec_v2_matter";
+#else
+static constexpr otap::Variant kOwnVariant = otap::Variant::Control;
+static constexpr const char* kOwnEnv = "heltec_v2_sx1276_control";
+#endif
 static void worker(void* arg) {
     Ctx* c = static_cast<Ctx*>(arg);
     {
         TlsTransport t;
         fwup::Limits lim;
         if (c->job == Job::Check) {
-#if ORCON_MATTER   // a Matter board is only offered Matter releases (and a board without Matter only those without)
-            const fwup::Own own = {ORCON_RELEASE_VERSION, otap::Variant::ControlMatter, "heltec_v2_matter", ota::updateSlotSize(),
-                                   ORCON_RELEASE_PRE, c->beta};
-#else
-            const fwup::Own own = {ORCON_RELEASE_VERSION, otap::Variant::Control, "heltec_v2_sx1276_control", ota::updateSlotSize(),
-                                   ORCON_RELEASE_PRE, c->beta};
-#endif
+            const fwup::Own own = {ORCON_RELEASE_VERSION, kOwnVariant, kOwnEnv, ota::updateSlotSize(), ORCON_RELEASE_PRE, c->beta};
             fwup::Found f = fwup::Found::None;
             const char* e = fwup::check(t, ota::verifySignature, clockMs, lim, own, c->offer, f, (char*)c->io, sizeof(c->io), c->u, c->h);
             sampleHeap();
@@ -265,25 +266,26 @@ static void statusBody(int code) {
     char cur[24], b[384];   // two fields for the update restart and the channel (update_boot, channel); the longest line is ~370
     fwup::semverTextPre(ORCON_RELEASE_VERSION, ORCON_RELEASE_PRE, cur);
     String out; out.reserve(900);
-    snprintf(b, sizeof(b), "{\"supported\":true,\"repo\":\"%s\",\"current\":{\"release\":%lu,\"name\":\"%s\",\"fw\":\"%s\",\"variant\":\"control\"},"
+    bool whole = true;   // a piece that does not fit makes the answer an error, never broken JSON
+    const auto add = [&](int k) { if (k >= 0 && size_t(k) < sizeof(b)) out += b; else whole = false; };
+    add(snprintf(b, sizeof(b), "{\"supported\":true,\"repo\":\"%s\",\"current\":{\"release\":%lu,\"name\":\"%s\",\"fw\":\"%s\",\"variant\":\"%s\"},"
              "\"phase\":\"%s\",\"job\":\"%s\",\"error\":\"%s\",\"automatic\":%s,\"checked\":%s,\"checked_age_s\":%ld,\"found\":\"%s\","
              "\"update_boot\":%s,\"channel\":\"%s\",",
-             ORCON_RELEASE_REPO, (unsigned long)ORCON_RELEASE_VERSION, cur, FW_VERSION, phaseName(s.phase),
+             ORCON_RELEASE_REPO, (unsigned long)ORCON_RELEASE_VERSION, cur, FW_VERSION, otap::variantName(kOwnVariant), phaseName(s.phase),
              s.job == Job::Install ? "install" : "check", s.err, s.automatic ? "true" : "false", s.checked ? "true" : "false",
              s.checked ? long((millis() - s.checkedAt) / 1000) : -1L,
              s.found == fwup::Found::Newer ? "newer" : s.found == fwup::Found::UpToDate ? "up-to-date" : "none",
-             updateBoot() ? "true" : "false", g_beta ? "beta" : "stable");
-    out += b;
+             updateBoot() ? "true" : "false", g_beta ? "beta" : "stable"));
     if (s.found != fwup::Found::None) {
         char name[24]; fwup::semverTextPre(o.m.version, o.m.pre, name);
-        snprintf(b, sizeof(b), "\"latest\":{\"release\":%lu,\"pre\":%u,\"name\":\"%s\",\"commit\":\"%s\",\"size\":%lu,\"notes\":",
-                 (unsigned long)o.m.version, unsigned(o.m.pre), name, o.m.commit, (unsigned long)o.m.size);
-        out += b; quoted(out, o.notes); out += "},";
+        add(snprintf(b, sizeof(b), "\"latest\":{\"release\":%lu,\"pre\":%u,\"name\":\"%s\",\"commit\":\"%s\",\"size\":%lu,\"notes\":",
+                     (unsigned long)o.m.version, unsigned(o.m.pre), name, o.m.commit, (unsigned long)o.m.size));
+        quoted(out, o.notes); out += "},";
     } else out += "\"latest\":null,";
-    snprintf(b, sizeof(b), "\"progress\":{\"done\":%lu,\"total\":%lu},\"mem\":{\"heap_free\":%lu,\"heap_min_job\":%lu,\"block_min_job\":%lu,"
+    add(snprintf(b, sizeof(b), "\"progress\":{\"done\":%lu,\"total\":%lu},\"mem\":{\"heap_free\":%lu,\"heap_min_job\":%lu,\"block_min_job\":%lu,"
              "\"stack_free_job\":%lu}}", (unsigned long)s.done, (unsigned long)s.total, (unsigned long)free8(), (unsigned long)s.heapMin,
-             (unsigned long)s.blockMin, (unsigned long)s.stackFree);
-    out += b;
+             (unsigned long)s.blockMin, (unsigned long)s.stackFree));
+    if (!whole) { fail(500, "answer-too-long"); return; }
     reply(code, out);
 }
 static void handleStatus() { if (!setupweb::authorize(false)) return; statusBody(200); }
