@@ -345,6 +345,11 @@ int main() {
       CHECK(eq(runCheck(m, o, f), "response-too-large"), "oversized index refused before reading it"); }
     // ---- check: network ----
     { Mock m; Offer o; Found f; CHECK(eq(runCheck(m, o, f), "no-release"), "no release published (404)"); }
+    { Mock m; Offer o; Found f;   // a board with Matter reads its own index, never the control image's
+      const Own matter = {1002003, otap::Variant::ControlMatter, "heltec_v2_matter", 0x330000, 0, false};
+      CHECK(eq(runCheck(m, o, f, matter), "no-release") && m.log.size() == 1 &&
+            m.log[0].size() > 25 && m.log[0].compare(m.log[0].size() - 25, 25, "/orcon-update-matter.json") == 0 &&
+            m.log[0].find("/releases/latest/download/") != std::string::npos, "Matter board: latest/download/orcon-update-matter.json"); }
     { Mock m; m.refuse["github.com"] = "dns-failed"; Offer o; Found f; CHECK(eq(runCheck(m, o, f), "dns-failed"), "DNS failure"); }
     { Mock m; m.refuse["github.com"] = "tls-failed"; Offer o; Found f; CHECK(eq(runCheck(m, o, f), "tls-failed"), "TLS failure (untrusted chain or name)"); }
     { Mock m; publish(m, man, sig, img, "v1.3.0"); m.refuse["release-assets.githubusercontent.com"] = "tls-failed"; Offer o; Found f;

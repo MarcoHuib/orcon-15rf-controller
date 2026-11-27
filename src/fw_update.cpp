@@ -58,9 +58,10 @@ bool bundleName(const otap::Manifest& m, char* out, size_t n) {
     const int k = snprintf(out, n, "orcon-%s-v%s-%.7s.orconfw", otap::variantName(m.variant), v, m.commit);
     return k > 0 && size_t(k) < n;
 }
-bool indexUrl(char* out, size_t n, bool beta) {
-    const int k = beta ? snprintf(out, n, "%sdownload/%s/%s", GH, BETA_TAG, INDEX_ASSET)
-                       : snprintf(out, n, "%slatest/download/%s", GH, INDEX_ASSET);
+const char* indexAsset(otap::Variant v) { return v == otap::Variant::ControlMatter ? INDEX_ASSET_MATTER : INDEX_ASSET; }
+bool indexUrl(char* out, size_t n, bool beta, otap::Variant v) {
+    const int k = beta ? snprintf(out, n, "%sdownload/%s/%s", GH, BETA_TAG, indexAsset(v))
+                       : snprintf(out, n, "%slatest/download/%s", GH, indexAsset(v));
     return k > 0 && size_t(k) < n;
 }
 bool bundleUrl(const otap::Manifest& m, char* out, size_t n) {
@@ -350,7 +351,7 @@ const char* check(Transport& t, Verify verify, Clock now, const Limits& lim, con
                   char* io, size_t ioLen, Url& u, Head& h) {
     found = Found::None;
     char url[160];
-    if (!indexUrl(url, sizeof(url), own.beta) || ioLen < INDEX_MAX + 1) return "internal";
+    if (!indexUrl(url, sizeof(url), own.beta, own.variant) || ioLen < INDEX_MAX + 1) return "internal";
     const uint32_t deadline = now() + lim.checkMs;
     uint32_t len = 0;
     const char* e = httpGet(t, url, now, deadline, lim, INDEX_MAX, len, u, h);

@@ -139,17 +139,22 @@ def sign(text, key=KEY):
     return r.stdout.hex()
 
 
-def release_manifest(env, commit, firmware, version):
+def release_manifest(env, commit, firmware, version, pre=0):
     """v2: one signature for every board. The board checks it against the release key, refuses an
-    older release than its own and installs only with its owner's logged-in session."""
-    if env not in ('heltec_v2_sx1276', 'heltec_v2_sx1276_control'): raise ValueError(f'{env} is not a released variant')
+    older release than its own and installs only with its owner's logged-in session. A beta (pre 1..99) is the same
+    form under its own kind with "pre": only a board whose owner turned the beta channel on accepts it."""
+    if env not in ('heltec_v2_sx1276', 'heltec_v2_sx1276_control', 'heltec_v2_matter'): raise ValueError(f'{env} is not a released variant')
     if not isinstance(version, int) or not 0 <= version < 2 ** 32: raise ValueError('version must be a non-negative integer')
+    if not isinstance(pre, int) or isinstance(pre, bool) or not 0 <= pre <= 99: raise ValueError('pre must be 0 (stable) or a beta 1..99')
     variant, allow_tx = ENV_VARIANT[env]
     data = Path(firmware).read_bytes()
-    if f'ORCON-RELEASE {version};'.encode() not in data:
-        raise ValueError(f'the image is not built as release {version} (-DORCON_RELEASE_VERSION={version})')
-    m = {'v': 2, 'kind': 'orcon-release', 'env': env, 'variant': variant, 'allow_tx': allow_tx, 'commit': commit,
-         'version': version, 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+    stamp = f'ORCON-RELEASE {version};' if not pre else f'ORCON-RELEASE {version}-beta.{pre};'
+    if stamp.encode() not in data:
+        raise ValueError(f'the image is not built as release {version}' + (f' beta {pre}' if pre else '') +
+                         f' (-DORCON_RELEASE_VERSION={version} -DORCON_RELEASE_PRE={pre})')
+    m = {'v': 2, 'kind': 'orcon-prerelease' if pre else 'orcon-release', 'env': env, 'variant': variant, 'allow_tx': allow_tx,
+         'commit': commit, 'version': version, 'size': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+    if pre: m['pre'] = pre
     return json.dumps(m, separators=(',', ':'))
 
 

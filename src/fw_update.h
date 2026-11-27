@@ -36,11 +36,15 @@ void semverTextPre(uint32_t v, uint8_t pre, char out[24]);   // "1.2.3" or "1.2.
 
 // ---- names and URLs, built from the signed manifest only ----------------------------------------------------------
 static const char INDEX_ASSET[] = "orcon-update.json";
+// A board with Matter (variant control-matter) reads its own index: one release carries both variants, each with its
+// own signed manifest, and a board without Matter (v1.0.x too) keeps reading orcon-update.json exactly as before.
+static const char INDEX_ASSET_MATTER[] = "orcon-update-matter.json";
+const char* indexAsset(otap::Variant v);
 // The beta channel reads one fixed address, the pre-release "channel-beta" whose index the workflow replaces with
 // every publication (stable and beta), so it always names the highest of both. Stable reads "latest" as before.
 static const char BETA_TAG[] = "channel-beta";
 bool bundleName(const otap::Manifest& m, char* out, size_t n);   // orcon-control-v1.2.3-abcdef1.orconfw (or -v1.2.3-beta.4-)
-bool indexUrl(char* out, size_t n, bool beta = false);
+bool indexUrl(char* out, size_t n, bool beta = false, otap::Variant v = otap::Variant::Control);
 bool bundleUrl(const otap::Manifest& m, char* out, size_t n);
 
 static const size_t HOST_MAX = 64, PATH_MAX_LEN = 1600;   // a signed asset-host redirect is ~950 characters today

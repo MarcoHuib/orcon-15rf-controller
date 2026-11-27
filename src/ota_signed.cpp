@@ -91,8 +91,13 @@ static void readTrialState() {
 static bool g_hold = false;   // rollback test: this trial boot refuses to confirm itself (RAM only)
 #define ORCON_STR2(x) #x
 #define ORCON_STR(x) ORCON_STR2(x)
-// The release number as text in the image: tools/orcon.py release refuses a bundle whose version differs.
+// The release number as text in the image: tools/orcon.py and tools/release_ci.py refuse a bundle whose version differs.
+// A beta carries its number too ("ORCON-RELEASE 1002003-beta.4;"), so a beta image can never pass as the stable release.
+#if ORCON_RELEASE_PRE
+static const char RELEASE_STAMP[] = "ORCON-RELEASE " ORCON_STR(ORCON_RELEASE_VERSION) "-beta." ORCON_STR(ORCON_RELEASE_PRE) ";";
+#else
 static const char RELEASE_STAMP[] = "ORCON-RELEASE " ORCON_STR(ORCON_RELEASE_VERSION) ";";
+#endif
 
 static const char* variantOfThisBuild() {
 #if ORCON_MATTER

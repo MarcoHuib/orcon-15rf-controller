@@ -94,6 +94,9 @@ int main() {
     char u[200];
     CHECK(indexUrl(u, sizeof u) && std::strstr(u, "/releases/latest/download/orcon-update.json"));
     CHECK(indexUrl(u, sizeof u, true) && std::strstr(u, "/releases/download/channel-beta/orcon-update.json"));
+    CHECK(indexUrl(u, sizeof u, false, otap::Variant::ControlMatter) && std::strstr(u, "/releases/latest/download/orcon-update-matter.json"));
+    CHECK(indexUrl(u, sizeof u, true, otap::Variant::ControlMatter) && std::strstr(u, "/releases/download/channel-beta/orcon-update-matter.json"));
+    CHECK(is(indexAsset(otap::Variant::Control), "orcon-update.json") && is(indexAsset(otap::Variant::RxOnly), "orcon-update.json"));
     Url pu;
     CHECK(parseUrl(u, pu) && allowedUrl(pu));
     char n[80];
