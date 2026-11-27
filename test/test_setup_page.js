@@ -987,8 +987,8 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         const sum = o => () => [200, { state: 'ready', identity: 'valid', activating: false, fabrics: 0, window: false, window_code: false, window_s: 0, error: '', ...o }];
         let p = await page({ 'GET /api/setup/state': () => [200, state(CAPS_RX, prof)] }); await p.refresh();   // RX: no remote state poll
         assert.equal(p.$('cMat').hidden, true); ok('Matter card: hidden on firmware without Matter (404)');
-        for (const [o, want, on] of [[{ fabrics: 1 }, 'Beschikbaar · gekoppeld met 1 controller', true],
-                                     [{ fabrics: 2, window: true }, 'Beschikbaar · gekoppeld met 2 controllers · koppelvenster open', true],
+        for (const [o, want, on] of [[{ fabrics: 1 }, 'Beschikbaar · 1 Matter-koppeling', true],
+                                     [{ fabrics: 2, window: true }, 'Beschikbaar · 2 Matter-koppelingen · koppelvenster open', true],
                                      [{ state: 'starting' }, 'Niet beschikbaar · niet gekoppeld', false],
                                      [{ state: 'failed', identity: 'absent' }, 'Nog niet geactiveerd · activeren op de Matter-pagina', false],
                                      [{ state: 'failed', identity: 'damaged' }, 'Identiteit beschadigd · zie de Matter-pagina', false]]) {
