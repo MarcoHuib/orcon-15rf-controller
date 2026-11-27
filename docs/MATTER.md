@@ -4,7 +4,7 @@ Matter maakt de Orcon-controller bedienbaar vanuit Apple Woning, Google Home en 
 
 Alles van de gewone controller blijft: de webinterface en het dashboard, WiFi, RF en de profielen, Siri, de eigenaarslogin, ondertekende OTA met proefstart en terugval, en de OLED.
 
-> **Status: experimenteel.** De officiële v1.x-releases komen nog uit PlatformIO (`platformio.ini`). De Matter-firmware is **universeel**: het image bevat geen identiteit. Elke controller maakt zijn eigen Matter-identiteit zelf, bij het activeren, en bewaart die op het apparaat. Zo kan één image voor elk apparaat dienen en gepubliceerd worden. Een officiële Matter-release is er nog niet: de releasepijplijn volgt.
+> **Status: experimenteel.** De Matter-firmware is **universeel** en bevat geen identiteit. Elke controller maakt bij het activeren zijn eigen Matter-identiteit en bewaart die op het apparaat. De releaseworkflow bouwt deze firmware voor het bètakanaal.
 
 ## Wat bewezen werkt op hardware, en wat nog niet
 
@@ -27,7 +27,7 @@ Getest op één Heltec WiFi LoRa 32 V2 (ESP32-D0WDQ6, 8 MB, geen PSRAM) in novem
 | Overstap van een image met identiteit naar de universele firmware: identiteit, codes en namen blijven | Experimenteel (QEMU) |
 | Koppelen door een echte commissioner (chip-tool): attestatie, bediening, de controller blijft na een update | Experimenteel (QEMU, beide identiteiten: overgezet en op het apparaat gemaakt) |
 | Eigen variant `control-matter`: een update voegt Matter nooit vanzelf toe en haalt het nooit vanzelf weg | Experimenteel (host-tests) |
-| Releasenummers voor Matter-builds | Experimenteel (build); de releasepijplijn volgt |
+| Releasenummers voor Matter-builds | Gecontroleerd door de releaseworkflow |
 
 ## Bouwen
 
@@ -159,8 +159,8 @@ Woning leest de samenstelling van een apparaat niet opnieuw in na een firmware-u
 - Wisselen kan alleen bewust: een lokale upload van een andere variant vraagt bevestiging, met uitleg wat er verandert. De controller weigert de wissel zonder die bevestiging.
 - Een Matter-controller leest zijn eigen update-index, `orcon-update-matter.json`. Een controller zonder Matter leest `orcon-update.json`, zoals v1.0.x dat al deed. Eén release kan zo beide varianten dragen, elk met een eigen ondertekend manifest.
 - `tools/build_idf.sh --release N [--pre P]` stempelt een Matter-build als release (zoals de PlatformIO-release). Een bèta draagt zijn nummer in de stempel (`ORCON-RELEASE N-beta.P;`), en kan dus nooit voor de stabiele versie doorgaan.
-- `tools/release_ci.py` controleert, ondertekent en verpakt beide varianten als één release. Dat geldt voor stabiel en bèta, en het wordt getest in `tools/test_release_ci.py`. De releaseworkflow (`release-control.yml`) publiceert voorlopig alleen de control-variant: de Matter-variant in de workflow volgt.
-- Borden met v1.0.x kennen `control-matter` nog niet. Wie via de webpagina naar Matter wil, heeft dus eerst een control-release met deze regels nodig; daarna kan de wissel.
+- De releaseworkflow (`release-control.yml`) gebruikt `tools/release_ci.py` om beide varianten in één bètarelease te controleren, ondertekenen en verpakken. Stabiele releases bevatten voorlopig alleen `control`.
+- Werk vanaf v1.0.0 of v1.0.1 eerst bij naar de stabiele control-release v1.0.2. Zet daarna *Bèta-updates ontvangen* aan, upload de `control-matter`-bundel en bevestig de wissel. Zie [Bètakanaal en Matter](RELEASES.md#bètakanaal-en-matter).
 
 Bètaversies (`1.2.3-beta.N`) komen alleen binnen met de instelling "Bèta-updates ontvangen" (standaard uit). Een stable release staat altijd boven elke bèta van dezelfde versie.
 

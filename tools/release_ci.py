@@ -597,11 +597,11 @@ def notes_md(dist, notes='', run='', sums_file=None):
               'installeert in het andere geheugenslot en keert automatisch terug naar de vorige versie als de nieuwe niet binnen 5 minuten gezond opstart.', '']
     if 'control-matter' in by:
         lines += [f"**Matter (experimenteel, niet gecertificeerd):** `{bundle['control-matter']}` is dezelfde firmware met Matter (Apple Woning en andere Matter-apps). "
-                  'Een controller zonder Matter krijgt die nooit vanzelf: kies het bestand bij *Handmatig installeren* en bevestig de wissel. '
+                  'Draait je controller nog v1.0.0 of v1.0.1? Installeer eerst de stabiele control-update v1.0.2 of nieuwer via *Update installeren*. '
+                  'Zet *Bèta-updates ontvangen* aan, kies het Matter-bestand bij *Handmatig installeren* en bevestig de wissel. '
                   'Activeer daarna Matter op de pagina *Verbinden* en koppel met de QR-code. Apple Woning meldt een niet-gecertificeerd accessoire: '
                   "kies 'Voeg toch toe'. Dit project heeft geen eigen vendor-ID en is niet door de CSA gecertificeerd. "
-                  f"Terug zonder Matter: `{bundle.get('control', '')}` met dezelfde bevestiging. "
-                  'Een controller met v1.0.x installeert eerst deze control-versie (*Update installeren*); pas die kent de Matter-variant.', '']
+                  f"Terug zonder Matter: `{bundle.get('control', '')}` met dezelfde bevestiging.", '']
     if any(fac.values()):
         lines += ['**Nieuwe controller (eerste installatie via USB):** ' + ' of '.join(
                       f"`{fac[v]}` ({'met Matter' if v == 'control-matter' else 'zonder Matter'})" for v in sorted(by) if fac[v]) +

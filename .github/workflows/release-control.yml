@@ -12,7 +12,7 @@ name: Release control firmware (Heltec V2)
 #   history  the newest version among every tag and release, drafts included (the API lists drafts only to a token
 #            with push access), by the same awk rule as the publish floor; no repository code, writes nothing contents: write
 #   prepare  source checks (manual run, default branch, its head) and the next version from that history
-#            (patch 1.0.0 -> 1.0.1, minor 1.0.5 -> 1.1.1, major 1.4.8 -> 2.0.1)                          contents: read
+#            (patch 1.0.0 -> 1.0.1, minor 1.0.5 -> 1.1.0, major 1.4.8 -> 2.0.0)                          contents: read
 #   build    pinned toolchain, every host/safety/privacy test, the release builds and their checks        contents: read
 #   sign     ONLY job with the OTA signing key: the secret of the protected environment orcon-production-release
 #            (deployments from main only); signs the manifests of the build's verified images                contents: read
@@ -215,7 +215,7 @@ jobs:
           RELEASE_BUILD_DIR=".pio/build/$RELEASE_ENV" RELEASE_VERSION="$NUMBER" RELEASE_PRE="$PRE" RELEASE_COMMIT="$SHA" python tools/test_release_ci.py
           python -I tools/release_ci.py factory --dist dist --esptool "$HOME/.platformio/packages/tool-esptoolpy/esptool.py"
           python -I tools/release_ci.py manifest --dist dist
-          echo "firmware_sha256=$(sha256sum dist/control/firmware.bin | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "firmware_sha256=$(sha256sum dist/*/firmware.bin | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "builds_sha256=$(cat dist/*/BUILD_INFO.json | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Hand the verified build to the signing job
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
@@ -260,7 +260,7 @@ jobs:
           BUILDS: ${{ needs.build.outputs.builds_sha256 }}
         run: |
           test -n "$WANT"
-          test "$(sha256sum dist/control/firmware.bin | cut -d' ' -f1)" = "$WANT"
+          test "$(sha256sum dist/*/firmware.bin | sha256sum | cut -d' ' -f1)" = "$WANT"
           test "$(cat dist/*/BUILD_INFO.json | sha256sum | cut -d' ' -f1)" = "$BUILDS"
           python3 -I tools/release_ci.py manifest --dist dist
       - name: Sign the release manifest (the only step that sees the key)
@@ -318,7 +318,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           test "$(cat dist/*/SHA256SUMS | sha256sum | cut -d' ' -f1)" = "$WANT"
-          test "$(sha256sum dist/control/firmware.bin | cut -d' ' -f1)" = "$FW"
+          test "$(sha256sum dist/*/firmware.bin | sha256sum | cut -d' ' -f1)" = "$FW"
           chmod 0755 harness/release_accept
           python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --release "$TAG" --official --notes="$NOTES"
           python3 -I tools/release_ci.py assemble --dist dist --out publish
