@@ -24,6 +24,7 @@
 #include <app/server/Server.h>
 #include <atomic>
 #include <esp_ota_ops.h>
+#include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <platform/CHIPDeviceLayer.h>
@@ -161,10 +162,10 @@ void handleWindow() {
     reply(e == CHIP_NO_ERROR ? 200 : 500, e == CHIP_NO_ERROR ? "" : "window-failed");
 }
 
-void handleRemove() {   // one controller off this device: what its own RemoveFabric command does
+void handleRemove() {   // local revocation: cannot remove a stale accessory from a controller's own UI
     if (!setupweb::authorize(true, false)) return;
     JsonDocument doc;
-    if (!body(doc) || !doc["index"].is<unsigned>() || !(doc["confirm"] | false)) { reply(400, "bad-request"); return; }
+    if (!body(doc) || !doc["index"].is<unsigned>() || !doc["confirm"].is<bool>() || !doc["confirm"].as<bool>()) { reply(400, "bad-request"); return; }
     const unsigned index = doc["index"];
     if (!orcon_matter::matterReady()) { reply(409, "matter-not-ready"); return; }
     if (index < 1 || index > 254) { reply(404, "no-such-controller"); return; }
@@ -178,11 +179,20 @@ void handleRemove() {   // one controller off this device: what its own RemoveFa
     } else if (!srv.GetFabricTable().FindFabricWithIndex(chip::FabricIndex(index))) {
         err = "no-such-controller";
         code = 404;
-    } else if (srv.GetFabricTable().Delete(chip::FabricIndex(index)) != CHIP_NO_ERROR) {
-        err = "remove-failed";
-        code = 500;
     } else {
-        srv.GetSecureSessionManager().ExpireAllSessionsForFabric(chip::FabricIndex(index));
+        const auto fabric = chip::FabricIndex(index);
+        const CHIP_ERROR removed = srv.GetFabricTable().Delete(fabric);
+        if (removed != CHIP_NO_ERROR || srv.GetFabricTable().FindFabricWithIndex(fabric)) {
+            err = "remove-failed";
+            code = 500;
+            ESP_LOGW("orcon_matter", "Local fabric removal index=%u error=0x%lx remaining=%u",
+                     index, static_cast<unsigned long>(removed.AsInteger()),
+                     unsigned(srv.GetFabricTable().FabricCount()));
+        } else {
+            srv.GetSecureSessionManager().ExpireAllSessionsForFabric(fabric);
+            ESP_LOGI("orcon_matter", "Local fabric removed index=%u remaining=%u",
+                     index, unsigned(srv.GetFabricTable().FabricCount()));
+        }
     }
     chip::DeviceLayer::PlatformMgr().UnlockChipStack();
     reply(code, err);

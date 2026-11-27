@@ -122,7 +122,7 @@ Grens: draait het overstap-image zelf tijdens de fabrieksreset, dan blijft de id
 
 De QR-code wordt in de browser gemaakt (geen externe site of bibliotheek), uit de gegevens van het actieve venster. Koppelcodes staan alleen in het antwoord aan de ingelogde eigenaar, en alleen zolang een venster met de eigen code open is. Elk antwoord heeft `Cache-Control: no-store`, en de codes komen in geen enkele log.
 
-Onder **Gekoppelde controllers** staan de gekoppelde apps. Verwijderen vraagt eerst om bevestiging en volgt hetzelfde pad als Matter's eigen `RemoveFabric`.
+Onder **Gekoppelde controllers** staan de Matter-fabrics (niet het aantal ventilatoren). Verwijderen vraagt eerst om bevestiging en trekt lokaal de toegang van die fabric in. Dit kan een tegel of bridge in Apple Woning niet op afstand wissen. Verwijder een koppeling daarom bij voorkeur eerst in de betreffende slimme-woning-app; gebruik de Orcon-pagina voor achtergebleven lokale toegang.
 
 ## Bediening in Apple Woning
 
@@ -136,6 +136,8 @@ Onder **Gekoppelde controllers** staan de gekoppelde apps. Verwijderen vraagt ee
 - Woning toont wat de unit zelf meldt (31D9), nooit het verzoek. Een geweigerd verzoek valt dus terug op de werkelijke stand.
 - Voor de eerste melding van de unit toont Woning Auto.
 - Siri en automatiseringen werken met wat Woning toont: aan/uit en het percentage.
+- De percentages zijn discrete ventilatiestanden, geen gemeten motortoerental. `SpeedMax=3` en `OffLowMedHighAuto` zijn al ingesteld; Apple bepaalt zelf de weergave. Er is geen aangetoonde manier om via een standaard Matter Fan vijf eigen knoppen in Woning te tekenen. Verander het apparaattype niet alleen om de slider te verbergen.
+- Voor directe bediening kunnen scènes voor stand 1, 2 en 3 (33, 66 en 100%) worden geprobeerd. Test op de echte installatie of Apple een scène met Auto en Afwezig kan opslaan en uitvoeren; Afwezig is geen fysieke uitschakeling van de ventilatie.
 
 ### Naam in Apple Woning
 
@@ -148,6 +150,21 @@ Onder **Gekoppelde controllers** staan de gekoppelde apps. Verwijderen vraagt ee
 ### Gevolgen voor een bestaande koppeling
 
 Woning leest de samenstelling van een apparaat niet opnieuw in na een firmware-update. De overstap van de eerste opbouw (ventilator plus een stopcontact voor Afwezig) naar de gebridgede ventilator vraagt daarom **één keer opnieuw koppelen**: verwijder het accessoire in Woning en koppel opnieuw via `/connect`. Daarna blijft de opbouw vast, en houden updates de koppeling en je namen.
+
+### Dubbele of niet-reagerende Orcon-tegels opruimen
+
+1. Open Woning → Woninginstellingen → Woningcentrales en bridges, of de instellingen van de Orcon-tegel → Bridge. Identificeer uitsluitend de Orcon-bridge (mogelijk "Matter-accessoire"); laat bijvoorbeeld de Hue-bridge ongemoeid.
+2. Verwijder de oude Orcon-bridge uit Woning. Een gebridgede ventilator heeft niet altijd een eigen verwijderknop. Controleer zo nodig ook Instellingen → Algemeen → Matter-accessoires → de betreffende Orcon → verbonden voorzieningen. Zie [Apple: Matter-accessoires koppelen en beheren](https://support.apple.com/nl-nl/102135).
+3. Controleer in de Orcon-webinterface onder Matter welke fabrics nog aanwezig zijn. Verwijder alleen de oude, bijbehorende fabric als die nog bestaat. Een onbekende vendor is niet automatisch een duplicaat. Verwijderen aan de Orcon-kant alleen kan een oude Apple-tegel laten staan.
+4. Koppel één keer opnieuw, indien nodig. Maak geen nieuwe Matter-identiteit en voer geen fabrieksreset uit om een oude tegel te wissen. Controleer eerst dat er één werkende ventilator in Woning staat; voeg pas daarna andere ecosystemen toe.
+
+### Acceptatieproef voor de volgende bèta (nog uit te voeren op hardware)
+
+- Begin met één werkende Orcon-bridge in Woning; noteer firmwareversie, fabric-index(en) en ventilator-endpoint, zonder koppelcodes.
+- Test 0/1/33/34/66/67/100%, Auto en aan/uit. Vergelijk elke geaccepteerde opdracht met de 31D9-melding, webinterface en de echte ventilatie. Controleer daarna een wijziging met de fysieke afstandsbediening.
+- Herstart en installeer een OTA met dezelfde identiteit: geen nieuwe tegel, dezelfde bestaande koppeling en dezelfde bediening.
+- Verwijder in Woning, controleer het aantal fabrics; koppel opnieuw en controleer dat er één werkende tegel is. Test ook lokale revocatie en afzonderlijk verwijderen van een tweede fabric, zonder de eerste te verstoren.
+- Noteer bij een fout de status `/api/connect?view=summary`, de technische status op de Matter-pagina en eventuele seriële melding `Local fabric removal`. Deel geen QR-code, koppelcode, sessietoken of private sleutels.
 
 ## Updates naast Matter
 
