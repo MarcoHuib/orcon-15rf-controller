@@ -11,7 +11,7 @@ keys and tampered inputs. A --dist is one variant's directory (BUILD_INFO.json) 
   next --newest N [--channel stable|beta] [--betas "TAGS"] [--notes TEXT] -- patch|minor|major
                                          the next release, one step above N: the newest stable version among every tag
                                          and release (the history job's awk rule, the same as the publish floor; 0 =
-                                         none). patch 1.0.0 -> 1.0.1; minor 1.0.5 -> 1.1.1; major 1.4.8 -> 2.0.1. A beta is
+                                         none). patch 1.0.0 -> 1.0.1; minor 1.0.5 -> 1.1.0; major 1.4.8 -> 2.0.0. A beta is
                                          that number's next beta (beta.1 when it has none; TAGS: the beta tags that exist).
                                          Refuses an empty history and a number outside 0..999 per part
   source --repo R --ref REF --event E --default-branch B --sha SHA --head SHA
@@ -142,13 +142,14 @@ def next_release(kind, newest, channel='stable', betas=()):
 def next_version(kind, newest):
     """The number of the next release: one step above `newest`, the newest version among every tag and release,
     published or not (a draft, or a tag left by a failed publish, keeps its number: a number is never used twice). A new
-    minor or major starts its patches at 1. No history (0) is refused: a failed lookup must never restart the count."""
+    minor or major starts its patches at 0 (SemVer; the first beta of 1.1.0 is 1.1.0-beta.1). No history (0) is refused:
+    a failed lookup must never restart the count."""
     if kind not in BUMPS: fail(f'release type {kind!r}: choose patch, minor or major')
     if not isinstance(newest, int) or not 0 <= newest <= 999999999: fail(f'newest version {newest!r}: not a release number')
     if not newest: fail('no earlier release in the tags and releases: refusing to start the count (did the lookup fail?)')
     top = newest
     a, b, c = top // 1000000, top // 1000 % 1000, top % 1000
-    a, b, c = {'patch': (a, b, c + 1), 'minor': (a, b + 1, 1), 'major': (a + 1, 0, 1)}[kind]
+    a, b, c = {'patch': (a, b, c + 1), 'minor': (a, b + 1, 0), 'major': (a + 1, 0, 0)}[kind]
     if max(a, b, c) > 999: fail(f'{kind} after v{semver_text(top)} leaves the range 0..999 per part: choose a bigger step')
     return check_version(f'{a}.{b}.{c}', [semver_text(top)])
 
@@ -340,13 +341,21 @@ def variant_dirs(dist):
     return ds
 
 
+def release_variants(pre):
+    """A stable release publishes the control firmware only (the stable channel stays as it is); a beta both variants."""
+    return sorted(KINDS) if pre else ['control']
+
+
 def release_infos(dist):
-    """A release directory: every variant, one release (version, beta, commit). One variant's directory: just it."""
+    """A release directory: its variants (release_variants), one release (version, beta, commit). One variant's
+    directory: just it."""
     ds = variant_dirs(dist)
     infos = [load_info(d) for d in ds]
     if len(ds) > 1 or not (Path(dist) / 'BUILD_INFO.json').is_file():
-        if sorted(i['variant'] for i in infos) != sorted(KINDS): fail(f"a release carries every variant {sorted(KINDS)}: {sorted(i['variant'] for i in infos)}")
         if len({(i['version'], i['pre'], i['commit']) for i in infos}) != 1: fail('the variants are not one release (version, beta, commit)')
+        want = release_variants(infos[0]['pre'])
+        if sorted(i['variant'] for i in infos) != want:
+            fail(f"a {'beta' if infos[0]['pre'] else 'stable'} release carries exactly the variants {want}: {sorted(i['variant'] for i in infos)}")
     return list(zip(ds, infos))
 
 
@@ -642,7 +651,7 @@ def main(argv=None):
             clean_notes(a.notes)   # refused here, before anything is built
             print(f'newest stable tag or release v{semver_text(int(a.newest))}, {a.kind} {a.channel}: {release_tag(n, pre)}', file=sys.stderr)
             print(f'number={n}\npre={pre}\ntag={release_tag(n, pre)}\nname={release_name(n, pre)}\nrank={release_rank(n, pre)}\n'
-                  f'prerelease={"true" if pre else "false"}')
+                  f'is_beta={"true" if pre else "false"}\nlatest={"false" if pre else "true"}')
         elif a.cmd == 'source':
             check_source(a.repo, a.ref, a.event, a.default_branch, a.sha, a.head); print('source OK')
         elif a.cmd == 'packages': check_packages(Path(a.list).read_text()); print('PlatformIO packages match the lock')

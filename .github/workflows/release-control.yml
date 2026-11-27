@@ -1,18 +1,24 @@
 name: Release control firmware (Heltec V2)
 
-# The OFFICIAL release of the Heltec V2 control firmware (env heltec_v2_sx1276_control), the only variant that is
-# published. Started by hand only: Actions > this workflow > Run workflow, branch main, a release type (patch, minor or
-# major); the version is the next one after every existing tag and release. No push, pull request, tag, release or
-# schedule starts it. Six jobs, each with the least it needs:
+# The OFFICIAL release of the Heltec V2 control firmware. Started by hand only: Actions > this workflow > Run workflow,
+# branch main, a release type (patch, minor or major) and a channel; the version is the next one after every existing
+# tag and release. No push, pull request, tag, release or schedule starts it.
+#   stable  the control firmware (env heltec_v2_sx1276_control) only, as the "latest" release (the stable channel)
+#   beta    vX.Y.Z-beta.N, a GitHub pre-release (never "latest"): the control firmware AND the universal Matter
+#           firmware (heltec_v2_matter, no identity in the image), each with its own signed manifest and update index.
+#           Only a board whose owner turned the beta channel on is offered it.
+# The beta channel's update indexes live in the fixed pre-release channel-beta; every publication that outranks every
+# earlier tag replaces them there (src/fw_update.h). Six jobs, each with the least it needs:
 #   history  the newest version among every tag and release, drafts included (the API lists drafts only to a token
 #            with push access), by the same awk rule as the publish floor; no repository code, writes nothing contents: write
 #   prepare  source checks (manual run, default branch, its head) and the next version from that history
 #            (patch 1.0.0 -> 1.0.1, minor 1.0.5 -> 1.1.1, major 1.4.8 -> 2.0.1)                          contents: read
-#   build    pinned toolchain, every host/safety/privacy test, the release build and its checks           contents: read
+#   build    pinned toolchain, every host/safety/privacy test, the release builds and their checks        contents: read
 #   sign     ONLY job with the OTA signing key: the secret of the protected environment orcon-production-release
-#            (deployments from main only); signs the manifest of the build's verified image                  contents: read
+#            (deployments from main only); signs the manifests of the build's verified images                contents: read
 #   verify   the device's own rules on the signed package (signature, policy, update index)                 contents: read
-#   publish  the tag (refused when it exists), a draft release, its files checked, then published           contents: write
+#   publish  the tag (refused when it exists), a draft release, its files checked, then published, then the
+#            beta channel's indexes                                                                       contents: write
 # Nothing here touches a board: a controller installs a release only when its logged-in owner clicks "Update installeren"
 # (docs/RELEASES.md, docs/UPDATECONTROLE.md). tools/test_tx_poc_safety.py pins this file and checks these properties.
 on:
@@ -27,6 +33,14 @@ on:
           - patch
           - minor
           - major
+      channel:
+        description: 'Kanaal: stable (alleen control, als Latest) of beta (control en Matter, een pre-release)'
+        required: true
+        type: choice
+        default: stable
+        options:
+          - stable
+          - beta
       notes:
         description: 'Korte releasenotes voor de controller (optioneel, maximaal 400 bytes)'
         required: false
@@ -58,6 +72,7 @@ jobs:
       contents: write
     outputs:
       newest: ${{ steps.list.outputs.newest }}
+      betas: ${{ steps.list.outputs.betas }}
     steps:
       - name: Every tag and every release, drafts included (no repository code)
         id: list
@@ -71,6 +86,8 @@ jobs:
           } > "$RUNNER_TEMP/tags.txt"
           newest="$(awk '/^v?(0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)$/ { sub(/^v/, ""); split($0, p, "."); n = p[1] * 1000000 + p[2] * 1000 + p[3]; if (n > m) m = n } END { print m + 0 }' "$RUNNER_TEMP/tags.txt")"
           echo "newest=$newest" >> "$GITHUB_OUTPUT"
+          betas="$(awk '/^v?(0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)-beta[.][1-9][0-9]?$/ { sub(/^v/, ""); printf "v%s ", $0 }' "$RUNNER_TEMP/tags.txt")"
+          echo "betas=$betas" >> "$GITHUB_OUTPUT"
 
   prepare:
     name: Version and source
@@ -82,8 +99,12 @@ jobs:
       contents: read
     outputs:
       number: ${{ steps.version.outputs.number }}
+      pre: ${{ steps.version.outputs.pre }}
       tag: ${{ steps.version.outputs.tag }}
       name: ${{ steps.version.outputs.name }}
+      rank: ${{ steps.version.outputs.rank }}
+      is_beta: ${{ steps.version.outputs.is_beta }}
+      latest: ${{ steps.version.outputs.latest }}
     steps:
       - name: Check out the exact commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -104,10 +125,12 @@ jobs:
         id: version
         env:
           RELEASE_TYPE: ${{ inputs.release_type }}
+          CHANNEL: ${{ inputs.channel }}
           NOTES: ${{ inputs.notes }}
           NEWEST: ${{ needs.history.outputs.newest }}
+          BETAS: ${{ needs.history.outputs.betas }}
         run: |
-          python3 -I tools/release_ci.py next --newest "$NEWEST" --notes="$NOTES" -- "$RELEASE_TYPE" >> "$GITHUB_OUTPUT"
+          python3 -I tools/release_ci.py next --newest "$NEWEST" --channel "$CHANNEL" --betas="$BETAS" --notes="$NOTES" -- "$RELEASE_TYPE" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build and test
@@ -118,6 +141,7 @@ jobs:
       contents: read
     outputs:
       firmware_sha256: ${{ steps.check.outputs.firmware_sha256 }}
+      builds_sha256: ${{ steps.check.outputs.builds_sha256 }}
     steps:
       - name: Check out the exact commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -157,28 +181,42 @@ jobs:
       - name: Release build of the control firmware
         env:
           NUMBER: ${{ needs.prepare.outputs.number }}
+          PRE: ${{ needs.prepare.outputs.pre }}
           SHA: ${{ github.sha }}
         run: |
-          PLATFORMIO_BUILD_FLAGS="$(python -I tools/release_ci.py flags --version "$NUMBER" --commit "$SHA")"
+          PLATFORMIO_BUILD_FLAGS="$(python -I tools/release_ci.py flags --version "$NUMBER" --pre "$PRE" --commit "$SHA")"
           export PLATFORMIO_BUILD_FLAGS
           pio run -e "$RELEASE_ENV"
           pio pkg list -e "$RELEASE_ENV" | tee "$RUNNER_TEMP/packages.txt"
           python -I tools/release_ci.py packages --list "$RUNNER_TEMP/packages.txt"
+      - name: Release build of the Matter firmware (a beta only; the universal firmware, no identity, pinned ESP-Matter image)
+        env:
+          NUMBER: ${{ needs.prepare.outputs.number }}
+          PRE: ${{ needs.prepare.outputs.pre }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [ "$PRE" -gt 0 ]; then
+            bash tools/fetch_idf_deps.sh
+            bash tools/build_idf.sh --release "$NUMBER" --pre "$PRE"
+            bash tools/release_matter_check.sh "$NUMBER" "$PRE" "$SHA"
+          fi
       - name: Check the image and prepare the signing input
         id: check
         env:
           NUMBER: ${{ needs.prepare.outputs.number }}
+          PRE: ${{ needs.prepare.outputs.pre }}
           SHA: ${{ github.sha }}
         run: |
           tc="$HOME/.platformio/packages/toolchain-xtensa-esp32/bin"
           mkdir -p "$RUNNER_TEMP/harness"
           g++ -std=c++17 -O1 -Wall -Wextra -Werror -I src -I ".pio/libdeps/$RELEASE_ENV/ArduinoJson/src" test/release_accept.cpp src/fw_update.cpp src/ota_policy.cpp -o "$RUNNER_TEMP/harness/release_accept"
-          python -I tools/release_ci.py verify-build --build ".pio/build/$RELEASE_ENV" --version "$NUMBER" --commit "$SHA" --harness "$RUNNER_TEMP/harness/release_accept" --nm "$tc/xtensa-esp32-elf-nm" --out dist --esptool "$HOME/.platformio/packages/tool-esptoolpy/esptool.py"
+          python -I tools/release_ci.py verify-build --build ".pio/build/$RELEASE_ENV" --version "$NUMBER" --pre "$PRE" --commit "$SHA" --harness "$RUNNER_TEMP/harness/release_accept" --nm "$tc/xtensa-esp32-elf-nm" --out dist/control --esptool "$HOME/.platformio/packages/tool-esptoolpy/esptool.py"
           python -I tools/check_elf_tx.py ".pio/build/$RELEASE_ENV/firmware.elf" "$RELEASE_ENV" "$tc"
-          RELEASE_BUILD_DIR=".pio/build/$RELEASE_ENV" RELEASE_VERSION="$NUMBER" RELEASE_COMMIT="$SHA" python tools/test_release_ci.py
+          RELEASE_BUILD_DIR=".pio/build/$RELEASE_ENV" RELEASE_VERSION="$NUMBER" RELEASE_PRE="$PRE" RELEASE_COMMIT="$SHA" python tools/test_release_ci.py
           python -I tools/release_ci.py factory --dist dist --esptool "$HOME/.platformio/packages/tool-esptoolpy/esptool.py"
           python -I tools/release_ci.py manifest --dist dist
-          echo "firmware_sha256=$(sha256sum dist/firmware.bin | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "firmware_sha256=$(sha256sum dist/control/firmware.bin | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "builds_sha256=$(cat dist/*/BUILD_INFO.json | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Hand the verified build to the signing job
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
@@ -204,8 +242,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      bundle_sha256: ${{ steps.package.outputs.bundle_sha256 }}
-      bundle_name: ${{ steps.package.outputs.bundle_name }}
+      packages_sha256: ${{ steps.package.outputs.packages_sha256 }}
     steps:
       - name: Check out the exact commit (release tools only)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -217,26 +254,26 @@ jobs:
         with:
           name: release-build
           path: dist
-      - name: Same image as the build job checked
+      - name: Same images as the build job checked
         env:
           WANT: ${{ needs.build.outputs.firmware_sha256 }}
+          BUILDS: ${{ needs.build.outputs.builds_sha256 }}
         run: |
           test -n "$WANT"
-          test "$(sha256sum dist/firmware.bin | cut -d' ' -f1)" = "$WANT"
+          test "$(sha256sum dist/control/firmware.bin | cut -d' ' -f1)" = "$WANT"
+          test "$(cat dist/*/BUILD_INFO.json | sha256sum | cut -d' ' -f1)" = "$BUILDS"
           python3 -I tools/release_ci.py manifest --dist dist
       - name: Sign the release manifest (the only step that sees the key)
         env:
           ORCON_OTA_SIGNING_KEY: ${{ secrets.ORCON_OTA_SIGNING_KEY }}
         run: python3 -I tools/release_ci.py sign --dist dist
-      - name: Bundle, update index and checksums
+      - name: Bundles, update indexes and checksums
         id: package
         env:
           NOTES: ${{ inputs.notes }}
         run: |
           python3 -I tools/release_ci.py package --dist dist --notes="$NOTES"
-          b="$(ls dist | grep -E '[.]orconfw$')"
-          echo "bundle_name=$b" >> "$GITHUB_OUTPUT"
-          echo "bundle_sha256=$(sha256sum "dist/$b" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "packages_sha256=$(cat dist/*/SHA256SUMS | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Hand the signed package to the verify job
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
@@ -271,24 +308,22 @@ jobs:
         with:
           name: release-harness
           path: harness
-      - name: Signature, device policy, update index, checksums
+      - name: Signatures, device policy, update indexes, checksums
         id: final
         env:
-          WANT: ${{ needs.sign.outputs.bundle_sha256 }}
-          BUNDLE: ${{ needs.sign.outputs.bundle_name }}
+          WANT: ${{ needs.sign.outputs.packages_sha256 }}
           FW: ${{ needs.build.outputs.firmware_sha256 }}
           TAG: ${{ needs.prepare.outputs.tag }}
           NOTES: ${{ inputs.notes }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          test "$(sha256sum "dist/$BUNDLE" | cut -d' ' -f1)" = "$WANT"
-          test "$(sha256sum dist/firmware.bin | cut -d' ' -f1)" = "$FW"
+          test "$(cat dist/*/SHA256SUMS | sha256sum | cut -d' ' -f1)" = "$WANT"
+          test "$(sha256sum dist/control/firmware.bin | cut -d' ' -f1)" = "$FW"
           chmod 0755 harness/release_accept
           python3 -I tools/release_ci.py verify-package --dist dist --harness harness/release_accept --release "$TAG" --official --notes="$NOTES"
-          python3 -I tools/release_ci.py notes --dist dist --notes="$NOTES" --run "$RUN_URL" > "$RUNNER_TEMP/RELEASE_NOTES.md"
-          mkdir -p publish
-          cut -d' ' -f3- dist/SHA256SUMS | while IFS= read -r f; do cp -- "dist/$f" publish/; done
-          cp dist/SHA256SUMS "$RUNNER_TEMP/RELEASE_NOTES.md" publish/
+          python3 -I tools/release_ci.py assemble --dist dist --out publish
+          python3 -I tools/release_ci.py notes --dist dist --notes="$NOTES" --run "$RUN_URL" --sums publish/SHA256SUMS > "$RUNNER_TEMP/RELEASE_NOTES.md"
+          cp "$RUNNER_TEMP/RELEASE_NOTES.md" publish/
           echo "sums_sha256=$(sha256sum publish/SHA256SUMS | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "notes_sha256=$(sha256sum publish/RELEASE_NOTES.md | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Hand the verified files to the publish job
@@ -314,8 +349,6 @@ jobs:
           path: publish
       - name: Exactly the verified files
         env:
-          WANT: ${{ needs.sign.outputs.bundle_sha256 }}
-          BUNDLE: ${{ needs.sign.outputs.bundle_name }}
           SUMS: ${{ needs.verify.outputs.sums_sha256 }}
           NOTES_SHA: ${{ needs.verify.outputs.notes_sha256 }}
         run: |
@@ -323,14 +356,15 @@ jobs:
           test "$(sha256sum SHA256SUMS | cut -d' ' -f1)" = "$SUMS"
           test "$(sha256sum RELEASE_NOTES.md | cut -d' ' -f1)" = "$NOTES_SHA"
           sha256sum -c SHA256SUMS
-          test "$(sha256sum -- "$BUNDLE" | cut -d' ' -f1)" = "$WANT"
           test "$(ls | sort)" = "$( (cut -d' ' -f3- SHA256SUMS; echo SHA256SUMS; echo RELEASE_NOTES.md) | sort)"
       - name: Still the newest version, then the tag at the released commit (fails when it already exists)
+        id: floor
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           TAG: ${{ needs.prepare.outputs.tag }}
           NUMBER: ${{ needs.prepare.outputs.number }}
+          PRE: ${{ needs.prepare.outputs.pre }}
           SHA: ${{ github.sha }}
         run: |
           {
@@ -341,12 +375,22 @@ jobs:
           if [ "$floor" -ge "$NUMBER" ]; then
             echo "::error::$TAG is not newer than every tag and release (newest $floor): a rerun of an older release is refused"; exit 1
           fi
+          pfloor="$(awk -v n="$NUMBER" '/^v?(0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)-beta[.][1-9][0-9]?$/ { t = $0; sub(/^v/, "", t); split(t, a, "-beta."); split(a[1], p, "."); if (p[1] * 1000000 + p[2] * 1000 + p[3] == n) if (a[2] + 0 > m) m = a[2] + 0 } END { print m + 0 }' "$RUNNER_TEMP/tags.txt")"
+          if [ "$PRE" -gt 0 ]; then
+            if [ "$pfloor" -ge "$PRE" ]; then
+              echo "::error::$TAG: beta $pfloor of this version exists already: a beta number is published once"; exit 1
+            fi
+          fi
+          top="$(awk '/^v?(0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)[.](0|[1-9][0-9]?[0-9]?)(-beta[.][1-9][0-9]?)?$/ { t = $0; sub(/^v/, "", t); split(t, a, "-beta."); split(a[1], p, "."); r = (p[1] * 1000000 + p[2] * 1000 + p[3]) * 100 + (a[2] == "" ? 100 : a[2]); if (r > m) m = r } END { print m + 0 }' "$RUNNER_TEMP/tags.txt")"
+          echo "top=$top" >> "$GITHUB_OUTPUT"
           gh api -X POST "repos/${REPO}/git/refs" -f "ref=refs/tags/${TAG}" -f "sha=${SHA}" > /dev/null
-      - name: Draft release, check its files, then publish
+      - name: Draft release, check its files, then publish (a beta as a pre-release, never "latest")
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           TAG: ${{ needs.prepare.outputs.tag }}
+          PRERELEASE: ${{ needs.prepare.outputs.is_beta }}
+          LATEST: ${{ needs.prepare.outputs.latest }}
         run: |
           cd publish
           mapfile -t files < <(cut -d' ' -f3- SHA256SUMS)
@@ -357,4 +401,23 @@ jobs:
           gh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/check"
           cmp <(ls "$RUNNER_TEMP/check" | sort) <( (printf '%s\n' "${files[@]}"; echo SHA256SUMS) | sort)
           for f in "${files[@]}" SHA256SUMS; do cmp -- "$f" "$RUNNER_TEMP/check/$f"; done
-          gh api -X PATCH "repos/${REPO}/releases/${id}" -F draft=false -f make_latest=true -F "body=@RELEASE_NOTES.md" > /dev/null
+          gh api -X PATCH "repos/${REPO}/releases/${id}" -F draft=false -F "prerelease=$PRERELEASE" -f "make_latest=$LATEST" -F "body=@RELEASE_NOTES.md" > /dev/null
+      - name: The beta channel's update indexes, when this release outranks every earlier tag (src/fw_update.h channel-beta)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RANK: ${{ needs.prepare.outputs.rank }}
+          TOP: ${{ steps.floor.outputs.top }}
+        run: |
+          cd publish
+          if [ "$RANK" -gt "$TOP" ]; then
+            if ! gh release view channel-beta --repo "$REPO" > /dev/null 2>&1; then
+              gh release create channel-beta --repo "$REPO" --prerelease --target "$SHA" --title "Beta-kanaal (update-index)" --notes "De update-index van het beta-kanaal. De firmware staat in de releases zelf."
+            fi
+            for f in orcon-update.json orcon-update-matter.json; do
+              if [ -f "$f" ]; then
+                gh release upload channel-beta --repo "$REPO" --clobber -- "$f"
+              fi
+            done
+          fi

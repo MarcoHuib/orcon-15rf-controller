@@ -9,6 +9,7 @@ Alleen de **control-firmware** (`heltec_v2_sx1276_control`) wordt gepubliceerd. 
 1. Zorg dat `main` de code bevat die je wilt uitbrengen.
 2. GitHub → **Actions** → *Release control firmware (Heltec V2)* → **Run workflow**. Kies branch `main` en:
    - het **soort release**: `patch` (standaard), `minor` of `major`. Het versienummer zelf bepaalt de workflow (zie [Automatische versie](#automatische-versie));
+   - het **kanaal**: `stable` (standaard) of `beta` (zie [Bètakanaal en Matter](#bètakanaal-en-matter));
    - eventueel **korte releasenotes**: maximaal 400 bytes, zichtbaar op de controller.
 3. De workflow controleert en bouwt (zie hieronder). Bij de job *Sign (protected environment)* vraagt GitHub om **goedkeuring** (*Review deployments* → *Approve*). Dat is de enige extra klik. Zonder goedkeuring wordt er niets ondertekend of gepubliceerd.
 4. Na de goedkeuring tekent de workflow, verifieert het pakket opnieuw met de regels van het apparaat en publiceert de GitHub Release.
@@ -37,8 +38,8 @@ De workflow kiest het nummer zelf (`tools/release_ci.py next`), één stap boven
 | Soort | Regel | Voorbeeld |
 |---|---|---|
 | `patch` (standaard) | patch + 1 | v1.0.0 → v1.0.1 → v1.0.2 → … |
-| `minor` | minor + 1, patch begint weer op 1 | v1.0.5 → v1.1.1, daarna v1.1.2 |
-| `major` | major + 1, minor 0, patch begint weer op 1 | v1.4.8 → v2.0.1, daarna v2.0.2 |
+| `minor` | minor + 1, patch begint weer op 0 (SemVer) | v1.0.5 → v1.1.0, daarna v1.1.1 |
+| `major` | major + 1, minor 0, patch 0 | v1.4.8 → v2.0.0, daarna v2.0.1 |
 
 - Eén berekening in `prepare`; firmware (`ORCON_RELEASE_VERSION` en de releasestempel), manifest, bundel- en factorynaam, update-index en GitHub-tag gebruiken alle dat ene getal. `verify` controleert vóór het publiceren dat het pakket precies die versie draagt (`verify-package --release`).
 - Een nummer wordt nooit hergebruikt. Een draft of een tag die een mislukte `publish` achterliet, telt mee: de volgende run neemt het nummer erna.
@@ -148,6 +149,18 @@ Zonder secret faalt de job `sign` met `signing key missing`. Er wordt dan niets 
 **Definitief (branch `feature/remove-legacy-recovery`):** de firmware zonder Legacy-paden heeft geen herstel met deze sleutel meer. Een update op een board zonder herstelsleutel wordt niet bevestigd en valt terug. Migratievolgorde: [HERSTELSLEUTEL_MIGRATIE.md](HERSTELSLEUTEL_MIGRATIE.md).
 
 **Later (apart akkoord):** een aparte releasesleutel K_rel volgens [RELEASESLEUTEL.md](RELEASESLEUTEL.md), zodat de ontwikkel-Mac en GitHub niet dezelfde sleutel delen.
+
+## Bètakanaal en Matter
+
+| Kanaal | Wat de release bevat | Hoe GitHub hem toont |
+|---|---|---|
+| `stable` | alleen de control-firmware (`orcon-update.json`) | gewone release, *Latest* |
+| `beta` (`vX.Y.Z-beta.N`) | de control-firmware én de universele Matter-firmware (`heltec_v2_matter`, geen identiteit in het image; `orcon-update-matter.json`), elk met een eigen ondertekend manifest | *pre-release*, nooit *Latest*: de stabiele release blijft voor iedereen die geen bèta wil |
+
+- Het bètanummer volgt uit de tags: de eerste bèta van een versie is `beta.1`, elk nummer één keer. Vanaf v1.0.1 geeft `minor` + `beta` dus v1.1.0-beta.1; de stabiele v1.1.0 staat later boven al zijn bèta's.
+- De update-indexen van het bètakanaal staan in de vaste pre-release `channel-beta`. Een publicatie die boven elke eerdere tag uitkomt, vervangt ze daar; de firmware zelf blijft in de versierelease. Alleen een controller met *Bèta-updates ontvangen* aan leest ze.
+- De Matter-firmware wordt alleen bij een bèta gebouwd, in de vastgepinde ESP-Matter-image (`tools/build_idf.sh --release N --pre P`). `tools/release_matter_check.sh` controleert hem zoals het control-image: het image byte voor byte uit de ELF, release- en commitstempel, de Matter-marker, géén ingebouwde identiteit, de vastgepinde bootbestanden, de rollback-hook, het apparaatbeleid en één RF-pad (`check_elf_tx.py`). De workflow bouwt nooit met een identiteit; de guard in `tools/test_tx_poc_safety.py` weigert dat.
+- **Controllers met v1.0.x** kennen de Matter-variant en bèta's niet: hun manifestregels weigeren `pre` en `control-matter`. Een rechtstreekse overstap via OTA bestaat dus niet. De veilige route is eerst een stabiele control-release vanaf `main` (bijvoorbeeld v1.0.2, via *Update installeren*); daarna kan de eigenaar het Matter-bestand van de bèta bij *Handmatig installeren* kiezen en de wissel bevestigen. Zonder die tussenstap alleen via USB (het factory-image; wist de instellingen).
 
 ## Bekende restpunten van het releaseproces (Codex r4, MINOR)
 

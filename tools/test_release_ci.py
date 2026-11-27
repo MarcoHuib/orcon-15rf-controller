@@ -79,9 +79,9 @@ try:
     # ---- the next version: one patch/minor/major step above the newest tag or release ----------------------------------
     nv = rc.next_version
     assert nv('patch', 1000000) == 1000001 and nv('patch', 1000001) == 1000002 and nv('patch', 1000002) == 1000003
-    assert nv('minor', 1000005) == 1001001 and nv('patch', 1001001) == 1001002
-    assert nv('major', 1004008) == 2000001 and nv('patch', 2000001) == 2000002 and nv('minor', 2000002) == 2001001
-    ok('next version: patch 1.0.0 -> 1.0.1 -> 1.0.2; minor 1.0.5 -> 1.1.1; major 1.4.8 -> 2.0.1; patches count on after each step')
+    assert nv('minor', 1000005) == 1001000 and nv('patch', 1001000) == 1001001
+    assert nv('major', 1004008) == 2000000 and nv('patch', 2000000) == 2000001 and nv('minor', 2000001) == 2001000
+    ok('next version: patch 1.0.0 -> 1.0.1 -> 1.0.2; minor 1.0.5 -> 1.1.0; major 1.4.8 -> 2.0.0 (SemVer); patches count on after each step')
     for kind, newest, why in [('patch', 0, 'no earlier release'), ('patch', 1000999, 'range'), ('minor', 1999005, 'range'), ('major', 999000001, 'range'),
                               ('patch', -1, 'not a release number'), ('patch', 1000000000, 'not a release number'), ('patch', '1000000', 'not a release number'),
                               ('PATCH', 1000000, 'release type'), ('1.0.1', 1000000, 'release type'), ('', 1000000, 'release type'), ('build', 1000000, 'release type')]:
@@ -96,7 +96,7 @@ try:
         return int(subprocess.run(['awk', progs[0][1], str(f)], capture_output=True, text=True, check=True).stdout)
     junk = ['rx-only', 'v1.0', 'v1.0.9-rc1', 'v01.0.4', 'v0.0.0', '', 'v1.٣.0', 'refs/tags/v9.9.9']
     assert newest(['v1.0.0', 'v1.0.3', '1.0.2'] + junk) == 1000003 and newest(['v1.0.0', 'v1.0.0', '1.0.0']) == 1000000 and newest(junk) == 0
-    assert nv('patch', newest(['v1.0.0', 'v1.0.1'])) == 1000002 and nv('minor', newest(['v1.0.0', 'v1.1.1'])) == 1002001   # a draft or an orphan tag keeps its number
+    assert nv('patch', newest(['v1.0.0', 'v1.0.1'])) == 1000002 and nv('minor', newest(['v1.0.0', 'v1.1.1'])) == 1002000   # a draft or an orphan tag keeps its number
     ok('history: one awk rule for the newest version (history job) and the floor (publish); drafts, orphan tags, duplicates count; other names do not')
     odd = ['maintenance v8.0.0', 'v1.0.1 ', 'v1.0.2 ', 'v1.0.3\r', ' v1.0.4', 'v1.0.5\t', 'v1 .0.6', 'v1.0.7\x85']
     assert newest(['v1.0.0'] + odd) == 1000000 and all(rc.version_of(t) == 0 for t in odd)
@@ -104,9 +104,22 @@ try:
     chosen = nv('patch', newest(['v1.0.0']))
     assert all(newest(['v1.0.0', t]) >= chosen for t in ('v1.0.1', '1.0.1', 'v1.1.1', 'v2.0.1')) and newest(['v1.0.0']) < chosen
     ok('publish: the floor over every tag and release (drafts included) refuses a number that a draft, a tag or a newer release took meanwhile')
+    def awk_of(var):   # the workflow's own programs for the beta channel
+        m = re.search(var + r"=\"\$\(awk (?:-v n=\"\$NUMBER\" )?'(.*?)' \"\$RUNNER_TEMP/tags.txt\"\)\"", wf); assert m, var; return m.group(1)
+    def run_awk(prog, names, *v):
+        f = TMP / 'tags-beta.txt'; f.write_bytes(('\n'.join(names) + '\n').encode())
+        return subprocess.run(['awk', *v, prog, str(f)], capture_output=True, text=True, check=True).stdout
+    tags = ['v1.0.1', 'v1.1.0-beta.1', '1.1.0-beta.3', 'v1.1.0-beta.03', 'v1.1.0-rc.1', 'v1.2.0-beta.2', 'junk', 'channel-beta', 'v1.0.0', 'v1.1.0-beta.100']
+    assert run_awk(awk_of('betas'), tags).split() == ['v1.1.0-beta.1', 'v1.1.0-beta.3', 'v1.2.0-beta.2']
+    assert int(run_awk(awk_of('pfloor'), tags, '-v', 'n=1001000')) == 3 and int(run_awk(awk_of('pfloor'), tags, '-v', 'n=1003000')) == 0
+    parsed = [t for t in (rc.parse_release_tag(x if x.startswith('v') else 'v' + x) for x in tags) if t]
+    assert int(run_awk(awk_of('top'), tags)) == max(rc.release_rank(*t) for t in parsed) == rc.release_rank(1002000, 2)
+    assert rc.next_release('minor', int(run_awk(progs[0][1], tags)), 'beta', run_awk(awk_of('betas'), tags).split()) == (1001000, 4)
+    assert rc.next_release('minor', int(run_awk(progs[0][1], ['v1.0.0', 'v1.0.1'])), 'beta') == (1001000, 1)   # v1.0.1 -> v1.1.0-beta.1
+    ok('beta channel: the workflow\'s awk rules (beta tags, a number\'s highest beta, the highest rank of every tag) equal the Python and device rules')
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err): code = rc.main(['next', '--newest', '1000000', '--notes=Kort', '--', 'patch'])   # the workflow's form
-    assert code == 0 and out.getvalue() == 'number=1000001\npre=0\ntag=v1.0.1\nname=1.0.1\nrank=100000200\nprerelease=false\n' \
+    assert code == 0 and out.getvalue() == 'number=1000001\npre=0\ntag=v1.0.1\nname=1.0.1\nrank=100000200\nis_beta=false\nlatest=true\n' \
         and 'v1.0.0' in err.getvalue() and 'v1.0.1' in err.getvalue()
     for argv in (['--newest', '1000000', '--notes=' + 'x' * 401, '--', 'patch'], ['--newest', '1000000', '--', 'custom'], ['--newest', '1000000', '--', '--help'],
                  ['--newest', '1000000', '--', '-h'], ['--newest', '1000000', '--', ''], ['--newest', '', '--', 'patch'], ['--newest', '0', '--', 'patch'],
@@ -128,7 +141,7 @@ try:
     out = io.StringIO()
     with redirect_stdout(out), redirect_stderr(io.StringIO()):
         code = rc.main(['next', '--newest', '1000000', '--channel', 'beta', '--betas', 'v1.0.1-beta.2', '--', 'patch'])
-    assert code == 0 and out.getvalue() == 'number=1000001\npre=3\ntag=v1.0.1-beta.3\nname=1.0.1-beta.3\nrank=100000103\nprerelease=true\n', out.getvalue()
+    assert code == 0 and out.getvalue() == 'number=1000001\npre=3\ntag=v1.0.1-beta.3\nname=1.0.1-beta.3\nrank=100000103\nis_beta=true\nlatest=false\n', out.getvalue()
     assert rc.build_flags(VERSION, COMMIT, 4).endswith(' -DORCON_RELEASE_PRE=4') and rc.stamp(VERSION, 4) == '1002003-beta.4'
     ok('betas: tags, ranks (a stable above its betas), the next beta of a number once, never past 99; build flag and stamp')
 
@@ -338,8 +351,12 @@ try:
     # ---- a release: both variants, one version; stable and beta --------------------------------------------------------------
     for tag, pre in (('v1.2.3', 0), ('v1.2.3-beta.2', 2)):
         R = TMP / f'release-{pre}'
+        if not pre:   # stable: the control firmware only, as before
+            vb('rel-stable', image(CTL), out=TMP / 'release-stable/control')
+            rc.make_manifest(TMP / 'release-stable'); rc.sign(TMP / 'release-stable', KEY); rc.package(TMP / 'release-stable')
         vb(f'rel{pre}-control', image(CTL, pre=pre), pre=pre, out=R / 'control')
         vb(f'rel{pre}-matter', image(CTL, MTR, pre=pre), variant='control-matter', pre=pre, out=R / 'control-matter')
+        if not pre: continue   # both variants as one stable release: refused below
         rc.make_manifest(R); rc.sign(R, KEY); rc.package(R, 'Twee varianten.')
         if esptool and py: rc.factory(R, esptool, py)
         rc.verify_package(R, harness, bool(esptool and py), 'Twee varianten.', tag)
@@ -352,12 +369,14 @@ try:
                               cwd=TMP / f'publish-{pre}', capture_output=True).returncode == 0
         md = rc.notes_md(R, '', '', TMP / f'publish-{pre}' / 'SHA256SUMS')
         assert f'orcon-control-matter-{tag}-c0ffee1.orconfw' in md and 'niet gecertificeerd' in md and ('Bèta' in md) == bool(pre)
-    refused(rc.verify_package, TMP / 'release-0', harness, False, None, 'v1.2.3-beta.2', want='not the release')
     refused(rc.verify_package, TMP / 'release-2', harness, False, None, 'v1.2.3', want='not the release')
+    refused(rc.verify_package, TMP / 'release-stable', harness, False, None, 'v1.2.3-beta.2', want='not the release')
     mixed = TMP / 'release-mixed'; shutil.copytree(TMP / 'release-0/control', mixed / 'control'); shutil.copytree(TMP / 'release-2/control-matter', mixed / 'control-matter')
     refused(rc.verify_package, mixed, harness, want='not one release')
-    only = TMP / 'release-only'; shutil.copytree(TMP / 'release-0/control', only / 'control')
-    refused(rc.assemble, only, TMP / 'publish-only', want='every variant')
+    only = TMP / 'release-only'; shutil.copytree(TMP / 'release-2/control', only / 'control')
+    refused(rc.assemble, only, TMP / 'publish-only', want='exactly the variants')          # a beta without its Matter firmware
+    assert rc.assemble(TMP / 'release-stable', TMP / 'publish-stable') and not any('matter' in f.name for f in (TMP / 'publish-stable').iterdir())
+    refused(rc.verify_package, TMP / 'release-0', harness, want='exactly the variants')    # a stable release never carries Matter (yet)
     ok('release: both variants signed and verified as one version (each index judged by its own boards, the other variant refused), '
        'one SHA256SUMS; betas refused by boards without the channel; mixed or partial releases refused')
 
@@ -384,8 +403,8 @@ try:
 
     # ---- the real release build, when the workflow (or a developer) made one ----------------------------------------------------
     if os.environ.get('RELEASE_BUILD_DIR'):
-        rv, rcommit = int(os.environ['RELEASE_VERSION']), os.environ['RELEASE_COMMIT']
-        i = rc.verify_build(real, rv, rcommit, harness, nm, TMP / 'dist/real')
+        rv, rcommit, rpre = int(os.environ['RELEASE_VERSION']), os.environ['RELEASE_COMMIT'], int(os.environ.get('RELEASE_PRE', '0'))
+        i = rc.verify_build(real, rv, rcommit, harness, nm, TMP / 'dist/real', pre=rpre)
         ok(f"real build: {i['firmware']['size']} B control image v{i['name']} accepted by the build checks")
     else:
         print('  NOT TESTED here: a real release-stamped build (RELEASE_BUILD_DIR unset; the workflow runs it)')
