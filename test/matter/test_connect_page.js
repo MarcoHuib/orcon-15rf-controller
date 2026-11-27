@@ -213,6 +213,22 @@ const hasSvg = el => /<svg[^>]*viewBox="0 0 33 33"/.test(el.qr.innerHTML);   // 
     el.ctl.onclick({ target: { closest: () => ({ getAttribute: () => '1' }) } }); await el.rmYes.onclick(); await flush();
     check(/Er wordt nu gekoppeld/.test(el.cMsg.textContent), 'commissioning-busy: its own message');
   }
+  {
+    let reads = 0, resolveStatus, resolveClose;
+    const { el, calls, timers } = await run({
+      'GET /api/connect': () => reads++ ? new Promise(resolve => { resolveStatus = resolve; }) : res(200, OPEN),
+      'POST /api/connect/window': () => new Promise(resolve => { resolveClose = resolve; }),
+    });
+    timers.pop().f();
+    const closing = el.close.onclick();
+    await el.close.onclick();
+    check(posts(calls).length === 1, 'a repeated click cannot send a second window mutation');
+    resolveClose(res(200, st({})));
+    await closing;
+    resolveStatus(res(200, OPEN));
+    await flush();
+    check(el.pOpen.hidden && el.code.textContent === '', 'an older status cannot re-display pairing codes after a close');
+  }
   // 9. Copy: the digits only; the hw5 update restart keeps its CSRF rules.
   {
     const { el, copied } = await run({ 'GET /api/connect': res(200, OPEN), 'POST /api/update/restart': res(202, { restart: 'update-check' }) });

@@ -296,7 +296,7 @@ const UMSG = {
   'update-busy': 'Er loopt al een update.'
 };
 const STATE = { ready: ['Actief', 'y'], starting: ['Start…', 'w'], waiting: ['Wacht op WiFi', 'w'], failed: ['Niet beschikbaar', 'n'] };
-let token = '', firmware = '', S = null, left = 0, countdown = 0, poller = 0, removal = null, removing = false, statusRequest = 0, online = true;
+let token = '', firmware = '', S = null, left = 0, countdown = 0, poller = 0, removal = null, removing = false, windowPending = false, statusRequest = 0, online = true;
 
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const mmss = s => Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
@@ -385,7 +385,7 @@ function refused(j, where) {
   if (where) { where.textContent = t; where.className = 'msg bad'; } else { $('err').textContent = t; $('err').hidden = false; }
 }
 async function load() {
-  if (removing) return;
+  if (removing || windowPending) return;
   const request = ++statusRequest;
   try {
     const { r, j } = await get('/api/connect');
@@ -396,10 +396,15 @@ async function load() {
 }
 function schedule() { clearTimeout(poller); poller = setTimeout(() => { if (!document.hidden) load(); else schedule(); }, S && S.window ? 5000 : 15000); }
 async function windowSet(open, msg) {
+  if (removing || windowPending) return;
+  windowPending = true;
+  ++statusRequest;
   for (const b of ['open', 'close', 'close2', 'add']) $(b).disabled = true;
   try { const { r, j } = await post('/api/connect/window', { open }); conn(true); if (r.ok) { show(j); msg.textContent = ''; } else refused(j, msg); }
   catch (e) { conn(false); }
+  windowPending = false;
   for (const b of ['open', 'close', 'close2', 'add']) $(b).disabled = false;
+  schedule();
 }
 $('open').onclick = () => windowSet(true, $('pMsg'));
 $('close').onclick = $('close2').onclick = () => windowSet(false, $('pMsg'));
@@ -419,7 +424,7 @@ function clearRemoval() {
 
 $('ctl').onclick = e => {
   const button = e.target && e.target.closest ? e.target.closest('button[data-rm]') : null;
-  if (!button || removing || !S || S.window || S.commissioning || !Number.isInteger(S.fabric_revision)) return;
+  if (!button || removing || windowPending || !S || S.window || S.commissioning || !Number.isInteger(S.fabric_revision)) return;
   const index = +button.getAttribute('data-rm');
   const fabric = (S.controllers || []).find(x => x.index === index);
   if (!fabric) return;
@@ -432,7 +437,7 @@ $('ctl').onclick = e => {
 };
 $('rmNo').onclick = () => { if (!removing) clearRemoval(); };
 $('rmYes').onclick = async () => {
-  if (!removal || removing) return;
+  if (!removal || removing || windowPending) return;
   const { index, revision } = removal;
   removing = true;
   ++statusRequest;

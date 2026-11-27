@@ -253,7 +253,7 @@ De officiële releases (zonder Matter), met dezelfde instellingen gebouwd uit `m
 
 ### A. Oorzaakanalyse
 
-De Heltec antwoordde op de openbare statusroute met `ready`, `server_ready=true`, fout `0x0` en actieve uptime. De openbare firmwarestatus gaf `cc6fe82f38407534b354658a9258262c1a90c169`. Het lokaal gevalideerde release-image met die commit meldt `control-matter` en `v1.1.0-beta.1`. Controleer de releasestempel van de draaiende installatie onder **Systeem → Firmware**, omdat de openbare firmwarestatus alleen de broncommit teruggeeft. De gemelde fabric-indices 7 en 8 kwamen uit de eigenaarssessie tijdens de eerste proef. De Vendor ID van fabric 8 en de tabel vóór commissioning ontbreken.
+De Heltec antwoordde op de openbare statusroute met `ready`, `server_ready=true`, fout `0x0` en actieve uptime. De openbare OTA-status bevestigde **1.1.0-beta.1**, `control-matter`, commit `cc6fe82f38407534b354658a9258262c1a90c169` en `running_state=valid`. De gemelde fabric-indices 7 en 8 kwamen uit de eigenaarssessie tijdens de eerste proef. De Vendor ID van fabric 8 en de tabel vóór commissioning ontbreken.
 
 | Bevinding | Bewijs en resterende vraag |
 |---|---|
@@ -300,7 +300,7 @@ De gebruikte container bevat ESP-IDF 5.5.5 (`b774170ff46c393eeb5e495ea37936038d3
 
 ### D. Testresultaten en hardwarematrix
 
-De lokale ESP-IDF-build levert 1.757.648 B firmware op. Het lokaal gevalideerde bèta-1-image was 1.753.872 B (+3.776 B). De linker rapporteert 119.072 B statisch DRAM tegenover 118.576 B in de eerdere projectmeting. De hostsuite geeft nul fouten, inclusief 66 browsertests. De build is een lokaal validatie-image en is niet geïnstalleerd op de Heltec.
+De eerste lokale ESP-IDF-kandidaat voor bèta 2 levert 1.757.648 B firmware op. Het lokaal gevalideerde bèta-1-image was 1.753.872 B (+3.776 B). De linker rapporteert 119.072 B statisch DRAM tegenover 118.576 B in de eerdere projectmeting. De hostsuite geeft nul fouten. De releasecontroles hebben beide lokaal gebouwde varianten aan hun ELF, manifest en RF-beleid getoetst. Een headless-Chrome-proef op 390 CSS-pixels met drie fictieve fabrics hield de koppelingen en bediening binnen de viewport. De build is een lokaal validatie-image en is niet geïnstalleerd op de Heltec.
 
 PASS geldt alleen voor een uitgevoerde test. FAIL is een waargenomen verschil, BLOCKED vraagt een ontbrekende omgeving of handeling, NOT TESTED betekent dat de proef nog moet worden uitgevoerd. QEMU draait over Ethernet met gesimuleerde RF en is een aparte test van de SDK en het datamodel.
 
@@ -324,7 +324,7 @@ PASS geldt alleen voor een uitgevoerde test. FAIL is een waargenomen verschil, B
 
 ### E. GitHub, versie en OTA
 
-De actuele basis van dit werk is `release/matter-beta-public` op `ec727505c70df57ceaf455e785f96a7ca3616fc9`. PR #28 is beoordeeld op expliciete bevestiging, controle na Delete en documentatie. Sterke onderdelen zijn verwerkt in de bredere wijziging. Die PR is een concept en heeft geen bewijs dat Apple-dubbels verdwijnen. PR #27 bevat de uitrolarchitectuur. De bestaande workflow geeft releases uitsluitend via `main` uit, kiest nummers uit alle gepubliceerde releases, concepten en tags, en vereist de bestaande publicatiegoedkeuring. De publieke geschiedenis vermeldt op 27 november 2026 alleen v1.0.0 en v1.0.1. De geteste bèta 1 bestaat als lokaal gevalideerd image. Een publieke v1.0.2 dient eerst als stabiele overstap. Voor de privébèta-testinstallatie past v1.1.0-beta.2 als opvolger. Zonder een eerdere beta.1 in de GitHub-historie kiest de workflow eerst beta.1. Gebruik de gewone nummering, zonder een tag aan te maken alleen om het nummer op te hogen.
+De implementatie staat in [PR #29](https://github.com/MarcoHuib/orcon-15rf-controller/pull/29). De actuele basis is `release/matter-beta-public` op `ec727505c70df57ceaf455e785f96a7ca3616fc9`. PR #28 is beoordeeld op expliciete bevestiging, controle na Delete en documentatie. Sterke onderdelen zijn verwerkt in de bredere wijziging. Die PR is een concept en heeft geen bewijs dat Apple-dubbels verdwijnen. PR #27 bevat de uitrolarchitectuur. De bestaande workflow geeft releases uitsluitend via `main` uit, kiest nummers uit alle gepubliceerde releases, concepten en tags, en vereist de bestaande publicatiegoedkeuring. De publieke geschiedenis vermeldt op 27 november 2026 alleen v1.0.0 en v1.0.1. De geteste bèta 1 bestaat als lokaal gevalideerd image. Een publieke v1.0.2 dient eerst als stabiele overstap. Voor de privébèta-testinstallatie past v1.1.0-beta.2 als opvolger. Zonder een eerdere beta.1 in de GitHub-historie kiest de workflow eerst beta.1. Gebruik de gewone nummering, zonder een tag aan te maken alleen om het nummer op te hogen.
 
 Bij een kanaalcontrole ontvangen gebruikers zonder opt-in alleen stabiele aanbiedingen. `control-matter` heeft een eigen variant. De workflow bouwt universeel, vergelijkt firmware/ELF en bordbestanden, controleert de manifesten en ondertekent via de bestaande goedgekeurde releasejob. De proefstart bevestigt alleen met Matter Ready en de bestaande OTA-voorwaarden. Er is in deze wijziging geen ondertekeningsstap, sleuteloverdracht, publicatie, partitiewijziging of migratie van bestaande endpoint-ID’s nodig.
 
@@ -342,6 +342,6 @@ Bij een kanaalcontrole ontvangen gebruikers zonder opt-in alleen stabiele aanbie
    ```sh
    ORCON_BASE=http://orcon15rf.local   # of het lokale adres van je controller
    curl -fsS --max-time 5 "$ORCON_BASE/api/connect/state"
-   curl -fsS --max-time 5 "$ORCON_BASE/api/setup/state" |
-     python3 -c 'import json,sys; print(json.load(sys.stdin).get("fw", "onbekend"))'
+   curl -fsS --max-time 5 "$ORCON_BASE/api/ota" |
+     python3 -c 'import json,sys; d=json.load(sys.stdin); print({k:d.get(k) for k in ("fw","release_name","variant","running_state")})'
    ```

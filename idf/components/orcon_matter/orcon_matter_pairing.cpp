@@ -58,7 +58,14 @@ std::atomic<int> g_activation{0};
 // What the page shows. A window with this controller's own code: opened locally (here) or by an administrator as a
 // basic window (OBCW). An enhanced window (OCW, "share with another app") carries THAT controller's code, not ours.
 enum class Win : uint8_t { Closed, OwnCode, OtherCode };
-struct Status { bool ready = false; Win win = Win::Closed; bool failsafe = false; unsigned fabrics = 0; uint32_t leftS = 0; };
+struct Status {
+    bool ready = false;
+    Win win = Win::Closed;
+    bool failsafe = false;
+    bool cleanup = false;
+    unsigned fabrics = 0;
+    uint32_t leftS = 0;
+};
 
 Status statusLocked() {
     Status s;
@@ -69,6 +76,7 @@ Status statusLocked() {
     if (cwm.IsCommissioningWindowOpen())
         s.win = cwm.CommissioningWindowStatusForCluster() == WindowStatus::kEnhancedWindowOpen ? Win::OtherCode : Win::OwnCode;
     s.failsafe = srv.GetFailSafeContext().IsFailSafeArmed();
+    s.cleanup = srv.GetFailSafeContext().IsFailSafeBusy();
     s.fabrics = srv.GetFabricTable().FabricCount();
     const uint32_t gone = (millis() - g_openedMs) / 1000;
     s.leftS = s.win == Win::OwnCode && g_ourWindow && gone < kWindowS ? kWindowS - gone : 0;
@@ -145,7 +153,7 @@ void reply(int code, const char* err, bool summary = false) {
             o.str(orcon_matter::qrCode(), strlen(orcon_matter::qrCode()));
         }
         o.fmt(",\"commissioning\":%s,\"fabric_revision\":%lu,\"controllers\":[",
-              s.failsafe || (ready && g_history.pase) ? "true" : "false",
+              s.failsafe || s.cleanup || (ready && g_history.pase) ? "true" : "false",
               ready ? static_cast<unsigned long>(g_history.revision) : 0ul);
         if (s.ready) {
             bool first = true;
@@ -202,7 +210,7 @@ void handleWindow() {
     chip::DeviceLayer::PlatformMgr().LockChipStack();
     auto& cwm = chip::Server::GetInstance().GetCommissioningWindowManager();
     const auto& failSafe = chip::Server::GetInstance().GetFailSafeContext();
-    if (open && (failSafe.IsFailSafeArmed() || g_history.pase)) {
+    if (open && (!failSafe.IsFailSafeFullyDisarmed() || g_history.pase)) {
         chip::DeviceLayer::PlatformMgr().UnlockChipStack();
         reply(409, "commissioning-busy");
         return;
@@ -238,7 +246,7 @@ void handleRemove() {
     const auto fabric = chip::FabricIndex(index);
     const char* err = "";
     int code = 200;
-    if (srv.GetFailSafeContext().IsFailSafeArmed() || g_history.pase ||
+    if (!srv.GetFailSafeContext().IsFailSafeFullyDisarmed() || g_history.pase ||
         srv.GetCommissioningWindowManager().IsCommissioningWindowOpen()) {
         err = "commissioning-busy";
         code = 409;
@@ -300,9 +308,9 @@ void handleDiagnostics() {
             first = false;
         }
         o.fmt("],\"count\":%u,\"window\":%u,\"fail_safe\":%u,\"pase\":%u,\"attempts\":%lu,"
-              "\"tracking\":%u,\"dropped\":%lu,\"events\":[", s.fabrics, unsigned(s.win), unsigned(s.failsafe),
-              unsigned(g_history.pase), static_cast<unsigned long>(g_history.attempts),
-              unsigned(g_history.tracking), static_cast<unsigned long>(g_history.dropped));
+              "\"fail_safe_cleanup\":%u,\"tracking\":%u,\"dropped\":%lu,\"events\":[",
+              s.fabrics, unsigned(s.win), unsigned(s.failsafe), unsigned(g_history.pase),
+              static_cast<unsigned long>(g_history.attempts), unsigned(s.cleanup), unsigned(g_history.tracking), static_cast<unsigned long>(g_history.dropped));
         constexpr const char* names[] = {
             "ready", "window-open", "window-closed", "pase-start", "pase-stop", "complete", "fail-safe-expired",
             "fabric-pending", "fabric-commit", "fabric-remove", "local-remove-error", "dnssd-ready",
@@ -388,7 +396,7 @@ extern "C" bool orcon_fwup_defer(void) {   // a commissioning in progress: no TL
     if (!orcon_matter::matterReady()) return false;
     chip::DeviceLayer::PlatformMgr().LockChipStack();
     const Status s = statusLocked();
-    const bool busy = s.win != Win::Closed || s.failsafe || g_history.pase;
+    const bool busy = s.win != Win::Closed || s.failsafe || s.cleanup || g_history.pase;
     chip::DeviceLayer::PlatformMgr().UnlockChipStack();
     return busy;
 }
