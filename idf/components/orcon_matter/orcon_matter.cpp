@@ -55,6 +55,7 @@
 #include <app/InteractionModelEngine.h>
 #include <app/data-model-provider/OperationTypes.h>
 #include <app/persistence/AttributePersistenceProviderInstance.h>
+#include <app/server/Dnssd.h>
 #include <lib/core/TLV.h>
 #include <app/clusters/fan-control-server/CodegenIntegration.h>
 #include <app/clusters/fan-control-server/FanControlCluster.h>
@@ -293,7 +294,11 @@ const char* applyDefaultNodeLabel() {
 
 void onChipEvent(const chip::DeviceLayer::ChipDeviceEvent* e, intptr_t) {
     g_lastEvent = int(e->Type);
-    if (e->Type == chip::DeviceLayer::DeviceEventType::kServerReady) {   // DNS-SD is up too
+    if (e->Type == chip::DeviceLayer::DeviceEventType::kServerReady) {
+        // On ESP32, Server::Init leaves DNS-SD to the next IP event (esp_matter_core.cpp). Orcon starts Matter on a
+        // connected home network, so an address that came before esp_matter::start() would leave a commissioned
+        // device unfindable after a restart until an address changes. The same call as on every IP event: idempotent.
+        chip::app::DnssdServer::Instance().StartServer();
         g_mtr.serverReady(millis());
         const char* nl = applyDefaultNodeLabel();
         printf("[orcon-matter] node-label %s\n", nl);
