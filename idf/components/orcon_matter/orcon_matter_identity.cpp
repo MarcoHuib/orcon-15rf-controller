@@ -300,7 +300,8 @@ esp_err_t erase() {
         if (err == ESP_OK) err = nvs_commit(h);
         nvs_close(h);
     }
-    chip::DeviceLayer::Internal::ESP32Config::ClearConfigValue(chip::DeviceLayer::Internal::ESP32Config::kConfigKey_SerialNum);
+    using chip::DeviceLayer::Internal::ESP32Config;   // the next identity stores its own serial over a stale one
+    if (ESP32Config::ClearConfigValue(ESP32Config::kConfigKey_SerialNum) != CHIP_NO_ERROR) ESP_LOGW(TAG, "CHIP serial number not cleared");
     g_v = Values{};
     g_qr[0] = g_manual[0] = '\0';
     if (err == ESP_OK) g_state = State::Absent;
