@@ -235,11 +235,11 @@ def check_esp_image(b):
 def check_elf_image(build, esptool, python=sys.executable, elf='firmware.elf', bin_='firmware.bin', idf=False):
     """firmware.bin is exactly what the pinned esptool makes of the checked firmware.elf with the release settings
     (Codex r4: the ELF hash field alone does not bind the segments, addresses and entry point). ESP-IDF 5 adds the chip
-    revision range to the image header (its own build's elf2image arguments); esptool "-m" runs the installed module."""
+    revision range to the image header (its own build's elf2image arguments); esptool "module" runs the installed one."""
     build = Path(build)
     with tempfile.TemporaryDirectory() as d:
         out = Path(d) / 'regen.bin'
-        tool = [python, '-m', 'esptool'] if str(esptool) == '-m' else [python, str(esptool)]
+        tool = [python, '-m', 'esptool'] if str(esptool) == 'module' else [python, str(esptool)]
         rev = ['--min-rev-full', '0', '--max-rev-full', '399'] if idf else []
         r = subprocess.run(tool + ['--chip', 'esp32', 'elf2image', '--flash_mode', 'dio', '--flash_freq', '40m',
                                    '--flash_size', '8MB', '--elf-sha256-offset', '0xb0', *rev, '-o', str(out), str(build / elf)],
