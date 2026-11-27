@@ -1,8 +1,6 @@
 # Officiële releases (GitHub Actions) en updates
 
-> Stand 2026-11-22. De workflow staat op `main` en v1.0.0 is de eerste gepubliceerde release. Branch `feature/release-auto-version`: bij **Run workflow** kies je alleen nog het soort release; het versienummer volgt uit de tags en releases.
-
-Alleen de **control-firmware** (`heltec_v2_sx1276_control`) wordt gepubliceerd. De RX-only-, RF-test- en dry-run-images blijven lokale diagnose- of herstelbuilds en worden door de workflow geweigerd.
+De workflow bouwt voor stabiele releases de **control-firmware** (`heltec_v2_sx1276_control`). Bètareleases bevatten ook de universele **Matter-firmware** (`heltec_v2_matter`). De RX-only-, RF-test- en dry-run-images blijven lokale diagnose- of herstelbuilds.
 
 ## Zo maak je een release
 
