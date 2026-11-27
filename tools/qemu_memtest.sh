@@ -138,7 +138,7 @@ PY
       ct() {   # ct <label> <chip-tool arguments>: its output to the log under "== label", its exit code to .rc
         local label=$1; shift
         echo "== $label" >> /w/$LOG.chiptool
-        chip-tool "$@" --storage-directory /w/ct-$DEV --timeout "${CT_TIMEOUT:-240}" >> /w/$LOG.chiptool 2>&1
+        chip-tool "$@" --storage-directory "${CT_STORE:-/w/ct-$DEV}" --timeout "${CT_TIMEOUT:-240}" >> /w/$LOG.chiptool 2>&1
         echo "$label $?" >> /w/$LOG.rc
       }
       for i in $(seq 900); do grep -qE "PROBE (window-open|operational)" /w/$LOG 2> /dev/null && break; kill -0 $q 2> /dev/null || break; sleep 1; done
@@ -154,17 +154,24 @@ PY
       ct read-fan fancontrol read fan-mode 0x7a11 2
       if [ "$DEV" = Q ] && [ "$SC" = K ]; then
         ct before operationalcredentials read commissioned-fabrics 0x7a11 0
-        ct open-extra administratorcommissioning open-basic-commissioning-window 180 0x7a11 0 --timedInteractionTimeoutMs 5000
-        ct add-beta pairing onnetwork-long 0x7a12 "$PIN" "$DISC" --commissioner-name beta --commissioner-vendor-id 65522 \
-          --paa-trust-store-path /w/trust-$DEV/paa --bypass-attestation-verifier true
-        ct joined operationalcredentials read commissioned-fabrics 0x7a11 0
-        ct beta-index operationalcredentials read current-fabric-index 0x7a12 0 --commissioner-name beta
-        index=$(grep -Eo "CurrentFabricIndex: [0-9]+" /w/$LOG.chiptool | tail -1 | cut -d " " -f 2)
+        ct open-extra pairing open-commissioning-window 0x7a11 1 180 1000 1234
+        extra_code=$(grep -Eo "Manual pairing code: \[[0-9]+\]" /w/$LOG.chiptool | tail -1 | tr -cd "0-9")
+        sed -i -E "s/(Manual pairing code|SetupQRCode): \[[^]]+\]/\1: [redacted]/g" /w/$LOG.chiptool
+        index=""
+        if [ -n "$extra_code" ]; then
+          mkdir -p /w/ct-beta-$DEV
+          CT_STORE=/w/ct-beta-$DEV CT_TIMEOUT=60 ct add-beta pairing code 0x7a12 "$extra_code" \
+            --commissioner-name beta --commissioner-vendor-id 65522 --use-only-onnetwork-discovery true \
+            --paa-trust-store-path /w/trust-$DEV/paa --bypass-attestation-verifier true
+          ct joined operationalcredentials read commissioned-fabrics 0x7a11 0
+          CT_STORE=/w/ct-beta-$DEV CT_TIMEOUT=30 ct beta-index operationalcredentials read current-fabric-index 0x7a12 0 --commissioner-name beta
+          index=$(grep -Eo "CurrentFabricIndex: [0-9]+" /w/$LOG.chiptool | tail -1 | cut -d " " -f 2)
+        fi
         if [ -n "$index" ]; then
           ct remove-beta operationalcredentials remove-fabric "$index" 0x7a11 0
           ct remaining operationalcredentials read commissioned-fabrics 0x7a11 0
           ct alpha-still-operational fancontrol read fan-mode 0x7a11 2
-          CT_TIMEOUT=12 ct beta-revoked basicinformation read vendor-name 0x7a12 0 --commissioner-name beta
+          CT_STORE=/w/ct-beta-$DEV CT_TIMEOUT=12 ct beta-revoked basicinformation read vendor-name 0x7a12 0 --commissioner-name beta
           ct remove-last operationalcredentials remove-fabric 1 0x7a11 0
           CT_TIMEOUT=12 ct alpha-revoked basicinformation read vendor-name 0x7a11 0
         fi
@@ -253,7 +260,7 @@ for n, spec in enumerate(plan, 1):
                 for label, count in (("before", 1), ("joined", 2), ("remaining", 1))
             ) and "Device commissioning completed with success" in part.get("add-beta", "") and \
                 re.search(r"CurrentFabricIndex: 2\b", part.get("beta-index", "")) is not None and all(
-                    re.search(r"StatusCode: 0\b", part.get(label, "")) for label in ("remove-beta", "remove-last")
+                    re.search(r"statusCode: 0\b", part.get(label, "")) for label in ("remove-beta", "remove-last")
                 )
         good = good and ctok and bool(com) and com[1] == "1"
     ok &= good
