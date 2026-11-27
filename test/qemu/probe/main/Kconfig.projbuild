@@ -1,0 +1,5 @@
+menu "Orcon QEMU memory test"
+config ORCON_PROBE_CONTROL
+    bool "The component's probe hooks: the simulated unit drives Matter -> Orcon control (test only)"
+    default y
+endmenu

@@ -1,6 +1,11 @@
 // Execute the actual emitted PoC page. Test browser actions, not a duplicate UI.
 const assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
-const script=[...fs.readFileSync(0,'utf8').matchAll(/<script>([\s\S]*?)<\/script>/g)].map(x=>x[1]).join('\n');
+// Every inline script of the emitted page, found without a tag regex (CodeQL alert 1). A script tag in another form
+// (any case, attributes) would escape the test, so it fails instead.
+const html=fs.readFileSync(0,'utf8'),low=html.toLowerCase(),parts=[];
+for(let i=low.indexOf('<script');i>=0;i=low.indexOf('<script',i)){const end=low.indexOf('</script>',i);assert.ok(low.startsWith('<script>',i)&&end>i,'only plain <script> blocks');parts.push(html.slice(i+8,end));i=end+9;}
+assert.ok(parts.length>0&&low.split('</script').length===parts.length+1,'every </script> closes one plain block');
+const script=parts.join('\n');
 const token='0123456789abcdef0123456789abcdef';
 async function page(){
  const elements=Object.fromEntries(['token','login','access','status','check','retry'].map(x=>[x,{value:'',textContent:'',disabled:false}]));

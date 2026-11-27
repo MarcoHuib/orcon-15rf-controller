@@ -6,7 +6,12 @@
 namespace otap {
 
 const char* variantName(Variant v) {
-    return v == Variant::RxOnly ? "rx-only" : v == Variant::RfTest ? "rf-test" : v == Variant::Control ? "control" : "none";
+    return v == Variant::RxOnly ? "rx-only" : v == Variant::RfTest ? "rf-test" : v == Variant::Control ? "control"
+         : v == Variant::ControlMatter ? "control-matter" : "none";
+}
+
+const char* variantChange(Variant manifest, const char* ownVariant, bool confirmed) {
+    return confirmed || (ownVariant && !strcmp(variantName(manifest), ownVariant)) ? nullptr : "variant-change-unconfirmed";
 }
 
 static bool hexOk(const char* s, size_t n) {
@@ -20,26 +25,36 @@ const char* parseManifest(const char* json, Manifest& m) {
     m = Manifest();
     static const char* const K1[] = {"v", "mac", "env", "variant", "allow_tx", "commit", "size", "sha256", "nonce"};
     static const char* const K2[] = {"v", "kind", "env", "variant", "allow_tx", "commit", "version", "size", "sha256"};
+    // A beta is the v2 release form plus exactly one field, "pre", under its own kind (so a stable manifest stays
+    // byte for byte what it is, and firmware without channels refuses every beta: its key set is exact).
+    static const char* const K2B[] = {"v", "kind", "env", "variant", "allow_tx", "commit", "version", "size", "sha256", "pre"};
     constexpr size_t KN = sizeof(K1) / sizeof(K1[0]);
     static_assert(sizeof(K2) == sizeof(K1), "both forms have nine fields");
+    static_assert(sizeof(K2B) == sizeof(K2) + sizeof(K2[0]), "a beta has one field more");
     JsonDocument d;
     if (!json || deserializeJson(d, json) || !d.is<JsonObject>()) return "bad-manifest";
     const uint8_t v = d["v"].is<uint8_t>() ? d["v"].as<uint8_t>() : 0;
-    const char* const* K = v == 2 ? K2 : K1;      // anything but 2 is judged as v1 (checkManifest refuses v != 1)
+    const bool beta = v == 2 && d["kind"].is<const char*>() && !strcmp(d["kind"].as<const char*>(), "orcon-prerelease");
+    const char* const* K = v == 2 ? (beta ? K2B : K2) : K1;   // anything but 2 is judged as v1 (checkManifest refuses v != 1)
+    const size_t kn = beta ? KN + 1 : KN;
     for (JsonPair kv : d.as<JsonObject>()) {
         bool known = false;
-        for (size_t i = 0; i < KN; ++i) if (!strcmp(kv.key().c_str(), K[i])) known = true;
+        for (size_t i = 0; i < kn; ++i) if (!strcmp(kv.key().c_str(), K[i])) known = true;
         if (!known) return "unknown-field";
     }
-    if (d.as<JsonObject>().size() != KN) return "missing-field";
+    if (d.as<JsonObject>().size() != kn) return "missing-field";
     if (!d["v"].is<uint8_t>() || !d["size"].is<uint32_t>() || !d["allow_tx"].is<bool>()) return "bad-manifest";
     for (const char* k : {"env", "variant", "commit", "sha256"}) if (!d[k].is<const char*>()) return "bad-manifest";
     m.v = d["v"]; m.size = d["size"]; m.allowTx = d["allow_tx"];
     const char* env = d["env"]; const char* var = d["variant"]; const char* commit = d["commit"]; const char* sha = d["sha256"];
     if (strlen(env) >= sizeof(m.env) || !hexOk(commit, 40) || !hexOk(sha, 64)) return "bad-manifest";
     if (m.v == 2) {
-        if (!d["kind"].is<const char*>() || strcmp(d["kind"].as<const char*>(), "orcon-release") || !d["version"].is<uint32_t>()) return "bad-manifest";
+        if (!d["kind"].is<const char*>() || (!beta && strcmp(d["kind"].as<const char*>(), "orcon-release")) || !d["version"].is<uint32_t>()) return "bad-manifest";
         m.version = d["version"];
+        if (beta) {   // beta.1 .. beta.99, an integer (never 0: that is the stable release itself)
+            if (!d["pre"].is<uint8_t>() || d["pre"].as<uint8_t>() < 1 || d["pre"].as<uint8_t>() > 99) return "bad-manifest";
+            m.pre = d["pre"];
+        }
     } else {
         if (!d["mac"].is<const char*>() || !d["nonce"].is<const char*>()) return "bad-manifest";
         const char* mac = d["mac"]; const char* nonce = d["nonce"];
@@ -50,14 +65,16 @@ const char* parseManifest(const char* json, Manifest& m) {
     strcpy(m.env, env); strcpy(m.commit, commit);
     for (int i = 0; i < 32; ++i) m.sha256[i] = uint8_t(nib(sha[2 * i]) << 4 | nib(sha[2 * i + 1]));
     m.variant = !strcmp(var, "rx-only") ? Variant::RxOnly : !strcmp(var, "rf-test") ? Variant::RfTest :
-                !strcmp(var, "control") ? Variant::Control : Variant::None;
+                !strcmp(var, "control") ? Variant::Control : !strcmp(var, "control-matter") ? Variant::ControlMatter : Variant::None;
     if (m.variant == Variant::None) return "variant-not-approved";
     return nullptr;
 }
 
-const char* checkManifest(const Manifest& m, const char* ownMac, const char* issuedNonce, uint32_t slotSize, uint32_t ownVersion) {
+const char* checkManifest(const Manifest& m, const char* ownMac, const char* issuedNonce, uint32_t slotSize, uint32_t ownVersion,
+                          uint8_t ownPre, bool betaOk) {
     if (m.v == 2) {
-        if (m.version < ownVersion) return "older-release";
+        if (m.pre && !betaOk) return "beta-disabled";   // only with the owner's "Bèta-updates ontvangen"
+        if (releaseRank(m.version, m.pre) < releaseRank(ownVersion, ownPre)) return "older-release";
         if (m.variant == Variant::RfTest) return "variant-not-released";   // test images are never published
     } else if (m.v == 1) {
         char own[18] = "";
@@ -77,6 +94,7 @@ const char* checkManifest(const Manifest& m, const char* ownMac, const char* iss
     if (m.variant == Variant::RxOnly && (strcmp(m.env, "heltec_v2_sx1276") || m.allowTx)) return "variant-mismatch";
     if (m.variant == Variant::RfTest && (strcmp(m.env, "heltec_v2_sx1276_rftest") || !m.allowTx)) return "variant-mismatch";
     if (m.variant == Variant::Control && (strcmp(m.env, "heltec_v2_sx1276_control") || !m.allowTx)) return "variant-mismatch";
+    if (m.variant == Variant::ControlMatter && (strcmp(m.env, "heltec_v2_matter") || !m.allowTx)) return "variant-mismatch";
     return nullptr;
 }
 
@@ -94,6 +112,8 @@ static const uint8_t P_L1[] = {0x1b,0x28,0x3e,0x2f,0x33,0x34,0x35,0x15,0x0e,0x1b
 static const uint8_t P_L2[] = {0x3b,0x2f,0x2e,0x32,0x05,0x2f,0x2a,0x36,0x35,0x3b,0x3e};
 static const uint8_t P_L3[] = {0x0f,0x2a,0x3e,0x3b,0x2e,0x3f,0x28,0x74,0x39,0x2a,0x2a};
 static const uint8_t P_VR[] = {0x35,0x28,0x39,0x35,0x34,0x77,0x3b,0x2f,0x2e,0x32,0x77,0x28,0x3f,0x29,0x3f,0x2e};   // the old recovery request kind
+static const uint8_t P_MATTER[] = {0x15,0x08,0x19,0x15,0x14,0x77,0x17,0x1b,0x0e,0x0e,0x1f,0x08,0x77,0x1c,0x13,0x08,0x17,0x0d,0x1b,0x08,0x1f,0x7a,0x2c,0x6b};   // "ORCON...": the Matter build
+static const uint8_t P_MATTER_ID[] = {0x15,0x08,0x19,0x15,0x14,0x77,0x17,0x1b,0x0e,0x0e,0x1f,0x08,0x77,0x1f,0x17,0x18,0x1f,0x1e,0x1e,0x1f,0x1e,0x77,0x13,0x1e,0x1f,0x14,0x0e,0x13,0x0e,0x03,0x7a,0x2c,0x6b};   // a migration build (orcon_matter_identity_marker)
 static const uint8_t P_OK[] = {0x15,0x08,0x19,0x15,0x14,0x77,0x15,0x0d,0x14,0x1f,0x08,0x77,0x11,0x1f,0x03,0x7a,0x2c,0x6b};   // the owner-key marker (ota_policy.h)
 struct Pat { const uint8_t* p; size_t n; };
 #define PAT(x) Pat{x, sizeof(x)}
@@ -122,6 +142,7 @@ void Scanner::match(const uint8_t* b, size_t n) {
     control |= has(b, n, PAT(P_CTL));
     txCode |= has(b, n, PAT(P_TX)); dryRun |= has(b, n, PAT(P_DRY)); signedOta |= has(b, n, SIGNED_OTA_MARKER);
     ownerModel |= has(b, n, OWNER_MODEL_MARKER); releaseKeyReset |= has(b, n, PAT(P_VR)); ownerKey |= has(b, n, PAT(P_OK));
+    matter |= has(b, n, PAT(P_MATTER)); matterIdentity |= has(b, n, PAT(P_MATTER_ID));
     for (const Pat& p : LEGACY) legacyOta |= has(b, n, p);
     if (commit_[0]) commitStamp |= has(b, n, commit_);
 }
@@ -171,8 +192,10 @@ const char* checkImage(const Manifest& m, const Scanner& s, uint32_t received, c
         return "image-not-rx-only";
     if (m.variant == Variant::RfTest && !(s.rfTest && s.txCode && !s.control && !s.rxRadio && !s.dryRun))
         return "image-not-rf-test";
-    if (m.variant == Variant::Control && !(s.control && s.txCode && !s.rfTest && !s.rxRadio && !s.dryRun))
+    if (m.variant == Variant::Control && !(s.control && s.txCode && !s.matter && !s.rfTest && !s.rxRadio && !s.dryRun))
         return "image-not-control";
+    if (m.variant == Variant::ControlMatter && !(s.control && s.txCode && s.matter && !s.rfTest && !s.rxRadio && !s.dryRun))
+        return "image-not-control-matter";
     return nullptr;
 }
 

@@ -13,6 +13,7 @@
 #include "ota_signed.h"
 #include "ota_policy.h"
 #include "fw_update.h"
+#include "fw_update_esp.h"   // updsvc::betaEnabled()
 #include "ota_pubkey.h"
 #include "net.h"
 #include "ramses_radio.h"
@@ -90,11 +91,18 @@ static void readTrialState() {
 static bool g_hold = false;   // rollback test: this trial boot refuses to confirm itself (RAM only)
 #define ORCON_STR2(x) #x
 #define ORCON_STR(x) ORCON_STR2(x)
-// The release number as text in the image: tools/orcon.py release refuses a bundle whose version differs.
+// The release number as text in the image: tools/orcon.py and tools/release_ci.py refuse a bundle whose version differs.
+// A beta carries its number too ("ORCON-RELEASE 1002003-beta.4;"), so a beta image can never pass as the stable release.
+#if ORCON_RELEASE_PRE
+static const char RELEASE_STAMP[] = "ORCON-RELEASE " ORCON_STR(ORCON_RELEASE_VERSION) "-beta." ORCON_STR(ORCON_RELEASE_PRE) ";";
+#else
 static const char RELEASE_STAMP[] = "ORCON-RELEASE " ORCON_STR(ORCON_RELEASE_VERSION) ";";
+#endif
 
 static const char* variantOfThisBuild() {
-#if ORCON_TX_MAX_PER_BOOT
+#if ORCON_MATTER
+    return "control-matter";   // the control firmware with Matter (docs/MATTER.md)
+#elif ORCON_TX_MAX_PER_BOOT
     return "rf-test";
 #elif ORCON_TX_CONTROL
     return "control";
@@ -156,8 +164,8 @@ static void handleInfo() {
     const esp_partition_t* run = esp_ota_get_running_partition();
     const esp_partition_t* boot = esp_ota_get_boot_partition();
     const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
-    char b[640], rel[16];
-    fwup::semverText(ORCON_RELEASE_VERSION, rel);
+    char b[640], rel[24];
+    fwup::semverTextPre(ORCON_RELEASE_VERSION, ORCON_RELEASE_PRE, rel);   // "1.2.3-beta.4" for a beta image
     const bool dl = g_dl;   // the worker owns g_st/g_err while set: report a fixed state then (Codex r4)
     snprintf(b, sizeof(b),
              "{\"signed_ota\":\"%s\",\"fw\":\"%s\",\"variant\":\"%s\",\"running\":\"%s\",\"running_state\":\"%s\","
@@ -264,15 +272,19 @@ bool verifySignature(const char* text, size_t n, const char* sigHex) {
 // The signed manifest against this device: the release key, the manifest rules and the inactive slot. Shared by
 // POST /api/ota/begin (v1 targeted or v2 release) and the one-click update (v2 release only). On success the
 // writer is Ready for exactly this image.
-static const char* acceptManifest(const char* text, const char* sig, const char* nonce, bool releaseOnly) {
+// A manifest of another variant than this build (Matter <-> without Matter, or control <-> RX-only) only with the owner's
+// explicit "variant_change" (the page names what changes): no update adds or removes Matter by itself.
+static const char* acceptManifest(const char* text, const char* sig, const char* nonce, bool releaseOnly, bool variantChange) {
     g_st = St::Idle;
     if (!verifySignature(text, strlen(text), sig)) return "bad-signature";
     otap::Manifest m;
     const char* e = otap::parseManifest(text, m);
     if (!e && releaseOnly && m.v != 2) e = "manifest-version";
+    if (!e) e = otap::variantChange(m.variant, variantOfThisBuild(), variantChange);
     char mac[18]; ownMac(mac);
     g_part = esp_ota_get_next_update_partition(nullptr);
-    if (!e) e = otap::checkManifest(m, mac, nonce, g_part ? g_part->size : 0, ORCON_RELEASE_VERSION);
+    if (!e) e = otap::checkManifest(m, mac, nonce, g_part ? g_part->size : 0, ORCON_RELEASE_VERSION, ORCON_RELEASE_PRE,
+                                    updsvc::betaEnabled());   // a beta .orconfw only with the owner's beta setting
     if (e) return e;
     g_m = m; g_scan = otap::Scanner(m.commit); g_st = St::Ready; g_err = "none";
     return nullptr;
@@ -285,14 +297,16 @@ static void handleBegin() {
     const String body = g_s->arg("plain");
     if (body.length() > 1024) { fail(413, "body-too-large"); return; }
     JsonDocument d;
-    if (deserializeJson(d, body) || !d["manifest"].is<const char*>() || !d["sig"].is<const char*>() || d.as<JsonObject>().size() != 2) {
+    if (deserializeJson(d, body) || !d["manifest"].is<const char*>() || !d["sig"].is<const char*>() ||
+        !(d.as<JsonObject>().size() == 2 || (d.as<JsonObject>().size() == 3 && d["variant_change"].is<bool>()))) {
         fail(400, "bad-json"); return;
     }
+    const bool variantChange = d["variant_change"] | false;
     const char* text = d["manifest"]; const char* sig = d["sig"];
     char nonce[33]; strcpy(nonce, g_nonce);
     const bool fresh = nonce[0] && millis() - g_nonceMs < NONCE_TTL_MS;
     g_nonce[0] = 0;                                   // one attempt per nonce, valid or not
-    if (const char* e = acceptManifest(text, sig, fresh ? nonce : "", false)) {
+    if (const char* e = acceptManifest(text, sig, fresh ? nonce : "", false, variantChange)) {
         g_err = e;
         if (!strcmp(e, "bad-signature")) { note(rfcon::WARN, "OTA geweigerd: ongeldige handtekening"); fail(403, e); }
         else { note(rfcon::WARN, "OTA geweigerd: %s", e); fail(409, e); }
@@ -430,7 +444,7 @@ namespace {
 struct ReleaseSink : fwup::Sink {
     const char* begin(const char* manifest, const char* sig) override {
         if (!g_dl) return "not-ready";
-        if (const char* e = acceptManifest(manifest, sig, "", true)) { g_err = e; return e; }
+        if (const char* e = acceptManifest(manifest, sig, "", true, false)) { g_err = e; return e; }   // the check: own variant only
         return startWrite();
     }
     const char* write(const uint8_t* d, size_t n) override { return writeChunk(d, n); }

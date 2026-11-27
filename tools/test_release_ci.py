@@ -106,13 +106,31 @@ try:
     ok('publish: the floor over every tag and release (drafts included) refuses a number that a draft, a tag or a newer release took meanwhile')
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err): code = rc.main(['next', '--newest', '1000000', '--notes=Kort', '--', 'patch'])   # the workflow's form
-    assert code == 0 and out.getvalue() == 'number=1000001\ntag=v1.0.1\nname=1.0.1\n' and 'v1.0.0' in err.getvalue() and 'v1.0.1' in err.getvalue()
+    assert code == 0 and out.getvalue() == 'number=1000001\npre=0\ntag=v1.0.1\nname=1.0.1\nrank=100000200\nprerelease=false\n' \
+        and 'v1.0.0' in err.getvalue() and 'v1.0.1' in err.getvalue()
     for argv in (['--newest', '1000000', '--notes=' + 'x' * 401, '--', 'patch'], ['--newest', '1000000', '--', 'custom'], ['--newest', '1000000', '--', '--help'],
                  ['--newest', '1000000', '--', '-h'], ['--newest', '1000000', '--', ''], ['--newest', '', '--', 'patch'], ['--newest', '0', '--', 'patch'],
                  ['--newest', '01000000', '--', 'patch'], ['--newest', ' 1000000', '--', 'patch'], ['--newest', '1000000000', '--', 'patch'], ['--newest', '-1', '--', 'patch']):
         o = io.StringIO()
         with redirect_stdout(o), redirect_stderr(io.StringIO()): assert rc.main(['next'] + argv) == 1 and o.getvalue() == '', argv
     ok('next (CLI): number, tag and name of one version for $GITHUB_OUTPUT, the step in the log; a bad number, notes or type (even "--help") is refused, nothing written')
+    # ---- betas: X.Y.Z-beta.N, the same rule as the device (fw_update.cpp parseSemverPre), each number used once --------
+    pt = rc.parse_release_tag
+    assert pt('v1.2.3') == (VERSION, 0) and pt('v1.2.3-beta.1') == (VERSION, 1) and pt('v1.2.3-beta.99') == (VERSION, 99)
+    for bad in ('v1.2.3-beta.0', 'v1.2.3-beta.100', 'v1.2.3-beta.01', 'v1.2.3-rc.1', 'v1.2.3-beta', 'v0.0.0', '1.2.3-beta.1 ', 'v1.2.3-beta.\u0661'):
+        assert pt(bad) is None, bad
+    assert rc.release_tag(VERSION, 4) == 'v1.2.3-beta.4' and rc.release_rank(VERSION, 0) > rc.release_rank(VERSION, 99) > rc.release_rank(VERSION, 1)
+    nr = rc.next_release
+    assert nr('patch', 1000000) == (1000001, 0) and nr('patch', 1000000, 'beta') == (1000001, 1)
+    assert nr('patch', 1000000, 'beta', ['v1.0.1-beta.1', 'v1.0.1-beta.3', 'v1.0.2-beta.9', 'junk', 'v1.0.1']) == (1000001, 4)
+    refused(nr, 'patch', 1000000, 'beta', [f'v1.0.1-beta.{i}' for i in range(1, 100)], want='99 betas')
+    refused(nr, 'patch', 1000000, 'rc', want='stable or beta')
+    out = io.StringIO()
+    with redirect_stdout(out), redirect_stderr(io.StringIO()):
+        code = rc.main(['next', '--newest', '1000000', '--channel', 'beta', '--betas', 'v1.0.1-beta.2', '--', 'patch'])
+    assert code == 0 and out.getvalue() == 'number=1000001\npre=3\ntag=v1.0.1-beta.3\nname=1.0.1-beta.3\nrank=100000103\nprerelease=true\n', out.getvalue()
+    assert rc.build_flags(VERSION, COMMIT, 4).endswith(' -DORCON_RELEASE_PRE=4') and rc.stamp(VERSION, 4) == '1002003-beta.4'
+    ok('betas: tags, ranks (a stable above its betas), the next beta of a number once, never past 99; build flag and stamp')
 
     # ---- release source ----------------------------------------------------------------------------------------------
     good = dict(repo='MarcoHuib/orcon-15rf-controller', ref='refs/heads/main', event='workflow_dispatch', default_branch='main', sha=COMMIT, head=COMMIT)
@@ -157,21 +175,25 @@ try:
         for v in seg: cs ^= v
         b += b'\x00' * (15 - len(b) % 16) + bytes([cs])
         return bytes(b + hashlib.sha256(b).digest())
-    def image(*parts, version=VERSION, commit=COMMIT, header=b'\xe9\x01\x02\x30', owner=True, owner_key=True, signed=True, **kw):
+    def image(*parts, version=VERSION, commit=COMMIT, header=b'\xe9\x01\x02\x30', owner=True, owner_key=True, signed=True, pre=0, **kw):
         body = []
         for p in parts + ((b'ORCON-SIGNED-OTA v1',) if signed else ()) + ((b'ORCON-OWNER-MODEL v1',) if owner else ()) + ((b'ORCON-OWNER-KEY v1',) if owner_key else ()):
             body += [p, b'\x00' * 97]
-        if version is not None: body += [f'ORCON-RELEASE {version};'.encode(), b'\x00' * 10]
+        if version is not None: body += [f'ORCON-RELEASE {rc.stamp(version, pre)};'.encode(), b'\x00' * 10]
         if commit: body += [commit.encode(), b'\x00' * 10]
         return esp(b''.join(body) + bytes(range(256)) * 20, header, **kw)
-    def build_dir(name, fw, **swap):
+    def build_dir(name, fw, matter=False, **swap):
         d = TMP / 'build' / name; d.mkdir(parents=True)
-        (d / 'firmware.bin').write_bytes(fw)
-        for f in ('bootloader.bin', 'partitions.bin', 'firmware.elf'): shutil.copy(real / f, d / f)
+        (d / ('orcon_15rf.bin' if matter else 'firmware.bin')).write_bytes(fw)
+        shutil.copy(real / 'firmware.elf', d / ('orcon_15rf.elf' if matter else 'firmware.elf'))
+        if not matter:
+            for f in ('bootloader.bin', 'partitions.bin'): shutil.copy(real / f, d / f)
         for f, data in swap.items(): (d / f).write_bytes(data)
         return d
-    def vb(name, fw, version=VERSION, commit=COMMIT, **swap):
-        return rc.verify_build(build_dir(name, fw, **swap), version, commit, harness, nm, TMP / 'dist' / name)
+    def vb(name, fw, version=VERSION, commit=COMMIT, variant='control', pre=0, out=None, **swap):
+        m = variant == 'control-matter'
+        return rc.verify_build(build_dir(name, fw, m, **swap), version, commit, harness, nm, out or TMP / 'dist' / name,
+                               variant=variant, pre=pre, boot_files=real if m else None)
     info = vb('good', image(CTL))
     assert info['version'] == VERSION and info['name'] == '1.2.3' and info['env'] == 'heltec_v2_sx1276_control' and info['commit'] == COMMIT
     assert {f.name for f in (TMP / 'dist/good').iterdir()} == {'firmware.bin', 'bootloader.bin', 'partitions.bin', 'boot_app0.bin', 'BUILD_INFO.json'}
@@ -210,6 +232,22 @@ try:
     elif os.environ.get('RELEASE_BUILD_DIR'): raise AssertionError('elf2image check: esptool or pyserial missing in the release workflow')
     else: print('  NOT TESTED: ELF-to-image regeneration (no esptool/pyserial)')
     ok(f'build: {len(cases) + 1} wrong images refused (no ESP image, flash layout, size, version stamp, commit, RX-only/RF-test/dry-run, legacy OTA, boot files)')
+    # ---- the Matter variant and betas ------------------------------------------------------------------------------------
+    MTR = b'ORCON-MATTER-FIRMWARE v1'
+    mi = vb('matter', image(CTL, MTR), variant='control-matter')
+    assert mi['env'] == 'heltec_v2_matter' and mi['variant'] == 'control-matter' and mi['pre'] == 0
+    for name, fw, kw, why in [('matter-without-marker', image(CTL), {}, 'Matter marker'),
+                              ('control-with-matter', image(CTL, MTR), {'variant': 'control'}, 'Matter marker'),
+                              ('matter-with-identity', image(CTL, MTR, b'ORCON-MATTER-EMBEDDED-IDENTITY v1'), {}, 'holds a Matter identity'),
+                              ('matter-as-rx', image(MTR, b'SX1276 direct RX (TX disabled)', b'RX-ONLY TEST FIRMWARE: receive only'), {}, 'image-not-control-matter')]:
+        refused(lambda: vb(name, fw, **{'variant': 'control-matter', **kw}), want=why)
+    refused(lambda: rc.verify_build(build_dir('matter-no-boot', image(CTL, MTR), True), VERSION, COMMIT, harness, nm, TMP / 'dist/x',
+                                    variant='control-matter'), want='--boot-files')
+    bi = vb('beta', image(CTL, pre=2), pre=2)
+    assert bi['pre'] == 2 and bi['name'] == '1.2.3-beta.2'
+    refused(lambda: vb('beta-as-stable', image(CTL, pre=2)), want='release stamp')
+    refused(lambda: vb('stable-as-beta', image(CTL), pre=2), want='release stamp')
+    ok('build: the Matter variant needs its marker and never holds an identity; a beta image carries its own stamp, never passes as stable (or back)')
 
     # ---- manifest, signature, package ---------------------------------------------------------------------------------------
     D = TMP / 'dist/good'
@@ -296,6 +334,32 @@ try:
     ok('verify-package: tampered image, manifest, signature (other key), index, artifact, extra bundle, checksums or name are refused')
     refused(rc.make_manifest, TMP / 'tamper/firmware-artifact', want='differs from BUILD_INFO')
     ok('manifest: an artifact changed after the build check is refused (signing job input)')
+
+    # ---- a release: both variants, one version; stable and beta --------------------------------------------------------------
+    for tag, pre in (('v1.2.3', 0), ('v1.2.3-beta.2', 2)):
+        R = TMP / f'release-{pre}'
+        vb(f'rel{pre}-control', image(CTL, pre=pre), pre=pre, out=R / 'control')
+        vb(f'rel{pre}-matter', image(CTL, MTR, pre=pre), variant='control-matter', pre=pre, out=R / 'control-matter')
+        rc.make_manifest(R); rc.sign(R, KEY); rc.package(R, 'Twee varianten.')
+        if esptool and py: rc.factory(R, esptool, py)
+        rc.verify_package(R, harness, bool(esptool and py), 'Twee varianten.', tag)
+        names = rc.assemble(R, TMP / f'publish-{pre}')
+        want = {f'orcon-control-{tag}-c0ffee1.orconfw', f'orcon-control-matter-{tag}-c0ffee1.orconfw', 'orcon-update.json', 'orcon-update-matter.json',
+                'BUILD_INFO-control.json', 'BUILD_INFO-control-matter.json'} | ({f'orcon-control-{tag}-c0ffee1-factory-usb.bin',
+                f'orcon-control-matter-{tag}-c0ffee1-factory-usb.bin'} if esptool and py else set())
+        assert set(names) == want, names
+        assert subprocess.run(['sha256sum' if shutil.which('sha256sum') else 'shasum', *([] if shutil.which('sha256sum') else ['-a', '256']), '-c', 'SHA256SUMS'],
+                              cwd=TMP / f'publish-{pre}', capture_output=True).returncode == 0
+        md = rc.notes_md(R, '', '', TMP / f'publish-{pre}' / 'SHA256SUMS')
+        assert f'orcon-control-matter-{tag}-c0ffee1.orconfw' in md and 'niet gecertificeerd' in md and ('Bèta' in md) == bool(pre)
+    refused(rc.verify_package, TMP / 'release-0', harness, False, None, 'v1.2.3-beta.2', want='not the release')
+    refused(rc.verify_package, TMP / 'release-2', harness, False, None, 'v1.2.3', want='not the release')
+    mixed = TMP / 'release-mixed'; shutil.copytree(TMP / 'release-0/control', mixed / 'control'); shutil.copytree(TMP / 'release-2/control-matter', mixed / 'control-matter')
+    refused(rc.verify_package, mixed, harness, want='not one release')
+    only = TMP / 'release-only'; shutil.copytree(TMP / 'release-0/control', only / 'control')
+    refused(rc.assemble, only, TMP / 'publish-only', want='every variant')
+    ok('release: both variants signed and verified as one version (each index judged by its own boards, the other variant refused), '
+       'one SHA256SUMS; betas refused by boards without the channel; mixed or partial releases refused')
 
     # ---- factory image and notes ----------------------------------------------------------------------------------------------
     if esptool and py:

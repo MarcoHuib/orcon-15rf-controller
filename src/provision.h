@@ -75,6 +75,8 @@ struct ResetOps {
     virtual bool mark() = 0;                              // set (and read back) the marker
     virtual bool eraseNamespace(const char* ns) = 0;      // every key in one NVS namespace
     virtual bool eraseCrashDump() = 0;                    // a crash dump may hold secrets from RAM
+    // Matter's own storage: its fabrics and this device's Matter identity (a Matter build; nothing elsewhere).
+    virtual bool eraseMatter() = 0;
     // The other OTA slot: no image from before this model may stay bootable there. It is replaced by a
     // copy of the running, confirmed image (not erased), so the device keeps two bootable images and
     // the rollback/fallback safety net survives the reset.

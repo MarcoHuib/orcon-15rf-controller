@@ -24,6 +24,25 @@ bool parseSemver(const char* s, uint32_t& out) {
     out = a * 1000000u + b * 1000u + c;
     return out != 0;
 }
+bool parseSemverPre(const char* s, uint32_t& out, uint8_t& pre) {
+    pre = 0;
+    if (!s) return false;
+    const char* dash = strchr(s, '-');
+    if (!dash) return parseSemver(s, out);
+    char core[16];
+    const size_t k = size_t(dash - s);
+    if (k >= sizeof(core) || strncmp(dash, "-beta.", 6)) return false;
+    memcpy(core, s, k); core[k] = 0;
+    const char* p = dash + 6;
+    uint32_t n = 0;
+    if (!parseSemver(core, out) || !part(p, n) || *p || n < 1 || n > 99) return false;   // part(): no leading zero
+    pre = uint8_t(n);
+    return true;
+}
+void semverTextPre(uint32_t v, uint8_t pre, char out[24]) {
+    char core[16]; semverText(v, core);   // at most 11 characters ("999.999.999"): %.11s lets the compiler prove the fit
+    if (pre) snprintf(out, 24, "%.11s-beta.%u", core, unsigned(pre)); else snprintf(out, 24, "%s", core);
+}
 void semverText(uint32_t v, char out[16]) {
     if (!v) snprintf(out, 16, "dev");
     else if (v > 999999999u) snprintf(out, 16, "?");
@@ -34,19 +53,21 @@ void semverText(uint32_t v, char out[16]) {
 static const char GH[] = "https://github.com/" ORCON_RELEASE_REPO "/releases/";
 static const char REPO_PREFIX[] = "/" ORCON_RELEASE_REPO "/releases/";
 bool bundleName(const otap::Manifest& m, char* out, size_t n) {
-    char v[16]; semverText(m.version, v);
-    if (!m.version || m.version > 999999999u || strlen(m.commit) != 40 || m.variant == otap::Variant::None) return false;
+    char v[24]; semverTextPre(m.version, m.pre, v);
+    if (!m.version || m.version > 999999999u || m.pre > 99 || strlen(m.commit) != 40 || m.variant == otap::Variant::None) return false;
     const int k = snprintf(out, n, "orcon-%s-v%s-%.7s.orconfw", otap::variantName(m.variant), v, m.commit);
     return k > 0 && size_t(k) < n;
 }
-bool indexUrl(char* out, size_t n) {
-    const int k = snprintf(out, n, "%slatest/download/%s", GH, INDEX_ASSET);
+const char* indexAsset(otap::Variant v) { return v == otap::Variant::ControlMatter ? INDEX_ASSET_MATTER : INDEX_ASSET; }
+bool indexUrl(char* out, size_t n, bool beta, otap::Variant v) {
+    const int k = beta ? snprintf(out, n, "%sdownload/%s/%s", GH, BETA_TAG, indexAsset(v))
+                       : snprintf(out, n, "%slatest/download/%s", GH, indexAsset(v));
     return k > 0 && size_t(k) < n;
 }
 bool bundleUrl(const otap::Manifest& m, char* out, size_t n) {
-    char name[80], v[16];
+    char name[80], v[24];
     if (!bundleName(m, name, sizeof(name))) return false;
-    semverText(m.version, v);
+    semverTextPre(m.version, m.pre, v);
     const int k = snprintf(out, n, "%sdownload/v%s/%s", GH, v, name);
     return k > 0 && size_t(k) < n;
 }
@@ -316,9 +337,9 @@ const char* judge(const Offer& o, const Own& own) {
     const otap::Manifest& m = o.m;
     if (m.v != 2 || !m.version || m.version > 999999999u) return "bad-index";
     if (m.variant != own.variant || strcmp(m.env, own.env)) return "wrong-variant";
-    if (m.version < own.version) return "older-release";
-    if (const char* e = otap::checkManifest(m, "", "", own.slotSize, own.version)) return e;   // v2: mac/nonce unused
-    if (m.version == own.version) return "up-to-date";
+    if (otap::releaseRank(m.version, m.pre) < otap::releaseRank(own.version, own.pre)) return "older-release";
+    if (const char* e = otap::checkManifest(m, "", "", own.slotSize, own.version, own.pre, own.beta)) return e;   // v2: mac/nonce unused
+    if (m.version == own.version && m.pre == own.pre) return "up-to-date";
     return nullptr;
 }
 
@@ -330,7 +351,7 @@ const char* check(Transport& t, Verify verify, Clock now, const Limits& lim, con
                   char* io, size_t ioLen, Url& u, Head& h) {
     found = Found::None;
     char url[160];
-    if (!indexUrl(url, sizeof(url)) || ioLen < INDEX_MAX + 1) return "internal";
+    if (!indexUrl(url, sizeof(url), own.beta, own.variant) || ioLen < INDEX_MAX + 1) return "internal";
     const uint32_t deadline = now() + lim.checkMs;
     uint32_t len = 0;
     const char* e = httpGet(t, url, now, deadline, lim, INDEX_MAX, len, u, h);

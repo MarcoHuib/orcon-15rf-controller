@@ -1,0 +1,3 @@
+# Heap monitor and memory telemetry (components/orcon_matter/orcon_matter_heapmon.cpp): the 8-bit heap, its largest
+# block and failed allocations per phase, the "[mem]" line and the owner's GET /api/mem. About 1.3 KB of RAM.
+CONFIG_ORCON_MATTER_HEAPMON=y

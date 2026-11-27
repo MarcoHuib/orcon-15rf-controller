@@ -1,0 +1,39 @@
+menu "Orcon Matter"
+config ORCON_MATTER_FIVE_SWITCHES
+    bool "Model B: five On/Off switches (Stand 1/2/3, Auto, Afwezig) instead of Fan + Afwezig switch"
+    default n
+    help
+        Model B uses only On/Off plug-in units, the type Apple Home officially supports. Needs
+        CONFIG_ESP_MATTER_MAX_DYNAMIC_ENDPOINT_COUNT >= 6 (root + five switches).
+
+config ORCON_MATTER_BRIDGE
+    bool "The fan as a bridged device \"Orcon ventilator\" (Aggregator + Bridged Node), named in Apple Home"
+    default y
+    help
+        Endpoint 1 Aggregator, endpoint 2 Bridged Node + Fan with the Bridged Device Basic Information NodeLabel
+        "Orcon ventilator": without a DCL entry, Apple Home only takes over the names of bridged devices. Needs
+        CONFIG_SUPPORT_BRIDGED_DEVICE_BASIC_INFORMATION_CLUSTER=y. Off: the same fan on endpoint 1 (RAM comparison).
+
+config ORCON_MATTER_HEAPMON
+    bool "Heap monitor for the spare-board test (orcon_matter_heapmon.cpp)"
+    default n
+    help
+        Samples the byte-addressable heap and its largest free block every 20 ms from Orcon's setup() on
+        (before Wi-Fi and Matter), per phase, and logs failed allocations with a backtrace. Diagnostics builds
+        only. Off: the component builds without the monitor and without its link-time wraps.
+
+config ORCON_MATTER_CONTROL
+    bool "Matter switches the ventilation (Orcon's own admission, ctlAdmit), model A only"
+    default n
+    help
+        A Matter request goes through exactly the checks of the web page and Siri (unit, profile, identity, RF
+        budget, sessions, update) to Orcon's RF transaction; what Matter shows follows the unit's own reports.
+        Off: the same path as a dry run (logged and refused, nothing on air) with the same read-only mirror.
+
+config ORCON_MATTER_SHARE_MDNS_PORT
+    bool "Share UDP 5353 between Orcon's mDNS (orcon15rf.local) and Matter's (link-time wrap of udp_bind)"
+    default y
+    help
+        Without it Matter's DNS-SD cannot bind next to Orcon's mDNS responder and never becomes ready
+        (orcon_matter_mdns_port.cpp). Off only to reproduce that failure.
+endmenu

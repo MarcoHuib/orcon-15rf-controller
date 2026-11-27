@@ -20,8 +20,9 @@ static const char OWNER_MODEL_MARKER[] = "ORCON-OWNER-MODEL v1";
 // without it stay valid rollback targets.
 static const char OWNER_KEY_MARKER[] = "ORCON-OWNER-KEY v1";
 
-// Only explicitly approved firmware variants can be installed over the air.
-enum class Variant : uint8_t { None, RxOnly, RfTest, Control };
+// Only explicitly approved firmware variants can be installed over the air. ControlMatter is the control firmware with
+// Matter (docs/MATTER.md, env heltec_v2_matter): its own variant, so no update adds or removes Matter by itself.
+enum class Variant : uint8_t { None, RxOnly, RfTest, Control, ControlMatter };
 const char* variantName(Variant v);
 
 // Two signed manifest forms, both verified against the release key compiled into the firmware:
@@ -33,6 +34,7 @@ const char* variantName(Variant v);
 struct Manifest {
     uint8_t  v = 0;
     uint32_t version = 0;            // v2: the release number
+    uint8_t  pre = 0;                // v2 beta (kind "orcon-prerelease"): beta N = 1..99 of `version`; 0 = stable
     char     mac[18] = "";          // v1: lower-case MAC (six hex pairs) of the one board it is for
     char     env[40] = "";
     Variant  variant = Variant::None;
@@ -43,12 +45,22 @@ struct Manifest {
     char     nonce[33] = "";        // one-time value issued by this device (no replay/downgrade)
 };
 
+// A local install of another variant than the running build (with or without Matter, control or RX-only) only with the
+// owner's explicit confirmation (the page names what changes): nullptr when allowed. The update check never offers one.
+const char* variantChange(Variant manifest, const char* ownVariant, bool confirmed);
+
 // Parse the signed manifest text. Returns nullptr or an error code (unknown/missing/bad fields).
 const char* parseManifest(const char* json, Manifest& m);
 
-// Manifest against this device. v1: board and one-time nonce. v2: no older release than ownVersion,
-// released variants only (never the RF test image). Both: slot size, variant/env/allowTx pairing.
-const char* checkManifest(const Manifest& m, const char* ownMac, const char* issuedNonce, uint32_t slotSize, uint32_t ownVersion = 0);
+// The order of releases: a stable release above every beta of the same version, so
+// 1.0.1 < 1.1.0-beta.1 < 1.1.0-beta.2 < 1.1.0. One rule for the check (fw_update.cpp judge) and every install.
+inline uint64_t releaseRank(uint32_t version, uint8_t pre) { return uint64_t(version) * 100u + (pre ? pre : 100u); }
+
+// Manifest against this device. v1: board and one-time nonce. v2: never below the own release (releaseRank), a beta
+// only when the owner allows betas ("beta-disabled"), released variants only (never the RF test image). Both: slot
+// size, variant/env/allowTx pairing.
+const char* checkManifest(const Manifest& m, const char* ownMac, const char* issuedNonce, uint32_t slotSize, uint32_t ownVersion = 0,
+                          uint8_t ownPre = 0, bool betaOk = false);
 
 // Streaming search over the uploaded image (chunks of any size, patterns may straddle chunks).
 class Scanner {
@@ -67,6 +79,8 @@ public:
     bool ownerKey = false;    // OWNER_KEY_MARKER
     bool releaseKeyReset = false;   // the removed password reset with the firmware signing key (its request kind)
     bool commitStamp = false; // the manifest's 40-hex commit
+    bool matter = false;      // the Matter build's marker (idf/components/orcon_matter: orcon_matter_marker)
+    bool matterIdentity = false;   // an image that itself holds a Matter identity (a private migration build)
 private:
     void match(const uint8_t* buf, size_t n);
     char commit_[41];
@@ -79,6 +93,9 @@ const char* checkImage(const Manifest& m, const Scanner& s, uint32_t received, c
 // keys), or one of the two older ownership images (b75fad3, 2edb423) whose recovery still trusted the release key.
 // Never a build without the ownership model that only carries OWNER_MODEL_MARKER (Codex legacy r4).
 inline bool ownerRecovery(const Scanner& s) { return s.ownerModel && (s.ownerKey || s.releaseKeyReset); }
+// A rollback image that may stay after a factory reset: one with an owner recovery, without an embedded Matter identity.
+// A migration build booted after the reset would move its identity onto the device again: the previous owner's.
+inline bool keepAfterReset(const Scanner& s) { return ownerRecovery(s) && !s.matterIdentity; }
 
 // One trial-boot decision per main-loop pass (ota_signed.cpp tick). A healthy image may try to confirm itself after
 // confirmAfter ms, at most once per second; the caller reads the owner key right before each attempt. Past rollbackAfter

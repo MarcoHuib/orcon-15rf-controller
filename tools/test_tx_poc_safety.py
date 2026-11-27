@@ -1,6 +1,6 @@
 """Local-only phase 1 source guards and negative capability compiles. No hardware/network."""
 from pathlib import Path
-import argparse, configparser, hashlib, os, re, subprocess
+import argparse, configparser, hashlib, os, re, subprocess, sys, tempfile
 
 p=argparse.ArgumentParser()
 p.add_argument('--compiler',default='g++')
@@ -145,8 +145,9 @@ def fn(text,head):                                     # body of the first funct
     return text.split(head,1)[1].split('\n}\n',1)[0]
 def tx_paths_safe(web,net,radio,runtime,main):
     assert web.count('controller().submitCtl(')==1 and 'submitCtl' not in net+main
-    # The mode-command gates live in ctlAdmit(), shared by the web page and Siri (docs/SIRI.md): the only
-    # submitCtl() call, after every gate, and exactly two callers, each with its own authentication first.
+    # The mode-command gates live in ctlAdmit(), shared by the web page, Siri (docs/SIRI.md) and Matter
+    # (docs/MATTER.md): the only submitCtl() call, after every gate, and exactly three callers, each with its own
+    # authentication first (Matter: the Matter stack's session and access control, before a request reaches us).
     adm=fn(web,'static int ctlAdmit(uint8_t k, uint32_t request, const char*& e, uint32_t& waitMs) {')
     order=['"profile-storage-unavailable"','"profile-required"','"profile-protocol-unsupported"',
            '"profile-unit-mismatch"','"identity-conflict"','"tx-budget"','controller().submitCtl(']
@@ -154,7 +155,7 @@ def tx_paths_safe(web,net,radio,runtime,main):
     assert all(x>=0 for x in pos) and pos==sorted(pos),('send gate order',list(zip(order,pos)))
     assert 'identityClear' in adm.split('submitCtl(',1)[1] and 'txpoc::rxReady()' in adm.split('submitCtl(',1)[1]
     callers=len(re.findall(r'\bctlAdmit\s*\(',web))
-    assert callers==3,('ctlAdmit callers',callers)           # the definition + the two handlers below
+    assert callers==4,('ctlAdmit callers',callers)           # the definition + the two handlers + matterControl below
     assert not re.search(r'\barg\s*\(\s*"k"\s*\)',web),'a Siri key is never read from the URL'
     # Whole statements, whitespace-normalised, in this order: each gate with its early return (Codex SIRI-08:
     # tokens alone let "||" -> "&&", an ignored guard result or a weakened predicate pass). The behaviour
@@ -174,6 +175,11 @@ def tx_paths_safe(web,net,radio,runtime,main):
               r'const char\* given = auth\.length\(\) > 7 && !strncasecmp\(auth\.c_str\(\), "Bearer ", 7\) \? auth\.c_str\(\) \+ 7 : "";',
               r'if \(authstore::siriKey\(key\) != authstore::Status::Ok \|\| !webauth::equal\(given, key\)\) '+say,
               r'ctlAdmit\(k, 0, e, w\)'],'siri')
+    # Matter: the five keys Siri takes (never the timer), no page sequence, like Siri.
+    in_order(fn(web,'int matterControl(const char* key, const char*& e, uint32_t& waitMs) {'),
+             [r'const uint8_t k = keyFromName\(key\);',
+              r'if \(k == K_NONE \|\| k == K_TIMER\) \{ e = "bad-key"; waitMs = 0; return 400; \}',
+              r'return ctlAdmit\(k, 0, e, waitMs\);'],'matter')
     assert net.count('controller().submit(')==1 and 'submit' not in main.replace('consumeResult','')
     poc=fn(net,'static void handlePocMode() {')
     assert poc.find('rf-web-control-required')>=0 and poc.find('rf-web-control-required')<poc.find('controller().submit(')
@@ -193,6 +199,14 @@ def tx_paths_safe(web,net,radio,runtime,main):
     assert len(be)==2 and 'class Sx1276Backend' in be[0] and 'class Sx1276Backend' not in be[1]+runtime.split('#if ORCON_TX_RF_ENABLE\n',1)[0]
 web=Path('src/setup_web.cpp').read_text(); main_src=Path('src/main.cpp').read_text()
 tx_paths_safe(web,net,radio,runtime:=Path('src/tx_poc_runtime.cpp').read_text(),main_src)
+# The Matter admission (setupweb::matterControl) has exactly one caller: the Matter component's loop-task handoff.
+uses=sorted(p.name for p in Path('src').iterdir() if 'matterControl(' in p.read_text())
+assert uses==['setup_web.cpp','setup_web.h'] and web.count('matterControl(')==1,uses
+mtr=[p for p in sorted(Path('idf/components/orcon_matter').rglob('*')) if p.is_file() and 'matterControl(' in p.read_text(errors='replace')]
+assert [str(p) for p in mtr]==['idf/components/orcon_matter/orcon_matter.cpp'],mtr   # its declaration and one call
+mtr=mtr[0].read_text()
+assert mtr.count('matterControl(')==2 and mtr.count('\nint matterControl(const char* key, const char*& e, uint32_t& waitMs);\n')==1
+assert mtr.count('setupweb::matterControl(')==1
 for name,old,new in [('no-profile-gate','if(!profile){e="profile-required";return 409;}',''),
                      ('no-unit-gate','if(!(profile->unit==orcon::ids().fan)){e="profile-unit-mismatch";return 409;}',''),
                      ('auto-ack-ungated','if (CAN_PAIR && g_pair.st','if (g_pair.st'),
@@ -211,6 +225,9 @@ for name,old,new in [('no-profile-gate','if(!profile){e="profile-required";retur
                      ('siri-state-weakened','st != provision::State::Done)','st == provision::State::New)'),
                      ('siri-key-in-url-spaced','g_srv->header("Authorization")','g_srv->arg( "k" )'),
                      ('siri-no-return','siriSay(401, "De Siri-sleutel klopt niet. Kijk in de webinterface bij Systeem, Integraties.");\n        return;','siriSay(401, "De Siri-sleutel klopt niet. Kijk in de webinterface bij Systeem, Integraties.");'),
+                     ('matter-timer-key','if (k == K_NONE || k == K_TIMER) { e = "bad-key"; waitMs = 0; return 400; }','if (k == K_NONE) { e = "bad-key"; waitMs = 0; return 400; }'),
+                     ('matter-any-key','if (k == K_NONE || k == K_TIMER) { e = "bad-key"; waitMs = 0; return 400; }',''),
+                     ('matter-page-sequence','return ctlAdmit(k, 0, e, waitMs);','return ctlAdmit(k, 1, e, waitMs);'),
                      ('third-admit-caller-spaced','static void handleRemoteState() { if (!authorize(false, true)) return; remoteBody(200); }','static void handleRemoteState() { const char* e; uint32_t w; ctlAdmit (1, 0, e, w); }')]:
     mutated=web.replace(old,new,1); assert mutated!=web,name
     try: tx_paths_safe(mutated,net,radio,runtime,main_src)
@@ -331,10 +348,22 @@ else: raise AssertionError('hold guard accepted mutation unauthenticated-hold')
 # Release update check (fw_update_esp.cpp, docs/UPDATECONTROLE.md): it can install firmware, so every route asks the owner's
 # session first (the install and the check also CSRF + same origin), TLS always verifies against the pinned roots, nothing
 # disables verification, and the download URL is never taken from the request.
-def update_safe(src):
+def update_safe(src,cb=None):
+    cb=Path('src/fw_update_roots_cb.h').read_text() if cb is None else cb
     for h,mut in (('static void handleStatus() {','authorize(false)'),('static void handleCheck() {','authorize(true)'),('static void handleInstall() {','authorize(true)')):
         assert fn(src,h).lstrip().startswith('if (!setupweb::authorize(%s)) return;'%mut.split('(')[1].rstrip(')')),(h,'must ask the owner first')
-    assert src.count('c.connect(ip, 443, host, FWUP_ROOTS_PEM, nullptr, nullptr)')==1,'TLS must verify against the pinned roots'
+    # The pinned roots on every build: WiFiClientSecure gets the PEM buffer; a Matter build (docs/MATTER.md) offers the
+    # same nine roots as DER through mbedTLS's trusted-CA callback (fw_update_roots_cb.h), VERIFY_REQUIRED.
+    tls=src.split('struct TlsTransport : fwup::Transport {\n',1)[1].split('    const char* err',1)[0]
+    assert tls==('#if ORCON_MATTER\n    rootscb::Client c;\n    static constexpr const char* kRoots = nullptr;   // the callback supplies them\n'
+                 '#else\n    WiFiClientSecure c;\n    static constexpr const char* kRoots = FWUP_ROOTS_PEM;\n#endif\n'),'TLS must verify against the pinned roots'
+    assert src.count('c.connect(ip, 443, host, kRoots, nullptr, nullptr)')==1,'TLS must verify against the pinned roots'
+    att=fn(cb,'static esp_err_t attach(void* conf) {')
+    assert 'mbedtls_ssl_conf_authmode((mbedtls_ssl_config*)conf, MBEDTLS_SSL_VERIFY_REQUIRED);' in att and \
+           'mbedtls_ssl_conf_ca_cb((mbedtls_ssl_config*)conf, caCallback, nullptr);' in att,'callback roots: VERIFY_REQUIRED'
+    assert 'Client() { sslclient->bundle_attach_cb = attach; _use_ca_bundle = true; }' in cb,'the Matter client always attaches them'
+    pick=fn(cb,'static int caCallback(void*, mbedtls_x509_crt const* child, mbedtls_x509_crt** candidates) {')
+    assert pick.count('_parse_der_nocopy(')==pick.count('ROOT_DER[i], ROOT_DER_LEN[i])')==2,'the callback offers the pinned roots only'
     allsrc='\n'.join(x.read_text() for x in Path('src').glob('*.[ch]*'))
     for bad in ('setInsecure','MBEDTLS_SSL_VERIFY_NONE','MBEDTLS_SSL_VERIFY_OPTIONAL','setCACertBundle','HTTPUpdate'):
         assert bad not in allsrc,('forbidden in the firmware',bad)   # (Update.begin: legacy non-V2 /update in net.cpp; the image scanner refuses it)
@@ -355,7 +384,9 @@ upd=Path('src/fw_update_esp.cpp').read_text(); update_safe(upd)
 for name,old,new in (('status-without-login','if (!setupweb::authorize(false)) return; statusBody(200);','statusBody(200);'),
                      ('install-without-login','static void handleInstall() {\n    if (!setupweb::authorize(true)) return;','static void handleInstall() {'),
                      ('check-without-csrf','static void handleCheck() {\n    if (!setupweb::authorize(true)) return;','static void handleCheck() {\n    if (!setupweb::authorize(false)) return;'),
-                     ('tls-without-roots','c.connect(ip, 443, host, FWUP_ROOTS_PEM, nullptr, nullptr)','c.connect(ip, 443)'),
+                     ('tls-without-roots','c.connect(ip, 443, host, kRoots, nullptr, nullptr)','c.connect(ip, 443)'),
+                     ('tls-pem-dropped','kRoots = FWUP_ROOTS_PEM;','kRoots = nullptr;'),
+                     ('tls-matter-plain-client','    rootscb::Client c;','    NetworkClientSecure c;'),
                      ('install-from-url','g_offer.m.version == want','g_s->arg("url").length()'),
                      ('install-any-offer','startJob(Job::Install, false, want, commit)','startJob(Job::Install, false)'),
                      ('install-any-commit','LOCKED(offered = g_st.found == fwup::Found::Newer && g_offer.m.version == want && !strcmp(g_offer.m.commit, commit));','LOCKED(offered = g_st.found == fwup::Found::Newer && g_offer.m.version == want);'),):
@@ -363,6 +394,18 @@ for name,old,new in (('status-without-login','if (!setupweb::authorize(false)) r
     try: update_safe(m)
     except AssertionError: print('PASS update guard rejects mutation',name)
     else: raise AssertionError('update guard accepted mutation '+name)
+cbh=Path('src/fw_update_roots_cb.h').read_text()
+for name,old,new in (('tls-callback-verify-optional','MBEDTLS_SSL_VERIFY_REQUIRED);','MBEDTLS_SSL_VERIFY_OPTIONAL);'),
+                     ('tls-callback-not-attached','sslclient->bundle_attach_cb = attach; ',''),
+                     ('tls-callback-trusts-peer','_parse_der_nocopy(list, ROOT_DER[i], ROOT_DER_LEN[i])','_parse_der_nocopy(list, child->raw.p, child->raw.len)')):
+    m=cbh.replace(old,new,1); assert m!=cbh,name
+    try: update_safe(upd,m)
+    except AssertionError: print('PASS update guard rejects mutation',name)
+    else: raise AssertionError('update guard accepted mutation '+name)
+# The callback's DER roots are exactly the pinned PEM roots: regenerated (fingerprints checked) and compared.
+with tempfile.TemporaryDirectory() as d:
+    g=run([sys.executable,'-I','tools/gen_roots_der.py','src/fw_update_roots.h',os.path.join(d,'der.h')])
+    assert g.returncode==0 and Path(d,'der.h').read_text()==Path('src/fw_update_roots_der.h').read_text(),('DER roots differ from the pinned roots',g.stderr)
 print('PASS update check: owner session first, pinned TLS roots, no insecure TLS, signed-OTA writer only')
 # The firmware signing key never sets or resets a password (docs/HERSTELSLEUTEL_MIGRATIE.md): no release-key recovery
 # route, request, code or state comes back, the CLI has no auth-code, and an OTA trial boot on a board without an owner key
@@ -394,12 +437,14 @@ def legacy_recovery_safe(files,ota):
     for path,text in files.items():
         if path.endswith('ota_policy.h'): assert text.count('"ORCON-OWNER-KEY v1"')==1,path; continue
         assert 'ORCON-OWNER-KEY' not in text,(path,'plain owner-key marker')
+        assert 'ORCON-MATTER-EMBEDDED-IDENTITY' not in text,(path,'plain embedded-identity marker: every image would read as a migration build')
         if 'OWNER_KEY_MARKER' in text: assert path.endswith('ota_signed.cpp') and text.count('OWNER_KEY_MARKER')==1 and '#if ORCON_OWNER_MODEL\n             otap::OWNER_KEY_MARKER,' in text,(path,'owner-key marker outside an ownership build')
     own=files['src/owner_store.cpp']
     assert 'return ok && onCurve(q);' in fn(own,'bool ownerKey(uint8_t q[65]) {') and 'mbedtls_ecp_check_pubkey(&g, &p) == 0' in fn(own,'static bool onCurve('),'only a usable key counts (Codex legacy r3)'
     assert 'bool recoveryActive() { return g_boot == Mode::Recovery && physicalActive(); }' in own,'WiFi wissen opens no recovery (Codex legacy r3)'
     assert 'inline bool ownerRecovery(const Scanner& s) { return s.ownerModel && (s.ownerKey || s.releaseKeyReset); }' in files['src/ota_policy.h'],'rollback-target classifier (host-tested)'
-    assert 'if (otap::ownerRecovery(s)) return true;' in own and 'return otap::ownerRecovery(s) && s.signedOta && !s.legacyOta;' in fn(ota,'bool previousIsOwnerModel() {'),'a model-only build is never kept or chosen as a rollback target (Codex legacy r4)'
+    assert 'inline bool keepAfterReset(const Scanner& s) { return ownerRecovery(s) && !s.matterIdentity; }' in files['src/ota_policy.h'],'a factory reset never keeps an image with an embedded Matter identity (host-tested)'
+    assert 'if (otap::keepAfterReset(s)) return true;' in own and 'return otap::ownerRecovery(s) && s.signedOta && !s.legacyOta;' in fn(ota,'bool previousIsOwnerModel() {'),'a model-only build is never kept or chosen as a rollback target (Codex legacy r4)'
     web=files['src/setup_web.cpp']
     assert 'physicalActive' not in web and 'c.physical = ownerstore::recoveryActive();' in fn(web,'static bool provGate('),'the key and recovery routes follow the Herstelmodus only'
     h=re.sub(r'\s+',' ',fn(ota,'void tick(uint32_t now) {'))
@@ -471,7 +516,10 @@ for name,where,old,new in (('reset-route-back','src/setup_web.cpp','    s.on("/a
                            ('wifi-reset-recovers','src/owner_store.cpp','bool recoveryActive() { return g_boot == Mode::Recovery && physicalActive(); }','bool recoveryActive() { return physicalActive(); }'),
                            ('gate-on-physical','src/setup_web.cpp','c.physical = ownerstore::recoveryActive();','c.physical = ownerstore::physicalActive();'),
                            ('classifier-model-only','src/ota_policy.h','return s.ownerModel && (s.ownerKey || s.releaseKeyReset);','return s.ownerModel;'),
-                           ('reset-keeps-model-only','src/owner_store.cpp','if (otap::ownerRecovery(s)) return true;','if (s.ownerModel) return true;'),
+                           ('reset-keeps-model-only','src/owner_store.cpp','if (otap::keepAfterReset(s)) return true;','if (s.ownerModel) return true;'),
+                           ('reset-keeps-embedded-identity','src/ota_policy.h','{ return ownerRecovery(s) && !s.matterIdentity; }','{ return ownerRecovery(s); }'),
+                           ('reset-by-recovery-only','src/owner_store.cpp','if (otap::keepAfterReset(s)) return true;','if (otap::ownerRecovery(s)) return true;'),
+                           ('plain-identity-marker-in-scanner','src/ota_policy.cpp','matterIdentity |= has(b, n, PAT(P_MATTER_ID));','matterIdentity |= has(b, n, "ORCON-MATTER-EMBEDDED-IDENTITY v1");'),
                            ('tick-not-called','src/main.cpp','    ota::tick(millis());','    (void)0;'),
                            ('tick-disabled-block','src/main.cpp','#if ORCON_SIGNED_OTA\n    ota::tick(millis());','#if 0\n    ota::tick(millis());'),
                            ('tick-wrapped-out','src/main.cpp','\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());               // confirm a freshly installed image, or roll back\n#endif\n','\n#if 0\n#if ORCON_SIGNED_OTA\n    ota::tick(millis());               // confirm a freshly installed image, or roll back\n#endif\n#endif\n'),
@@ -761,7 +809,9 @@ def release_workflow_safe(text):
     assert d['env']=={'RELEASE_ENV':'heltec_v2_sx1276_control','PYTHONDONTWRITEBYTECODE':'1','PIP_DISABLE_PIP_VERSION_CHECK':'1'},('workflow env: exactly as reviewed',d['env'])
     assert all('run' in st or st['uses'].split('@')[0] in ('actions/checkout','actions/upload-artifact','actions/download-artifact') for st in jobs['sign']['steps']),'signing job: no setup actions'
 WORKFLOWS={'heltec-v2-rx-only.yml':'fbf3af64a87be3822246c0adc17ba3cb5ec42c1ddb725c455153f8fd4ea7a563',   # file -> sha256 of the reviewed content
-           'release-control.yml':'3c903ee8c13c224629a61fe8620445a1859ec903bdbb346e2e3350c97b06a258'}
+           'release-control.yml':'3c903ee8c13c224629a61fe8620445a1859ec903bdbb346e2e3350c97b06a258',
+           # Matter checks (pull requests): contents read, no secrets, no artifact; the placeholder identity only
+           'matter.yml':'bf4ede81add9bbe08432924a7f4c1c4b71f930870768531e11e7c8f2d499a613'}
 def workflows_reviewed(files):   # files: name -> bytes (None: not a regular file) of every *.yml/*.yaml entry
     assert sorted(files)==sorted(WORKFLOWS),('workflow files differ from the reviewed list',sorted(files))
     for n,data in files.items():

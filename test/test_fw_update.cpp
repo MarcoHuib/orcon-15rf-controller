@@ -105,7 +105,7 @@ static std::vector<uint8_t> image(size_t n) { std::vector<uint8_t> v(n); for (si
 static std::string bundle(const std::string& man, const std::string& sig, const std::vector<uint8_t>& img) {
     return "{\"manifest\":" + jsonStr(man) + ",\"sig\":\"" + sig + "\"}\n" + std::string(img.begin(), img.end());
 }
-static const Own OWN = {1002003, otap::Variant::Control, "heltec_v2_sx1276_control", 0x330000};
+static const Own OWN = {1002003, otap::Variant::Control, "heltec_v2_sx1276_control", 0x330000, 0, false};   // stable, beta off
 // GitHub as it answers today: latest/download -> releases/download/<tag>/<asset> -> the signed asset-host URL.
 static void publish(Mock& m, const std::string& man, const std::string& sig, const std::vector<uint8_t>& img, const char* tag,
                     const std::string& indexBody = "") {
@@ -162,6 +162,7 @@ int main() {
     char t[16];
     semverText(1002003, t); CHECK(eq(t, "1.2.3"), "text 1.2.3");
     semverText(0, t); CHECK(eq(t, "dev"), "text dev");
+    semverText(999999999u, t); CHECK(eq(t, "999.999.999"), "text largest");
     semverText(1000000000u, t); CHECK(eq(t, "?"), "text overflow");
     CHECK(parseSemver("2.0.0", v) && v > 1999999 && parseSemver("1.999.999", v) && v < 2000000, "numeric order = SemVer order");
 
@@ -277,7 +278,7 @@ int main() {
             "GitHub's two redirects with a 4,203-byte CSP each, then the 608-byte orcon-update.json: the newer release is found");
       MockSink s; s.want = img;
       CHECK(!runInstall(m, o, s) && s.activated, "the same heads on the bundle download: installed");
-      Offer up; Found same; const Own on13 = {1003000, otap::Variant::Control, "heltec_v2_sx1276_control", 0x330000};
+      Offer up; Found same; const Own on13 = {1003000, otap::Variant::Control, "heltec_v2_sx1276_control", 0x330000, 0, false};
       CHECK(!runCheck(m, up, same, on13) && same == Found::UpToDate, "a board on that release sees it as up to date");
       const std::string latest = "github.com " + std::string(REPO) + "latest/download/orcon-update.json";
       for (const char* to : {"https://evil.example/x", "http://github.com/x", "https://github.com/other/repo/releases/download/v1/x"}) {
@@ -344,6 +345,11 @@ int main() {
       CHECK(eq(runCheck(m, o, f), "response-too-large"), "oversized index refused before reading it"); }
     // ---- check: network ----
     { Mock m; Offer o; Found f; CHECK(eq(runCheck(m, o, f), "no-release"), "no release published (404)"); }
+    { Mock m; Offer o; Found f;   // a board with Matter reads its own index, never the control image's
+      const Own matter = {1002003, otap::Variant::ControlMatter, "heltec_v2_matter", 0x330000, 0, false};
+      CHECK(eq(runCheck(m, o, f, matter), "no-release") && m.log.size() == 1 &&
+            m.log[0].size() > 25 && m.log[0].compare(m.log[0].size() - 25, 25, "/orcon-update-matter.json") == 0 &&
+            m.log[0].find("/releases/latest/download/") != std::string::npos, "Matter board: latest/download/orcon-update-matter.json"); }
     { Mock m; m.refuse["github.com"] = "dns-failed"; Offer o; Found f; CHECK(eq(runCheck(m, o, f), "dns-failed"), "DNS failure"); }
     { Mock m; m.refuse["github.com"] = "tls-failed"; Offer o; Found f; CHECK(eq(runCheck(m, o, f), "tls-failed"), "TLS failure (untrusted chain or name)"); }
     { Mock m; publish(m, man, sig, img, "v1.3.0"); m.refuse["release-assets.githubusercontent.com"] = "tls-failed"; Offer o; Found f;

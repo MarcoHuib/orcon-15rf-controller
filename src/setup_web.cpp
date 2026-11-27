@@ -71,9 +71,10 @@ static bool     g_pendOffer = false, g_pendAck = false;   // bind sends awaiting
 static uint32_t g_offerAt = 0;                            // when the offer was admitted
 static ramses::DeviceId g_learnedFan;                     // pairing result to persist (net.cpp)
 #endif
-static char     g_out[3072];                  // one response at a time (loop task only)
+// The one JSON response buffer of the web server: every route runs in the loop task's handleClient(), one at a time,
+// and send() has copied it to lwIP before the next one starts (also net.cpp /api/state, via responseBuffer()).
+static char     g_out[3072];
 static rfcon::Ring g_con;                     // live RF console (loop task only)
-static char     g_conOut[3072];
 
 struct Out {
     size_t n = 0; bool ok = true;
@@ -170,6 +171,8 @@ static bool guard(JsonDocument& d, const char* const* keys, size_t nkeys, bool a
 #endif
     return parseBody(d, keys, nkeys, maxBody);
 }
+char* responseBuffer(size_t& cap) { cap = sizeof(g_out); return g_out; }
+
 bool authorize(bool mutation, bool allowAp) {
 #if ORCON_WEB_AUTH
     if (mutation) { if (!sameOrigin(allowAp)) return false; }
@@ -917,9 +920,9 @@ static void handleConsole() {
     if (!a.length() || (end && *end)) after = 0;                 // absent or not a number: from the start
     consoleTick(millis());                                       // fresh syncs/health in this reply
     for (uint32_t max = 16; max; max /= 2)
-        if (g_con.json(uint32_t(after), max, millis(), g_conOut, sizeof(g_conOut))) {
+        if (g_con.json(uint32_t(after), max, millis(), g_out, sizeof(g_out))) {
             g_srv->sendHeader("Cache-Control", "no-store");
-            g_srv->send(200, "application/json", g_conOut);
+            g_srv->send(200, "application/json", g_out);
             return;
         }
     fail(500, "response-too-large");
@@ -1353,6 +1356,27 @@ bool takeLearnedFan(ramses::DeviceId& out) {
     return true;
 }
 #endif
+
+// Matter (idf/components/orcon_matter) switches the unit through the same admission as the web page and
+// Siri, in ctlAdmit: update, unit, sessions, profile, identity, RF budget, the controller's own rules. Loop task only.
+int matterControl(const char* key, const char*& e, uint32_t& waitMs) {
+#if ORCON_TX_POC
+    const uint8_t k = keyFromName(key);
+    if (k == K_NONE || k == K_TIMER) { e = "bad-key"; waitMs = 0; return 400; }   // five functions, as Siri
+    return ctlAdmit(k, 0, e, waitMs);   // 0: no page sequence; like Siri every Matter request is a new command
+#else
+    (void)key; e = "tx-unavailable"; waitMs = 0; return 501;
+#endif
+}
+uint8_t matterUnitMode(bool& txBusy) {   // the selected unit's own last report (31D9), 0xFF when none
+#if ORCON_TX_POC
+    txBusy = txpoc::controller().status().busy;
+#else
+    txBusy = false;
+#endif
+    const orcon::State& s = orcon::state();
+    return s.fanKnown ? uint8_t(s.mode) : 0xFF;
+}
 
 } // namespace setupweb
 #endif // !ORCON_TX_POC || ORCON_WEB_CONTROL

@@ -99,10 +99,15 @@ def analyse(elf, env, bindir):
             reverse.setdefault(callee, set()).add(caller)
     reaching = closure(tx, reverse) - set(tx)
     outside = sorted(n for n in reaching if not RADIOLIB.match(n))
-    # The two approved RF images (capped RF test, daily-use control) have exactly one path to the
-    # air; every other env none.
+    # The approved RF images (capped RF test, daily-use control, control with Matter) have exactly one path to the
+    # air; every other env none. The Matter image is the control image built with ESP-IDF 5 (uint32_t is unsigned
+    # long there), and its heap monitor marks each transmission in a pass-through wrapper of txBegin (--wrap,
+    # orcon_matter_heapmon.cpp): the same one path, one link longer.
     RF_PATH = {'radio::sx1276::txBegin(unsigned char const*, unsigned int)', 'txpoc::Sx1276Backend::start(unsigned int)'}
-    RF_ENVS = ('heltec_v2_sx1276_rftest', 'heltec_v2_sx1276_control')
+    if env == 'heltec_v2_matter':
+        RF_PATH = {'radio::sx1276::txBegin(unsigned char const*, unsigned int)', 'txpoc::Sx1276Backend::start(unsigned long)',
+                   '__wrap__ZN5radio6sx12767txBeginEPKhj'}
+    RF_ENVS = ('heltec_v2_sx1276_rftest', 'heltec_v2_sx1276_control', 'heltec_v2_matter')
     allowed = RF_PATH if env in RF_ENVS else set()
     problems = [f'non-RadioLib function reaches transmit: {n}' for n in outside if n not in allowed]
     send = [n for n in names if n.startswith('radio::sendFrame(')]

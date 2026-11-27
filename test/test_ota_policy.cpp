@@ -124,6 +124,52 @@ int main() {
     { const auto uncapped = image({COMMIT, "SX1276 direct RX + txpoc packet TX", SIGNED_OTA_MARKER});
       Manifest x; parseManifest(manifest("control", "heltec_v2_sx1276_control", true, (unsigned)uncapped.size()).c_str(), x);
       CHECK(!strcmp(checkImage(x, scan(uncapped, 300), (uint32_t)uncapped.size(), x.sha256), "image-not-control"), "unbudgeted RF image refused"); }
+    // ---- the control firmware with Matter: its own variant, env and marker, never one without the other (docs/MATTER.md)
+    const auto mtr = image({COMMIT, "SX1276 direct RX + txpoc packet TX (CONTROL: max 10/min, 60/h)", "ORCON-MATTER-FIRMWARE v1", SIGNED_OTA_MARKER});
+    { Manifest x;
+      CHECK(!parseManifest(manifest("control-matter", "heltec_v2_matter", true, (unsigned)mtr.size()).c_str(), x) &&
+            x.variant == Variant::ControlMatter && !strcmp(variantName(x.variant), "control-matter"), "Matter manifest parsed");
+      CHECK(!checkManifest(x, MAC, NONCE, 0x330000), "Matter manifest for this board accepted");
+      for (size_t chunk : {1u, 23u, 24u, 25u, 256u, 1436u}) {
+          const Scanner s = scan(mtr, chunk);
+          CHECK(s.matter && s.control && s.txCode && !s.rfTest && !s.rxRadio, "Matter marker found for every chunk size");
+          CHECK(!checkImage(x, s, (uint32_t)mtr.size(), x.sha256), "Matter image accepted as control-matter");
+      }
+      Manifest y; parseManifest(manifest("control-matter", "heltec_v2_matter", true, (unsigned)ctl.size()).c_str(), y);
+      CHECK(!strcmp(checkImage(y, scan(ctl, 300), (uint32_t)ctl.size(), y.sha256), "image-not-control-matter"), "control image labelled control-matter refused"); }
+    { Manifest x; parseManifest(manifest("control", "heltec_v2_sx1276_control", true, (unsigned)mtr.size()).c_str(), x);
+      CHECK(!strcmp(checkImage(x, scan(mtr, 300), (uint32_t)mtr.size(), x.sha256), "image-not-control"), "Matter image labelled control refused: never Matter unseen");
+      CHECK(!scan(ctl, 300).matter, "the control image carries no Matter marker"); }
+    // ---- a private migration build (it holds a Matter identity itself): installable, never kept after a factory reset
+    { const auto mig = image({COMMIT, "SX1276 direct RX + txpoc packet TX (CONTROL: max 10/min, 60/h)", "ORCON-MATTER-FIRMWARE v1",
+                              "ORCON-MATTER-EMBEDDED-IDENTITY v1", SIGNED_OTA_MARKER});
+      Manifest x; parseManifest(manifest("control-matter", "heltec_v2_matter", true, (unsigned)mig.size()).c_str(), x);
+      bool all = true;
+      for (size_t chunk : {1u, 32u, 33u, 34u, 256u, 1436u}) {
+          const Scanner s = scan(mig, chunk);
+          all = all && s.matter && s.matterIdentity && ownerRecovery(s) && !keepAfterReset(s) &&
+                !checkImage(x, s, (uint32_t)mig.size(), x.sha256);
+      }
+      CHECK(all, "migration build: its identity marker found for every chunk size; installable, never kept after a reset");
+      const Scanner u = scan(mtr, 300), c = scan(ctl, 300);
+      CHECK(!u.matterIdentity && keepAfterReset(u), "the universal Matter image holds no identity marker: it stays the rollback target");
+      CHECK(!c.matterIdentity && keepAfterReset(c), "the control image neither"); }
+    { Manifest x; parseManifest(manifest("control-matter", "heltec_v2_sx1276_control", true).c_str(), x);
+      CHECK(!strcmp(checkManifest(x, MAC, NONCE, 0x330000), "variant-mismatch"), "control-matter with the control env refused"); }
+    { Manifest x; parseManifest(manifest("control-matter", "heltec_v2_matter", false).c_str(), x);
+      CHECK(!strcmp(checkManifest(x, MAC, NONCE, 0x330000), "variant-mismatch"), "control-matter without TX refused"); }
+    { Manifest x; parseManifest(manifest("control", "heltec_v2_matter", true).c_str(), x);
+      CHECK(!strcmp(checkManifest(x, MAC, NONCE, 0x330000), "variant-mismatch"), "control with the Matter env refused"); }
+    { Manifest x; parseManifest(release("control-matter", "heltec_v2_matter", true, 9).c_str(), x);
+      CHECK(!checkManifest(x, "", "", 0x330000, 7), "a Matter release (v2): one signature for every board, as the control release"); }
+    // ---- a local install of another variant only with the owner's explicit confirmation
+    CHECK(variantChange(Variant::ControlMatter, "control-matter", false) == nullptr, "same variant: no confirmation needed");
+    CHECK(!strcmp(variantChange(Variant::Control, "control-matter", false), "variant-change-unconfirmed"), "with -> without Matter: confirmation needed");
+    CHECK(!strcmp(variantChange(Variant::ControlMatter, "control", false), "variant-change-unconfirmed"), "without -> with Matter: confirmation needed");
+    CHECK(!strcmp(variantChange(Variant::RxOnly, "control", false), "variant-change-unconfirmed"), "control -> RX-only: confirmation needed");
+    CHECK(!variantChange(Variant::Control, "control-matter", true) && !variantChange(Variant::RxOnly, "control", true), "confirmed: allowed");
+    CHECK(!strcmp(variantChange(Variant::Control, "other", false), "variant-change-unconfirmed") &&
+          !strcmp(variantChange(Variant::Control, nullptr, false), "variant-change-unconfirmed"), "an unknown own variant always asks");
     { Manifest x; parseManifest(manifest("rx-only", "heltec_v2_sx1276", false, (unsigned)ctl.size()).c_str(), x);
       CHECK(!strcmp(checkImage(x, scan(ctl, 300), (uint32_t)ctl.size(), x.sha256), "image-not-rx-only"), "control image labelled RX-only refused (no silent TX)");
       Manifest y; parseManifest(manifest("rf-test", "heltec_v2_sx1276_rftest", true, (unsigned)ctl.size()).c_str(), y);

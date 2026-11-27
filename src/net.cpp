@@ -384,10 +384,11 @@ static void handleUpdateDone() {
 }
 #endif
 
-static char g_stateBuf[3072];                  // loop task only (HTTP)
-static void handleState() {
-    if (!buildStateJson(g_stateBuf, sizeof(g_stateBuf))) { server.send(500, "application/json", "{\"err\":\"state too large\"}"); return; }
-    server.send(200, "application/json", g_stateBuf);
+static void handleState() {   // in the web server's shared response buffer (setup_web.cpp)
+    size_t cap = 0;
+    char* const buf = setupweb::responseBuffer(cap);
+    if (!buildStateJson(buf, cap)) { server.send(500, "application/json", "{\"err\":\"state too large\"}"); return; }
+    server.send(200, "application/json", buf);
 }
 static void handleNetCfg() {   // current WiFi SSID, to prefill the setup page
     JsonDocument d;

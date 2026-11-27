@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#f7f6fb">
+<meta name="referrer" content="no-referrer">
+<title>Orcon 15RF | Matter</title>
+<style>
+:root{font:16px system-ui,-apple-system,Segoe UI,Arial,sans-serif;color:#25223a;background:#f5f4f9}
+*{box-sizing:border-box}
+body{margin:0;padding:28px 16px;background:radial-gradient(ellipse at 50% 5%,#fff,#f4f2fa 75%)}
+button{font:inherit;color:inherit;cursor:pointer}button:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid #8942be;outline-offset:3px}
+[hidden]{display:none!important}
+.app{max-width:1080px;margin:auto;background:#fff;border:1px solid #e9e5f0;border-radius:24px;box-shadow:0 15px 55px #39304818;overflow:hidden}
+.top{padding:14px 36px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;border-bottom:1px solid #eae6f0}
+.brand{color:#5e5872;font-size:14px}.brand b{font-size:27px;letter-spacing:-1.5px;color:#771ca0;margin-right:12px;padding-right:14px;border-right:1px solid #d7d1e0}
+.tag{font-size:12px;padding:7px 11px;border-radius:30px;background:#f4f0fa;color:#705b82;text-decoration:none;margin-left:6px;white-space:nowrap}.tag.ok{background:#e4f6e8;color:#1b6e35}.tag.bad{background:#fdeaea;color:#a32424}.tag.warn{background:#fff3e2;color:#9a5a08}
+main{padding:38px 44px 44px;position:relative}.head{text-align:center;max-width:820px;margin:0 auto 34px}.head:before{content:"";display:block;width:66px;height:5px;background:#8126a5;border-radius:9px;margin:0 auto 20px}
+h1{font-size:clamp(28px,3.8vw,43px);letter-spacing:-1.6px;line-height:1.16;margin:0 0 16px}h2{font-size:19px;margin:0 0 8px}p{margin:0;color:#67627a;line-height:1.6}
+.bk{position:absolute;left:36px;top:26px;border:1px solid #e3d6ee;background:#fff;color:#6c2390;border-radius:10px;padding:7px 12px;font-weight:650;font-size:14px;text-decoration:none}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px;align-items:start}.col{display:grid;gap:18px}.wide{grid-column:1/-1}
+.panel{border:1px solid #e5dfef;border-radius:19px;padding:24px;box-shadow:0 3px 10px #382b4910;background:#fff}
+.act{display:block;width:100%;min-height:48px;background:#7e209f;color:#fff;border:0;border-radius:12px;font-weight:700;margin-top:18px}.act:hover:not(:disabled){background:#681383}.act:disabled{background:#e5deeb;color:#9f96a9}
+.act.danger{background:#a32424}.act.danger:hover:not(:disabled){background:#861b1b}
+.sec{border:1px solid #d9cfe4;background:#fff;color:#692588;font-weight:650;border-radius:10px;padding:10px 16px;min-height:44px}.sec:disabled{color:#a99db4}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}.row>*{flex:1 1 160px}
+.msg{font-size:13px;min-height:21px;margin-top:14px}.msg:empty{display:none}.okt{color:#207a3b}.warn{color:#a95e10}.bad{color:#a32424}
+.note{border-radius:12px;padding:12px 14px;margin-bottom:14px;font-size:14px;background:#fff6e9;color:#8a4b06;border:1px solid #f6d7a8;line-height:1.5}.note.err{background:#fdeeee;color:#a32424;border-color:#f3c4c4}.note.info{background:#f4f0fa;color:#5d4b70;border-color:#e3d6ee}
+.note a{color:inherit;font-weight:700}
+.chips{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px}.chip{border:1px solid #eeebf1;background:#f8f7fa;border-radius:10px;padding:12px 10px;font-size:12px;color:#8a8295;text-align:center}.chip b{display:block;font-size:15px;color:#3b3550;margin-bottom:2px}.chip.y{background:#e9f8ed;color:#167334;border-color:#d6eddb}.chip.y b{color:#167334}.chip.n{background:#fdeeee;color:#a32424;border-color:#f6d2d2}.chip.n b{color:#a32424}.chip.w{background:#fff5ec;color:#a65d10;border-color:#f6dcbd}.chip.w b{color:#a65d10}
+.pair{display:grid;justify-items:center;text-align:center;gap:12px;margin-top:6px}
+.qr{width:min(100%,268px);aspect-ratio:1;border:1px solid #e5dfef;border-radius:18px;padding:10px;background:#fff;box-shadow:0 4px 14px #382b4914}.qr svg{display:block;width:100%;height:100%}
+.code{font:650 clamp(24px,4.2vw,31px)/1.2 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.06em;color:#2b2540}
+.lbl{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#8a8295;font-weight:650}
+.timer{display:inline-flex;gap:8px;align-items:center;padding:7px 13px;border-radius:30px;background:#f4f0fa;color:#5d4b70;font-size:14px}.timer b{font-variant-numeric:tabular-nums;color:#6c2390}
+.ill{display:grid;place-items:center;width:84px;height:84px;border-radius:24px;background:#f2eaf8;color:#7921a1;margin:4px auto 8px}.ill svg{width:44px;height:44px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.step{display:flex;gap:14px;padding:12px 4px}.step p{font-size:14px}.step b{display:block;margin-bottom:2px}.num{flex:none;width:32px;height:32px;display:grid;place-items:center;border-radius:50%;background:#8527a6;color:#fff;font-weight:700;font-size:13px}
+.list{list-style:none;margin:14px 0 0;padding:0;display:grid;gap:8px}.item{display:grid;grid-template-columns:34px 1fr auto;gap:12px;align-items:center;padding:12px;border:1px solid #d6eddb;background:#f3fbf5;border-radius:12px;font-size:14px}.item small{display:block;color:#6d6880;font-size:12px}.sym{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;background:#218c42;color:#fff;font-weight:700}
+.item .sec{min-height:38px;padding:7px 12px;font-size:14px;color:#a32424;border-color:#f0caca}
+.empty{margin-top:12px;font-size:14px}
+.tech{margin-top:4px}.tech>summary{cursor:pointer;list-style:none;text-align:center;font-size:13px;font-weight:650;color:#6c2390;padding:8px}.tech>summary::-webkit-details-marker{display:none}.tech[open]>summary span:first-child,.tech:not([open])>summary span+span{display:none}
+.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:9px 18px;margin:8px 0 0;font-size:14px}.kv dt{color:#8a8295}.kv dd{margin:0;word-break:break-word;font-variant-numeric:tabular-nums}
+@media(max-width:790px){body{padding:0}.app{border:0;border-radius:0;box-shadow:none}.top{padding:10px 16px}.brand b{font-size:23px}main{padding:70px 16px 24px}.bk{left:16px;top:16px}.head{margin-bottom:22px}.grid{grid-template-columns:minmax(0,1fr)}.panel{padding:18px}}
+@media(max-width:420px){.chips{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+<header class="top"><div class="brand"><b>ORCON</b>15RF</div><div><span class="tag" id="conn" role="status">Verbinden…</span></div></header>
+<main>
+<a class="bk" href="/">← Terug</a>
+<div class="head"><h1>Matter</h1><p>Bedien je ventilatie via je slimme woning.</p></div>
+<div class="note err" id="err" role="alert" hidden></div>
+<div class="note info" id="login" hidden>Log in op de <a href="/">Orcon-pagina</a> om koppelingen te bekijken en te beheren. Open deze pagina daarna opnieuw.</div>
+<div class="grid">
+<div class="col">
+<section class="panel" aria-labelledby="hS">
+<h2 id="hS">Status</h2>
+<p id="stText">Laden…</p>
+<div class="chips">
+<div class="chip" id="cM"><b id="cMv">–</b><span>Matter</span></div>
+<div class="chip" id="cF"><b id="cFv">–</b><span>Gekoppeld</span></div>
+<div class="chip" id="cW"><b id="cWv">–</b><span>Koppelvenster</span></div>
+</div>
+<div id="act" hidden>
+<p id="actText"></p>
+<button class="act" id="activate">Matter activeren</button>
+<div class="note err" id="actBox" role="alertdialog" aria-labelledby="actConfirm" hidden style="margin-top:14px">
+<p id="actConfirm">Een nieuwe Matter-identiteit maken? De controller is daarna voor je apps een nieuw apparaat: bestaande koppelingen werken niet meer en je koppelt opnieuw.</p>
+<div class="row"><button class="act danger" id="actYes" style="margin-top:0">Ja, nieuwe identiteit</button><button class="sec" id="actNo">Annuleren</button></div>
+</div>
+<p class="msg" id="actMsg" role="status"></p>
+</div>
+</section>
+<section class="panel" aria-labelledby="hI">
+<h2 id="hI">Koppelen met Apple Woning</h2>
+<div class="step"><span class="num">1</span><div><b>Open Apple Woning</b><p>Op je iPhone of iPad.</p></div></div>
+<div class="step"><span class="num">2</span><div><b>Kies 'Voeg accessoire toe'</b><p>Via de + rechtsboven.</p></div></div>
+<div class="step"><span class="num">3</span><div><b>Scan de QR-code</b><p>Lukt scannen niet? Kies 'Meer opties' en voer de koppelcode in.</p></div></div>
+<div class="step"><span class="num">4</span><div><b>Volg de instructies op het scherm</b><p>Woning meldt een niet-gecertificeerd accessoire: dit is je eigen controller met eigen sleutels. Kies 'Voeg toch toe'.</p></div></div>
+</section>
+</div>
+<section class="panel" aria-labelledby="hP" id="pairP">
+<h2 id="hP">Koppelvenster</h2>
+<div id="pClosed">
+<div class="ill" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM20 14v.01M14 20h.01M17 20h4v-3"/></svg></div>
+<p id="pClosedText">Open het koppelvenster om de Orcon toe te voegen aan je slimme woning. Het venster blijft 15 minuten open en sluit vanzelf na het koppelen.</p>
+<button class="act" id="open" hidden>Koppelvenster openen</button>
+</div>
+<div id="pOpen" class="pair" hidden>
+<div class="qr" id="qr" role="img" aria-label="Matter-koppelcode als QR-code"></div>
+<div><div class="lbl">Koppelcode</div><div class="code" id="code"></div></div>
+<span class="timer" id="timer">Nog <b id="left">15:00</b> open</span>
+<div class="row" style="width:100%"><button class="sec" id="copy">Code kopiëren</button><button class="sec" id="close">Koppelvenster sluiten</button></div>
+</div>
+<div id="pOther" hidden><p>Er is een koppelvenster geopend door een andere app (bijvoorbeeld via 'Koppelingsmodus' in Apple Woning). Gebruik de code die die app toont.</p><button class="sec" id="close2" style="margin-top:14px">Koppelvenster sluiten</button></div>
+<p class="msg" id="pMsg" role="status"></p>
+</section>
+<section class="panel wide" aria-labelledby="hC" id="ctlP">
+<h2 id="hC">Gekoppelde controllers</h2>
+<p>Elke slimme-woning-app die de Orcon bedient, is een eigen controller. Je kunt er meerdere tegelijk gebruiken.</p>
+<ul class="list" id="ctl"></ul>
+<p class="empty" id="ctlEmpty" hidden>Nog niet gekoppeld.</p>
+<div class="note err" id="rmBox" role="alertdialog" aria-labelledby="rmTxt" hidden style="margin-top:14px">
+<p id="rmTxt"></p>
+<div class="row"><button class="act danger" id="rmYes" style="margin-top:0">Ja, verwijderen</button><button class="sec" id="rmNo">Annuleren</button></div>
+</div>
+<div class="row" id="addRow" hidden><button class="sec" id="add">Extra controller koppelen</button></div>
+<p class="msg" id="cMsg" role="status"></p>
+</section>
+<section class="panel wide" aria-labelledby="hU" id="upP" hidden>
+<h2 id="hU">Updates</h2>
+<p>Naast Matter is er te weinig geheugen voor de updatecontrole. Deze knop herstart de controller één keer zonder Matter (je slimme woning ziet hem dan hooguit 10 minuten niet), zoekt meteen naar een nieuwe officiële versie en start daarna weer normaal. Installeren gaat zoals altijd via de Orcon-pagina, Systeem, Firmware.</p>
+<button class="sec" id="upd" style="margin-top:14px">Updatecontrole met korte herstart</button>
+<p class="msg" id="uMsg" role="status"></p>
+</section>
+<details class="tech wide" id="tech"><summary><span>Technische status tonen</span><span>Technische status verbergen</span></summary>
+<section class="panel"><dl class="kv" id="diag"></dl></section>
+</details>
+</div>
+</main>
+</div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+// QR code (ISO/IEC 18004), versions 1-6, error correction M, alphanumeric or byte mode: enough for a Matter onboarding
+// payload ("MT:" + 19 characters). Generated here in the browser: no external library, site or API.
+const QR = (() => {
+  const AL = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:';
+  const BLK = [null, [[16], 10], [[28], 16], [[44], 26], [[32, 32], 18], [[43, 43], 24], [[27, 27, 27, 27], 16]];
+  const EXP = [], LOG = [];
+  for (let i = 0, x = 1; i < 255; i++) { EXP[i] = x; LOG[x] = i; x <<= 1; if (x & 256) x ^= 0x11D; }
+  const mul = (a, b) => a && b ? EXP[(LOG[a] + LOG[b]) % 255] : 0;
+  function divisor(deg) {
+    const r = new Array(deg).fill(0); r[deg - 1] = 1;
+    for (let i = 0, root = 1; i < deg; i++, root = mul(root, 2))
+      for (let j = 0; j < deg; j++) { r[j] = mul(r[j], root); if (j + 1 < deg) r[j] ^= r[j + 1]; }
+    return r;
+  }
+  function remainder(data, div) {
+    const r = div.map(() => 0);
+    for (const b of data) { const f = b ^ r.shift(); r.push(0); div.forEach((c, i) => { r[i] ^= mul(c, f); }); }
+    return r;
+  }
+  function bitsOf(t) {
+    const b = [], put = (v, n) => { for (let i = n - 1; i >= 0; i--) b.push((v >>> i) & 1); };
+    if ([...t].every(c => AL.includes(c))) {
+      put(2, 4); put(t.length, 9);
+      for (let i = 0; i + 1 < t.length; i += 2) put(AL.indexOf(t[i]) * 45 + AL.indexOf(t[i + 1]), 11);
+      if (t.length % 2) put(AL.indexOf(t[t.length - 1]), 6);
+    } else {
+      const u = unescape(encodeURIComponent(t)); put(4, 4); put(u.length, 8);
+      for (let i = 0; i < u.length; i++) put(u.charCodeAt(i), 8);
+    }
+    return b;
+  }
+  function format(set, n, mask) {   // error correction M (00) + mask, BCH(15,5), XOR 0x5412
+    let rem = mask; for (let i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
+    const bits = ((mask << 10) | rem) ^ 0x5412, bit = i => ((bits >>> i) & 1) === 1;
+    for (let i = 0; i <= 5; i++) set(8, i, bit(i));
+    set(8, 7, bit(6)); set(8, 8, bit(7)); set(7, 8, bit(8));
+    for (let i = 9; i < 15; i++) set(14 - i, 8, bit(i));
+    for (let i = 0; i < 8; i++) set(n - 1 - i, 8, bit(i));
+    for (let i = 8; i < 15; i++) set(8, n - 15 + i, bit(i));
+    set(8, n - 8, true);
+  }
+  function masked(mask, x, y) {
+    switch (mask) {
+      case 0: return (x + y) % 2 === 0; case 1: return y % 2 === 0; case 2: return x % 3 === 0;
+      case 3: return (x + y) % 3 === 0; case 4: return (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0;
+      case 5: return x * y % 2 + x * y % 3 === 0; case 6: return (x * y % 2 + x * y % 3) % 2 === 0;
+      default: return ((x + y) % 2 + x * y % 3) % 2 === 0;
+    }
+  }
+  function penalty(m, n) {   // the standard's four rules (as in Nayuki's reference implementation)
+    let p = 0;
+    const lines = (get) => {
+      for (let a = 0; a < n; a++) {
+        let color = false, run = 0, hist = [0, 0, 0, 0, 0, 0, 0];
+        const add = (len) => { if (hist[0] === 0) len += n; hist.pop(); hist.unshift(len); };
+        const count = () => {
+          const k = hist[1], core = k > 0 && hist[2] === k && hist[3] === k * 3 && hist[4] === k && hist[5] === k;
+          return (core && hist[0] >= k * 4 && hist[6] >= k ? 1 : 0) + (core && hist[6] >= k * 4 && hist[0] >= k ? 1 : 0);
+        };
+        for (let b = 0; b < n; b++) {
+          if (get(a, b) === color) { run++; if (run === 5) p += 3; else if (run > 5) p++; }
+          else { add(run); if (!color) p += count() * 40; color = get(a, b); run = 1; }
+        }
+        if (color) { add(run); run = 0; }
+        run += n; add(run); p += count() * 40;
+      }
+    };
+    lines((y, x) => m[y][x]); lines((x, y) => m[y][x]);
+    for (let y = 0; y < n - 1; y++) for (let x = 0; x < n - 1; x++) {
+      const c = m[y][x]; if (c === m[y][x + 1] && c === m[y + 1][x] && c === m[y + 1][x + 1]) p += 3;
+    }
+    let dark = 0; for (const r of m) for (const c of r) if (c) dark++;
+    return p + (Math.ceil(Math.abs(dark * 20 - n * n * 10) / (n * n)) - 1) * 10;
+  }
+  function matrix(text) {
+    const bits = bitsOf(text);
+    let v = 1;
+    while (v <= 6 && bits.length > BLK[v][0].reduce((a, c) => a + c, 0) * 8) v++;
+    if (v > 6) throw new Error('qr-too-long');
+    const [blocks, ec] = BLK[v], cap = blocks.reduce((a, c) => a + c, 0) * 8;
+    for (let i = 0; i < 4 && bits.length < cap; i++) bits.push(0);
+    while (bits.length % 8) bits.push(0);
+    const data = [];
+    for (let i = 0; i < bits.length; i += 8) data.push(parseInt(bits.slice(i, i + 8).join(''), 2));
+    for (let pad = 0xEC; data.length < cap / 8; pad ^= 0xEC ^ 0x11) data.push(pad);
+    const div = divisor(ec), dB = [], eB = [];
+    let k = 0;
+    for (const len of blocks) { const d = data.slice(k, k + len); k += len; dB.push(d); eB.push(remainder(d, div)); }
+    const cw = [];
+    for (let i = 0; i < Math.max(...blocks); i++) for (const d of dB) if (i < d.length) cw.push(d[i]);
+    for (let i = 0; i < ec; i++) for (const e of eB) cw.push(e[i]);
+    const n = v * 4 + 17, m = [], fn = [];
+    for (let y = 0; y < n; y++) { m.push(new Array(n).fill(false)); fn.push(new Array(n).fill(false)); }
+    const set = (x, y, d) => { m[y][x] = d; fn[y][x] = true; };
+    for (let i = 0; i < n; i++) { set(6, i, i % 2 === 0); set(i, 6, i % 2 === 0); }
+    for (const [cx, cy] of [[3, 3], [n - 4, 3], [3, n - 4]])
+      for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {
+        const x = cx + dx, y = cy + dy, d = Math.max(Math.abs(dx), Math.abs(dy));
+        if (x >= 0 && y >= 0 && x < n && y < n) set(x, y, d !== 2 && d !== 4);
+      }
+    if (v >= 2) for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++)
+      set(n - 7 + dx, n - 7 + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+    format(set, n, 0);   // reserves the format areas and the dark module
+    for (let right = n - 1, i = 0; right >= 1; right -= 2) {
+      if (right === 6) right = 5;
+      for (let vert = 0; vert < n; vert++) for (let j = 0; j < 2; j++) {
+        const x = right - j, y = ((right + 1) & 2) === 0 ? n - 1 - vert : vert;
+        if (!fn[y][x] && i < cw.length * 8) { m[y][x] = ((cw[i >>> 3] >>> (7 - (i & 7))) & 1) === 1; i++; }
+      }
+    }
+    let best = null, bestP = Infinity;
+    for (let mask = 0; mask < 8; mask++) {
+      const t = m.map((r, y) => r.map((c, x) => fn[y][x] ? c : c !== masked(mask, x, y)));
+      format((x, y, d) => { t[y][x] = d; }, n, mask);
+      const p = penalty(t, n);
+      if (p < bestP) { bestP = p; best = t; }
+    }
+    return best;
+  }
+  function svg(text) {
+    const m = matrix(text), n = m.length, q = 4;
+    let d = '';
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+      if (!m[y][x] || (x > 0 && m[y][x - 1])) continue;
+      let w = 1; while (x + w < n && m[y][x + w]) w++;
+      d += 'M' + (x + q) + ',' + (y + q) + 'h' + w + 'v1h-' + w + 'z';
+    }
+    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + (n + 2 * q) + ' ' + (n + 2 * q) +
+      '" shape-rendering="crispEdges" aria-hidden="true"><rect width="100%" height="100%" fill="#fff"/><path fill="#000" d="' + d + '"/></svg>';
+  }
+  return { matrix, svg };
+})();
+
+const VENDOR = { 4937: 'Apple Woning', 24582: 'Google Home', 4631: 'Amazon Alexa', 4362: 'SmartThings' };
+const MSG = {
+  'login-required': 'Je bent niet (meer) ingelogd: log in op de Orcon-pagina en open deze pagina daarna opnieuw.',
+  'bad-token': 'Het beveiligingstoken hoort niet bij je huidige sessie (bijvoorbeeld na opnieuw inloggen): herlaad deze pagina.',
+  'forbidden-request': 'Geweigerd door de herkomstcontrole: open deze pagina via de Orcon-pagina.',
+  'matter-not-ready': 'Matter is nog niet gereed.',
+  'window-failed': 'Het koppelvenster kon niet worden geopend.',
+  'bad-request': 'Ongeldig verzoek.',
+  'commissioning-busy': 'Er wordt nu gekoppeld: probeer het daarna opnieuw.',
+  'no-such-controller': 'Deze controller bestaat niet (meer).',
+  'remove-failed': 'Verwijderen is mislukt.',
+  'answer-too-long': 'Het antwoord van de controller paste niet: herlaad de pagina.',
+  'activation-busy': 'De identiteit wordt al gemaakt: even geduld.',
+  'already-activated': 'Matter is al geactiveerd.',
+  'matter-storage-unavailable': 'De opslag van Matter is nu niet bereikbaar: wacht tot de controller op je WiFi is aangemeld.',
+  'identity-not-damaged': 'De identiteit is niet beschadigd: een nieuwe is niet nodig.',
+  'identity-damaged': 'De identiteit is beschadigd: kies Nieuwe identiteit maken.',
+  'trial-boot': 'De controller rondt eerst de proefstart van een update af: probeer het over enkele minuten opnieuw.',
+  'restart-pending': 'De controller herstart zo of schrijft een update: probeer het daarna opnieuw.',
+  'activation-failed': 'Activeren is mislukt: probeer het opnieuw.'
+};
+const UMSG = {
+  'not-needed': 'Niet nodig: Controleer op updates werkt nu zonder herstart (Orcon-pagina, Systeem, Firmware).',
+  'confirm-running-image-first': 'Eerst moet de huidige firmware haar proefstart afronden.',
+  'matter-busy': 'Er wordt nu gekoppeld: probeer het daarna opnieuw.',
+  'session-busy': 'De controller is even bezig (een stand of een koppeling): probeer het zo opnieuw.',
+  'update-busy': 'Er loopt al een update.'
+};
+const STATE = { ready: ['Actief', 'y'], starting: ['Start…', 'w'], waiting: ['Wacht op WiFi', 'w'], failed: ['Niet beschikbaar', 'n'] };
+let token = '', S = null, left = 0, countdown = 0, poller = 0, rmIndex = 0, online = true;
+
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const mmss = s => Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+const fmtCode = c => { const d = String(c || '').replace(/\D/g, ''); return d.length === 11 ? d.slice(0, 4) + '-' + d.slice(4, 7) + '-' + d.slice(7) : d; };
+async function json(r) { try { return await r.json(); } catch (e) { return {}; } }
+async function get(u) { const r = await fetch(u, { cache: 'no-store' }); return { r, j: await json(r) }; }
+async function post(u, b) {   // the same rules as Orcon's own buttons: session cookie, its CSRF token, JSON, own origin
+  const r = await fetch(u, { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json', 'X-Orcon-Token': token }, body: JSON.stringify(b) });
+  return { r, j: await json(r) };
+}
+async function copyText(t) {   // as Orcon's page: navigator.clipboard needs https, the fallback works on http too
+  let ok = false;
+  try { if (window.isSecureContext && navigator.clipboard) { await navigator.clipboard.writeText(t); ok = true; } } catch (e) {}
+  if (!ok) try {
+    const a = document.createElement('textarea'); a.value = t; a.setAttribute('readonly', ''); a.style.position = 'fixed'; a.style.opacity = '0';
+    document.body.appendChild(a); a.select(); a.setSelectionRange(0, t.length); ok = document.execCommand('copy'); a.remove();
+  } catch (e) {}
+  return ok;
+}
+function conn(ok) { online = ok; const c = $('conn'); c.textContent = ok ? 'Verbonden' : 'Geen verbinding'; c.className = 'tag ' + (ok ? 'ok' : 'bad'); }
+function chip(id, text, cls) { $(id + 'v').textContent = text; $(id).className = 'chip' + (cls ? ' ' + cls : ''); }
+function hideCodes() {   // nothing of a code stays in the page once its window is gone
+  $('qr').innerHTML = ''; $('code').textContent = ''; $('pOpen').hidden = true;
+  clearInterval(countdown); countdown = 0;
+}
+function show(j) {
+  S = j; $('err').hidden = true; $('login').hidden = true;
+  const idAbsent = j.identity === 'absent', idDamaged = j.identity === 'damaged';
+  const st = idAbsent ? ['Niet geactiveerd', 'w'] : idDamaged ? ['Beschadigd', 'n'] : STATE[j.state] || [j.state || '?', 'w'];
+  const ready = j.state === 'ready', can = ready && !!token;
+  chip('cM', st[0], st[1]);
+  chip('cF', j.fabrics ? String(j.fabrics) : 'Nee', j.fabrics ? 'y' : '');
+  chip('cW', j.window ? 'Open' : 'Dicht', j.window ? 'w' : '');
+  $('stText').textContent = idAbsent ? 'Matter is nog niet geactiveerd op deze controller.' :
+    idDamaged ? 'De Matter-identiteit op de controller is beschadigd: Matter staat uit.' :
+    !ready ? 'Matter draait nu niet. Bekijk de technische status hieronder.' :
+    j.fabrics ? 'De Orcon is gekoppeld met ' + j.fabrics + (j.fabrics === 1 ? ' controller.' : ' controllers.') : 'Nog niet gekoppeld met een slimme woning.';
+  $('act').hidden = !token || !(idAbsent || idDamaged);   // only the logged-in owner activates
+  $('actText').textContent = idDamaged ? 'Maak alleen een nieuwe identiteit als je opnieuw wilt koppelen: de controller wordt dan voor je apps een nieuw apparaat.' :
+    'Bij het activeren maakt de controller eenmalig een eigen Matter-identiteit, op de controller zelf: een eigen sleutel en een eigen koppelcode. Daarna herstart hij (ongeveer een halve minuut) en kun je koppelen.';
+  $('activate').textContent = idDamaged ? 'Nieuwe identiteit maken' : 'Matter activeren';
+  $('activate').disabled = !!j.activating;
+  if (j.activating) { $('actMsg').textContent = 'De controller maakt zijn identiteit en herstart zo.'; $('actMsg').className = 'msg okt'; }
+  const own = !!(j.window && j.window_code && j.qr && j.code);
+  if (own) {
+    const qr = QR.svg(j.qr);   // first build, then show: never a half-drawn code
+    $('qr').innerHTML = qr; $('code').textContent = fmtCode(j.code); $('pOpen').hidden = false;
+    left = j.window_s | 0; $('timer').hidden = !left; $('left').textContent = mmss(left);
+    if (!countdown && left) countdown = setInterval(() => {
+      left = Math.max(0, left - 1); $('left').textContent = mmss(left);
+      if (!left) { hideCodes(); load(); }
+    }, 1000);
+  } else hideCodes();
+  $('pClosed').hidden = !!j.window; $('pOther').hidden = !(j.window && !j.window_code);
+  $('open').hidden = !can || !!j.window; $('close').hidden = $('close2').hidden = !can;
+  $('addRow').hidden = $('add').hidden = !can || !!j.window || !j.fabrics;
+  const list = Array.isArray(j.controllers) ? j.controllers : [];
+  $('ctl').innerHTML = list.map(c => '<li class="item"><span class="sym" aria-hidden="true">✓</span><span><b>' +
+    esc(VENDOR[c.vendor] || 'Controller') + '</b><small>' + esc(c.label ? c.label + ' · ' : '') + 'koppeling ' + (c.index | 0) +
+    '</small></span>' + (can ? '<button class="sec" data-rm="' + (c.index | 0) + '">Verwijderen</button>' : '<span></span>') + '</li>').join('');
+  $('ctlEmpty').hidden = list.length > 0;
+  $('upP').hidden = !can;
+  const d = j.diag || {}, c = j.control || {}, f = j.fan || {};
+  $('diag').innerHTML = [['Matter', (j.state || '?') + ' · stap ' + (d.step || '-') + ' · fout ' + (d.err || '-')],
+    ['Server gereed', d.server_ready ? 'ja' : 'nee'], ['Bevestiging geweigerd', d.confirm_refused | 0],
+    ['Draait sinds', d.uptime_ms ? Math.round(d.uptime_ms / 60000) + ' min' : '-'],
+    ['Laatste verzoek', c.last ? c.last + ' → ' + c.code + (c.error ? ' (' + c.error + ')' : '') + (c.age_s ? ', ' + c.age_s + ' s geleden' : '') : '-'],
+    ['Terug naar', c.return_to || '-'], ['Ventilator-endpoint', f.ep ? f.ep + ' · ' + f.fanmode + (f.fixed ? ' · oude stand genegeerd' : '') : '-'],
+    ['Koppelen bezig', j.commissioning ? 'ja' : 'nee']].map(([k, v]) => '<dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd>').join('');
+  schedule();
+}
+function refused(j, where) {
+  if (j.error === 'login-required') { $('login').hidden = false; hideCodes(); chip('cM', '–', ''); chip('cF', '–', ''); chip('cW', '–', ''); $('stText').textContent = 'Inloggen nodig.'; return; }
+  const t = MSG[j.error] || ('Geweigerd: ' + (j.error || 'onbekende fout'));
+  if (where) { where.textContent = t; where.className = 'msg bad'; } else { $('err').textContent = t; $('err').hidden = false; }
+}
+async function load() {
+  try { const { r, j } = await get('/api/connect'); conn(true); if (r.ok) show(j); else refused(j); }
+  catch (e) { conn(false); schedule(); }
+}
+function schedule() { clearTimeout(poller); poller = setTimeout(() => { if (!document.hidden) load(); else schedule(); }, S && S.window ? 5000 : 15000); }
+async function windowSet(open, msg) {
+  for (const b of ['open', 'close', 'close2', 'add']) $(b).disabled = true;
+  try { const { r, j } = await post('/api/connect/window', { open }); conn(true); if (r.ok) { show(j); msg.textContent = ''; } else refused(j, msg); }
+  catch (e) { conn(false); }
+  for (const b of ['open', 'close', 'close2', 'add']) $(b).disabled = false;
+}
+$('open').onclick = () => windowSet(true, $('pMsg'));
+$('close').onclick = $('close2').onclick = () => windowSet(false, $('pMsg'));
+$('add').onclick = () => { windowSet(true, $('cMsg')); };
+$('copy').onclick = async () => {
+  const ok = await copyText(S && S.code ? String(S.code).replace(/\D/g, '') : '');
+  $('pMsg').textContent = ok ? 'Koppelcode gekopieerd.' : 'Kopiëren lukt hier niet: neem de code over van het scherm.';
+  $('pMsg').className = 'msg ' + (ok ? 'okt' : 'warn');
+};
+$('ctl').onclick = e => {   // explicit confirmation: nothing is removed by the first click
+  const b = e.target && e.target.closest ? e.target.closest('button[data-rm]') : null;
+  if (!b) return;
+  rmIndex = +b.getAttribute('data-rm');
+  const c = (S && S.controllers || []).find(x => x.index === rmIndex) || {};
+  $('rmTxt').textContent = 'Koppeling ' + rmIndex + ' met ' + (VENDOR[c.vendor] || 'deze controller') +
+    ' verwijderen? Die app kan de Orcon daarna niet meer bedienen. Je kunt later opnieuw koppelen.';
+  $('rmBox').hidden = false; $('rmNo').focus && $('rmNo').focus();
+};
+$('rmNo').onclick = () => { $('rmBox').hidden = true; rmIndex = 0; };
+$('rmYes').onclick = async () => {
+  const i = rmIndex; if (!i) return;
+  $('rmYes').disabled = true;
+  try { const { r, j } = await post('/api/connect/remove', { index: i, confirm: true }); conn(true);
+    if (r.ok) { $('cMsg').textContent = 'Koppeling ' + i + ' is verwijderd.'; $('cMsg').className = 'msg okt'; show(j); } else refused(j, $('cMsg')); }
+  catch (e) { conn(false); }
+  $('rmYes').disabled = false; $('rmBox').hidden = true; rmIndex = 0;
+};
+async function activate(replace) {   // the identity is made on the controller itself; then it restarts into Matter
+  $('activate').disabled = $('actYes').disabled = true;
+  try {
+    const { r, j } = await post('/api/connect/activate', replace ? { action: 'replace', confirm: true } : { action: 'activate' });
+    conn(true);
+    if (r.ok) {
+      show(j);
+      $('actMsg').textContent = 'De controller maakt zijn identiteit en herstart (ongeveer een halve minuut). Log daarna opnieuw in en open Matter om te koppelen.';
+      $('actMsg').className = 'msg okt';
+      return;   // stays disabled: the controller restarts
+    }
+    refused(j, $('actMsg'));
+  } catch (e) { conn(false); }
+  $('activate').disabled = $('actYes').disabled = false;
+}
+$('activate').onclick = () => {   // a new identity after damage only after an explicit confirmation
+  if (S && S.identity === 'damaged') { $('actBox').hidden = false; $('actNo').focus && $('actNo').focus(); } else activate(false);
+};
+$('actNo').onclick = () => { $('actBox').hidden = true; };
+$('actYes').onclick = () => { $('actBox').hidden = true; activate(true); };
+$('upd').onclick = async () => {
+  $('upd').disabled = true;
+  try { const { r, j } = await post('/api/update/restart', {});
+    $('uMsg').textContent = r.ok ? 'De controller herstart nu zonder Matter en zoekt naar een update. Open over een minuut de Orcon-pagina, Systeem, Firmware.'
+      : (UMSG[j.error] || MSG[j.error] || ('Geweigerd: ' + (j.error || 'onbekende fout'))); }
+  catch (e) { conn(false); }
+  $('upd').disabled = false;
+};
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+(async () => {   // the session's CSRF token, as Orcon's own page gets it
+  try { const { j } = await get('/api/setup/state'); token = j.auth && j.auth.logged_in && j.token ? j.token : ''; } catch (e) { conn(false); }
+  await load();
+})();
+</script>
+</body>
+</html>

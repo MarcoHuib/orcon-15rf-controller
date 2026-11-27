@@ -10,9 +10,13 @@ namespace updsvc {
 void begin(WebServer& server);   // GET /api/update, POST /api/update/check, POST /api/update/install
 void tick(uint32_t now);         // main loop: automatic checks, console notes, restart after a written update
 bool busy();                     // a check or a download runs: no RF commands, no restarts
+bool updateBoot();               // this boot is the owner's restart without Matter for an update check
+bool betaEnabled();              // the owner's "Bèta-updates ontvangen" (NVS, off when absent)
 #elif ORCON_SIGNED_OTA
 bool busy();                     // a manual signed upload writes or waits for its restart
+inline bool betaEnabled() { return false; }   // no update check, no channel setting: stable only
 #else
 inline bool busy() { return false; }
+inline bool betaEnabled() { return false; }
 #endif
 }

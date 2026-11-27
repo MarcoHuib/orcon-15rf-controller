@@ -3,6 +3,7 @@
 #include "owner_store.h"
 #include "auth_store.h"
 #include "ota_policy.h"
+#include "../idf/components/orcon_matter/orcon_matter_wipe.h"   // Matter's storage: every build wipes it
 #include <Arduino.h>
 #include <Preferences.h>
 #include <esp_core_dump.h>
@@ -15,6 +16,8 @@
 #include <mbedtls/sha256.h>
 #include <nvs.h>
 #include <string.h>
+#include <memory>
+#include <new>
 
 namespace ownerstore {
 
@@ -249,9 +252,12 @@ struct Ops : provision::ResetOps {
         return e == ESP_OK || e == ESP_ERR_NOT_FOUND || e == ESP_ERR_INVALID_SIZE;
     }
     // The other slot holds the rollback image. One from before the ownership model would trust the
-    // release key for password recovery again. It is not erased but overwritten with a copy of the
-    // running, confirmed image: no pre-owner firmware remains, and the device keeps two bootable
-    // owner-model images (bootloader fallback, and a rollback target for the next OTA, both intact).
+    // release key for password recovery again; a private Matter migration build would move its embedded
+    // identity (the previous owner's) onto the device again (otap::keepAfterReset). It is not erased but
+    // overwritten with a copy of the running, confirmed image: no such firmware remains, and the device keeps
+    // two bootable owner-model images (bootloader fallback, and a rollback target for the next OTA, both intact).
+    // Also without Matter: after a switch back from Matter firmware the region still holds its identity and fabrics.
+    bool eraseMatter() override { return orcon_matter::wipeMatterStorage(); }
     bool retirePreOwnerSlot() override {
         const esp_partition_t* other = esp_ota_get_next_update_partition(nullptr);
         const esp_partition_t* run = esp_ota_get_running_partition();
@@ -262,22 +268,26 @@ struct Ops : provision::ResetOps {
         if (v == ESP_ERR_IMAGE_INVALID) return true;    // nothing bootable there
         if (v != ESP_OK) return false;                  // a read error is not "absent": keep the marker, retry (Codex OWNER-09)
         otap::Scanner s("");
-        static uint8_t buf[4096];
-        for (uint32_t off = 0; off < meta.image_len; off += sizeof(buf)) {
-            const uint32_t n = meta.image_len - off < sizeof(buf) ? meta.image_len - off : sizeof(buf);
+        std::unique_ptr<uint8_t[]> heap(new (std::nothrow) uint8_t[4096]);   // was static: 4 KB of DRAM for a reset
+        uint8_t small[512];                                                  // too little RAM: smaller steps, never a failure
+        uint8_t* const buf = heap ? heap.get() : small;
+        const uint32_t cap = heap ? 4096 : sizeof(small);
+        for (uint32_t off = 0; off < meta.image_len; off += cap) {
+            const uint32_t n = meta.image_len - off < cap ? meta.image_len - off : cap;
             if (esp_partition_read(other, off, buf, n) != ESP_OK) return false;
             s.feed(buf, n);
         }
-        if (otap::ownerRecovery(s)) return true;        // an image with owner recovery: it stays as the rollback target
+        if (otap::keepAfterReset(s)) return true;       // owner recovery, no embedded Matter identity: it stays the rollback target
         esp_image_metadata_t rm;
         const esp_partition_pos_t rpos{run->address, run->size};
         if (esp_image_verify(ESP_IMAGE_VERIFY_SILENT, &rpos, &rm) != ESP_OK) return false;   // never copy a bad image
-        Serial.printf("[reset] %s holds firmware from before the ownership model: replacing it with a copy of %s\n",
-                      other->label, run->label);
+        Serial.printf("[reset] %s holds %s: replacing it with a copy of %s\n", other->label,
+                      otap::ownerRecovery(s) ? "firmware with an embedded Matter identity" : "firmware from before the ownership model",
+                      run->label);
         esp_ota_handle_t h;
         if (esp_ota_begin(other, rm.image_len, &h) != ESP_OK) return false;   // erases what the copy needs
-        for (uint32_t off = 0; off < rm.image_len; off += sizeof(buf)) {
-            const uint32_t n = rm.image_len - off < sizeof(buf) ? rm.image_len - off : sizeof(buf);
+        for (uint32_t off = 0; off < rm.image_len; off += cap) {
+            const uint32_t n = rm.image_len - off < cap ? rm.image_len - off : cap;
             if (esp_partition_read(run, off, buf, n) != ESP_OK || esp_ota_write(h, buf, n) != ESP_OK) { esp_ota_abort(h); return false; }
         }
         return esp_ota_end(h) == ESP_OK;                // ESP-IDF verifies the copy; the boot selection is unchanged
