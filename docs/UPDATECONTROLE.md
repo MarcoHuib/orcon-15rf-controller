@@ -1,6 +1,8 @@
 # Updatecontrole en éénknopsupdate (control-firmware, Heltec V2)
 
-Status: gebouwd en host-getest op `feature/github-releases-control-ota`. **Niet op hardware getest** (TLS-handshake, geheugen tijdens de download, de echte proefstart). Werkt pas zodra er een officiële release op GitHub staat ([RELEASES.md](RELEASES.md)).
+Status (22 november 2026): de GitHub-updatecontrole en éénknopsupdate zijn **opgenomen in de officiële control-firmware**. [v1.0.0](https://github.com/MarcoHuib/orcon-15rf-controller/releases/tag/v1.0.0) en [v1.0.1](https://github.com/MarcoHuib/orcon-15rf-controller/releases/tag/v1.0.1) zijn gepubliceerd. De releaseworkflow bouwt, host-test en ondertekent, maar verricht geen fysieke TLS-, download- of rollbacktest op een Heltec. Zie [RELEASES.md](RELEASES.md) voor releasebewijs en hardwarebeperkingen.
+
+**Let op bij v1.0.0:** de controller kan bij **Controleer op updates** een onverwacht GitHub-antwoord melden wanneer GitHub lange HTTP-headers terugstuurt. De parser is gerepareerd in **v1.0.1**. Om die fix te installeren moet je de v1.0.1-`.orconfw` eventueel **eenmalig handmatig** uploaden via **Systeem → Firmware → Handmatig installeren**. De melding betekent niet dat er geen release beschikbaar is.
 
 ## Wat de eigenaar ziet
 

@@ -1,5 +1,7 @@
 # Siri: de ventilatie bedienen met je stem
 
+Deze integratie werkt via Apple's app **Opdrachten** (Shortcuts). Het is **geen rechtstreekse Apple Woning-/HomeKit-integratie**. Een eigen sleutel geeft alleen toegang tot de vijf ventilatiestanden op je vertrouwde thuisnetwerk.
+
 Zeg tegen je iPhone:
 - "Hé Siri, ventilatie stand 1", "stand 2" of "stand 3";
 - "Hé Siri, ventilatie automatisch";
@@ -69,7 +71,7 @@ Authorization: Bearer <Siri-sleutel>
 - **Wachtwoord vergeten of gewijzigd:** de Siri-sleutel blijft geldig. Vervang hem zelf als je denkt dat iemand anders je wachtwoord had.
 
 ## Het resterende risico: HTTP zonder versleuteling
-De Heltec spreekt nog geen HTTPS ([`HTTPS_ONTWERP.md`](HTTPS_ONTWERP.md); het blijft een blokkade voor een publieke release). Elk Siri-verzoek gaat dus **onversleuteld** over je eigen netwerk, inclusief de header met de sleutel.
+Ook de gepubliceerde firmware spreekt op het thuisnetwerk nog geen HTTPS ([`HTTPS_ONTWERP.md`](HTTPS_ONTWERP.md)). Elk Siri-verzoek gaat daarom **zonder TLS-versleuteling** over je eigen netwerk, inclusief de header met de sleutel. Dit blijft een relevante beveiligingsbeperking, ondanks de beschikbare officiële releases.
 
 **Wie de sleutel kan zien:**
 - iemand met je WiFi-wachtwoord die het verkeer opneemt. Bij WPA2-Personal moet diegene ook de aanmelding van je iPhone opvangen (of afdwingen door de verbinding te verbreken); daarna is het verkeer te ontcijferen.
