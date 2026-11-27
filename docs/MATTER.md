@@ -62,7 +62,7 @@ Alleen de DAC-sleutel blijft bewaard: de PAA- en PAI-sleutels worden één keer 
 - **Heel of afwezig.** Een SHA-256 over alle velden wordt als laatste geschreven. Een onderbroken activering telt als "niet geactiveerd": de volgende activering begint opnieuw.
 - **Beschadigd.** Een gewijzigd byte telt als "beschadigd". Matter blijft dan uit en niets vervangt de identiteit vanzelf: dat zou voor elke app een nieuw apparaat zijn. De eigenaar kiest zelf **Nieuwe identiteit maken**, na een bevestiging, en koppelt dan opnieuw.
 - **Behouden.** Bij firmware-updates, herstarts en Matter's eigen reset (die wist alleen koppelingen).
-- **Fabrieksreset.** Orcon's fabrieksreset wist de identiteit en alle koppelingen. De volgende eigenaar krijgt een nieuw apparaat met een nieuwe koppelcode.
+- **Fabrieksreset.** Orcon's fabrieksreset wist de identiteit en alle koppelingen. De volgende eigenaar krijgt een nieuw apparaat met een nieuwe koppelcode. Dat doet ook firmware zonder Matter uit deze branch (na een terugstap van Matter): de opslag blijft na zo'n wissel staan, met de DAC-sleutel, tot een fabrieksreset (`orcon_matter_wipe.h`, in elke build). Alleen opslag die aantoonbaar van Matter is wordt gewist. Oudere firmware (v1.0.x) kent deze opslag niet en laat haar staan.
 - **Geen hardwarebescherming.** Deze klassieke ESP32 draait zonder flash-encryptie (de bootloader blijft die van v1.0.1). Wie de flash via USB uitleest, leest ook de sleutel, net als bij een image met een ingebouwde identiteit.
 - **Codes.** Alleen aan de ingelogde eigenaar, alleen bij een open koppelvenster, en nooit in een log.
 

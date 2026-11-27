@@ -50,9 +50,9 @@
 
 #include "orcon_matter.h"
 #include "orcon_matter_identity.h"
+#include "orcon_matter_wipe.h"   // Orcon's factory reset step for Matter's storage (scenario F)
 #include "orcon_matter_nvs.h"
 
-extern "C" bool orcon_matter_factory_wipe(void);   // orcon_matter_nvs.cpp, Orcon's factory reset step
 namespace mid = orcon_matter::identity;
 
 using namespace chip::app::Clusters;
@@ -495,7 +495,7 @@ void setup() {
     const unsigned before = unsigned(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     const char sc = scenario();
     printf("PROBE scenario=%c\n", sc);
-    if (sc == 'F') checkPlain("factory-wipe", orcon_matter_factory_wipe());   // as provision::resume() at boot
+    if (sc == 'F') checkPlain("factory-wipe", orcon_matter::wipeMatterStorage());   // as provision::resume() at boot
     esp_err_t err = orcon_matter::matterNvsBegin();
     const mid::State st = err == ESP_OK ? mid::load() : mid::State::Unknown;
     printf("PROBE identity-loaded=%s\n", mid::stateName());
