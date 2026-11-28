@@ -4,7 +4,7 @@ Matter maakt de Orcon-controller bedienbaar vanuit Apple Woning, Google Home en 
 
 Alles van de gewone controller blijft: de webinterface en het dashboard, WiFi, RF en de profielen, Siri, de eigenaarslogin, ondertekende OTA met proefstart en terugval, en de OLED.
 
-> **Status: experimenteel.** De officiële v1.x-releases komen nog uit PlatformIO (`platformio.ini`). De Matter-firmware is **universeel**: het image bevat geen identiteit. Elke controller maakt zijn eigen Matter-identiteit zelf, bij het activeren, en bewaart die op het apparaat. Zo kan één image voor elk apparaat dienen en gepubliceerd worden. Een officiële Matter-release is er nog niet: de releasepijplijn volgt.
+> **Status: experimenteel.** De Matter-firmware is **universeel** en bevat geen identiteit. Elke controller maakt bij het activeren zijn eigen Matter-identiteit en bewaart die op het apparaat. De releaseworkflow bouwt deze firmware voor het bètakanaal.
 
 ## Wat bewezen werkt op hardware, en wat nog niet
 
@@ -18,8 +18,8 @@ Getest op één Heltec WiFi LoRa 32 V2 (ESP32-D0WDQ6, 8 MB, geen PSRAM) in novem
 | Koppelen met Apple Woning met eigen Matter-identiteit (handmatige code; toen nog in het image) | **Bewezen** |
 | Ventilatiestand vanuit Apple Woning, via Orcon's eigen toelating (`ctlAdmit`) naar RF | **Bewezen**: de unit reageert op de snelheidsregelaar |
 | Stabiliteit: 10,8 uur zonder herstart, Matter de hele nacht `ready`, geen geheugenlek | **Bewezen** (één nachtmeting) |
-| Eén ventilator "Orcon ventilator" als gebridged apparaat, Afwezig = ventilator uit, Auto | Experimenteel (host- en QEMU-tests) |
-| Standaardnaam bij koppelen, eerlijke fabrikant- en productgegevens | Experimenteel; Apple's gedrag is alleen uit bronnen bekend |
+| Eén ventilator "Orcon ventilator" als gebridged apparaat, Afwezig = ventilator uit, Auto | Op de Heltec gezien in Woning, inclusief slider en Auto. Aantal tegels en herhaald koppelen vragen de bèta-2-proef. |
+| Standaardnaam bij koppelen, eerlijke fabrikant- en productgegevens | De tegel heette op de geteste Heltec **Orcon ventilator**. |
 | `/connect`-pagina met QR-code, aftellende timer, controllerbeheer; Matter-kaart op het dashboard | Experimenteel (host-tests, QR-decoder, preview) |
 | Updatecontrole via één herstart zonder Matter | Experimenteel (host-tests) |
 | Stable- en bètakanaal | Experimenteel (host-tests; nog geen bètarelease) |
@@ -27,7 +27,7 @@ Getest op één Heltec WiFi LoRa 32 V2 (ESP32-D0WDQ6, 8 MB, geen PSRAM) in novem
 | Overstap van een image met identiteit naar de universele firmware: identiteit, codes en namen blijven | Experimenteel (QEMU) |
 | Koppelen door een echte commissioner (chip-tool): attestatie, bediening, de controller blijft na een update | Experimenteel (QEMU, beide identiteiten: overgezet en op het apparaat gemaakt) |
 | Eigen variant `control-matter`: een update voegt Matter nooit vanzelf toe en haalt het nooit vanzelf weg | Experimenteel (host-tests) |
-| Releasenummers voor Matter-builds | Experimenteel (build); de releasepijplijn volgt |
+| Releasenummers voor Matter-builds | Gecontroleerd door de releaseworkflow |
 
 ## Bouwen
 
@@ -122,7 +122,7 @@ Grens: draait het overstap-image zelf tijdens de fabrieksreset, dan blijft de id
 
 De QR-code wordt in de browser gemaakt (geen externe site of bibliotheek), uit de gegevens van het actieve venster. Koppelcodes staan alleen in het antwoord aan de ingelogde eigenaar, en alleen zolang een venster met de eigen code open is. Elk antwoord heeft `Cache-Control: no-store`, en de codes komen in geen enkele log.
 
-Onder **Gekoppelde controllers** staan de gekoppelde apps. Verwijderen vraagt eerst om bevestiging en volgt hetzelfde pad als Matter's eigen `RemoveFabric`.
+Onder **Matter-koppelingen** staat één regel per fabric, met de naam bij bekende Vendor ID’s. Een fabric is een beveiligingsdomein. Voor één slimme woning kunnen meerdere fabrics bestaan. **Toegang intrekken** verwijdert selectief de lokale fabric, met een controle dat de tabel sinds de bevestiging gelijk is gebleven. Verwijder een achtergebleven Woning-bridge via Woning zelf. Zie de acceptatieproef verderop.
 
 ## Bediening in Apple Woning
 
@@ -133,9 +133,9 @@ Onder **Gekoppelde controllers** staan de gekoppelde apps. Verwijderen vraagt ee
 | Afwezig | de ventilator **uit**; weer aan gaat terug naar de laatst gemelde stand, of Auto |
 
 - Elk verzoek gaat door precies dezelfde toelating als de webknoppen en Siri (`ctlAdmit`): unit, profiel, identiteit, RF-budget, sessies.
-- Woning toont wat de unit zelf meldt (31D9), nooit het verzoek. Een geweigerd verzoek valt dus terug op de werkelijke stand.
-- Voor de eerste melding van de unit toont Woning Auto.
-- Siri en automatiseringen werken met wat Woning toont: aan/uit en het percentage.
+- Een schrijfopdracht wijzigt eerst de Matter-instelling. Na afronding van de RF-transactie of weigering spiegelt de firmware de laatst bekende 31D9-stand. Een handmatige stand verschijnt dan als 33%, 66% of 100%. Uit betekent Afwezig. De Orcon blijft ventileren volgens zijn eigen Afwezig-stand.
+- Bij Auto staan de Matter-instellingen op null. De werkelijke snelheid in Auto vraagt een gekalibreerde vertaling van de afzonderlijke toevoer- en afvoerwaarden uit 31DA. Bij een nieuwe installatie zonder unitmelding kan Auto als voorlopige stand verschijnen.
+- Scènes kunnen als snelkoppeling dienen als Woning de gewenste stand opslaat. Test Siri, scènes en automatiseringen op de eigen Woning-versie, vooral voor Auto.
 
 ### Naam in Apple Woning
 
@@ -147,7 +147,7 @@ Onder **Gekoppelde controllers** staan de gekoppelde apps. Verwijderen vraagt ee
 
 ### Gevolgen voor een bestaande koppeling
 
-Woning leest de samenstelling van een apparaat niet opnieuw in na een firmware-update. De overstap van de eerste opbouw (ventilator plus een stopcontact voor Afwezig) naar de gebridgede ventilator vraagt daarom **één keer opnieuw koppelen**: verwijder het accessoire in Woning en koppel opnieuw via `/connect`. Daarna blijft de opbouw vast, en houden updates de koppeling en je namen.
+Een oudere ontwikkelbuild met een zelfstandig fan-endpoint en een Afwezig-stopcontact kan een andere bridge- of tegelhistorie hebben. Alleen als zo’n oude indeling zichtbaar blijft en de bestaande koppeling stuk is, herstel je selectief via Woning en `/connect`. Een update vanaf de huidige gebridgede bèta gebruikt dezelfde layout. Laat daarbij een werkende koppeling staan.
 
 ## Updates naast Matter
 
@@ -159,8 +159,8 @@ Woning leest de samenstelling van een apparaat niet opnieuw in na een firmware-u
 - Wisselen kan alleen bewust: een lokale upload van een andere variant vraagt bevestiging, met uitleg wat er verandert. De controller weigert de wissel zonder die bevestiging.
 - Een Matter-controller leest zijn eigen update-index, `orcon-update-matter.json`. Een controller zonder Matter leest `orcon-update.json`, zoals v1.0.x dat al deed. Eén release kan zo beide varianten dragen, elk met een eigen ondertekend manifest.
 - `tools/build_idf.sh --release N [--pre P]` stempelt een Matter-build als release (zoals de PlatformIO-release). Een bèta draagt zijn nummer in de stempel (`ORCON-RELEASE N-beta.P;`), en kan dus nooit voor de stabiele versie doorgaan.
-- `tools/release_ci.py` controleert, ondertekent en verpakt beide varianten als één release. Dat geldt voor stabiel en bèta, en het wordt getest in `tools/test_release_ci.py`. De releaseworkflow (`release-control.yml`) publiceert voorlopig alleen de control-variant: de Matter-variant in de workflow volgt.
-- Borden met v1.0.x kennen `control-matter` nog niet. Wie via de webpagina naar Matter wil, heeft dus eerst een control-release met deze regels nodig; daarna kan de wissel.
+- De releaseworkflow (`release-control.yml`) gebruikt `tools/release_ci.py` om beide varianten in één bètarelease te controleren, ondertekenen en verpakken. Stabiele releases bevatten voorlopig alleen `control`.
+- Werk vanaf v1.0.0 of v1.0.1 eerst bij naar de stabiele control-release v1.0.2. Zet daarna *Bèta-updates ontvangen* aan, upload de `control-matter`-bundel en bevestig de wissel. Zie [Bètakanaal en Matter](RELEASES.md#bètakanaal-en-matter).
 
 Bètaversies (`1.2.3-beta.N`) komen alleen binnen met de instelling "Bèta-updates ontvangen" (standaard uit). Een stable release staat altijd boven elke bèta van dezelfde versie.
 
@@ -248,3 +248,104 @@ De officiële releases (zonder Matter), met dezelfde instellingen gebouwd uit `m
   - de QEMU-geheugentest.
 
   Geen geheimen; er wordt niets gepubliceerd.
+
+## Matter bèta 2 — technisch rapport en acceptatie
+
+### A. Oorzaakanalyse
+
+De Heltec antwoordde op de openbare statusroute met `ready`, `server_ready=true`, fout `0x0` en actieve uptime. De openbare OTA-status bevestigde **1.1.0-beta.1**, `control-matter`, commit `cc6fe82f38407534b354658a9258262c1a90c169` en `running_state=valid`. De gemelde fabric-indices 7 en 8 kwamen uit de eigenaarssessie tijdens de eerste proef. De Vendor ID van fabric 8 en de tabel vóór commissioning ontbreken.
+
+| Bevinding | Bewijs en resterende vraag |
+|---|---|
+| Apple Woning plus Apple Keychain kunnen samen op een Matter-apparaat staan | Onderzoekers lazen na Apple-commissioning beide fabrics uit met chip-tool. CSA kent `0x1384` toe aan Apple en de gepinde fabrikantentabel noemt die VID Apple Keychain. Verifieer op de Heltec of de tweede regel werkelijk VID 4996 heeft en wanneer deze is toegevoegd. |
+| Fabric 7 en 8 zijn twee tabelindices | Een Index is een lokaal oplopende verwijzing, kan worden hergebruikt en zegt niets over het aantal fysieke ventilatoren of hubs. De oude paginacopy suggereerde ten onrechte één app per fabric. |
+| Twee zichtbare Apple-tegels | Een eerdere endpointlayout en een achtergebleven bridge zijn concrete hypotheses. Vergelijk bridge-instellingen en Descriptor per operationele node met de bijgehouden fabric-events. Alleen twee fabrics verklaart twee tegels onvoldoende. |
+| ‘Geen reactie’ en ‘Bijwerken…’ | De lokale server was bereikbaar tijdens deze meting. Daarmee blijven Apple-hub, CASE/subscriptions, operationele DNS-SD, WiFi/IPv6-herstel, een bewuste updateherstart en geheugenpieken open. Timing en diagnose per storing zijn nodig. |
+| Wijziging binnen dezelfde snelheidsstand | In de gepinde SDK past een sliderwrite binnen de stand de setting aan zonder andere FanMode. De oude spiegeling sloeg dan de normalisatie van de setting over. Ook lag de On/Off-rapportage buiten de lock waarin de mailbox werd gecontroleerd. Beide paden zijn aangepast. |
+
+[Apple MatterSupport](https://developer.apple.com/apple-home/matter/) · [Apple Support voor registraties en verbonden voorzieningen](https://support.apple.com/nl-nl/102135) · [NDSS 2025, § IV-A, met fabric-uitlezing](https://www.ndss-symposium.org/wp-content/uploads/2025-266-paper.pdf) · [CSA-vermelding 0x1384](https://csa-iot.org/csa_product/apple-proprietary-platforms-6/) · [Gepinde fabrikantentabel](https://github.com/espressif/connectedhomeip/blob/75902a0c6f6b208d5db963a8082423465384c594/src/app/zap-templates/zcl/data-model/manufacturers.xml)
+
+**Model.** De Heltec draait één Matter-node, met Root Node (ep0), Aggregator (ep1) en Bridged Node plus Fan (ep2). De laatste twee vormen de bridge en haar zichtbare ventilator. Endpoint-ID’s volgen uit vaste aanmaakvolgorde. De bridge-fan krijgt een vaste UniqueID uit de STA-MAC. De standaardnaam wordt lokaal gezet en opgeslagen namen krijgen voorrang. Gebruik voor verificatie de Descriptor-lijsten `DeviceTypeList`, `PartsList`, `ServerList` en `ClientList` op ep0/1/2. Op ep2 controleer je daarnaast Reachable, UniqueID, NodeLabel, VendorName, ProductName en SerialNumber. Vergelijk de waarden lokaal vóór en na OTA. Deel het serienummer en de UniqueID alleen als het onderzoek ze vereist.
+
+Een fabric wordt gekenmerkt door de trust root en Fabric ID. Elke node heeft binnen die fabric een operationele Node ID en credentials. Een commissioner brengt de node via een PASE-sessie met de setupcode in een fabric. Een administrator beheert fabrictoegang en kan een nieuw koppelvenster openen. Controllers gebruiken CASE om opdrachten te sturen of een subscription voor statuswijzigingen op te zetten. Eén fabric kan meerdere controllers bevatten, bijvoorbeeld een hub en andere nodes. De Apple Woning-app, woningcentrale en het Matter-accessoireregister in iOS hebben verschillende rollen. Voor de precieze verdeling van Apple-controllers binnen de fabrics van deze installatie ontbreekt een meting.
+
+**Lifecycle.** In deze SDK gebruikt native `RemoveFabric` dezelfde `FabricTable::Delete` als lokale revocatie. De delegates ruimen onder meer ACL, groepsdata, CASE- en subscriptionresumption op, werken de commissioning window manager bij en trekken de operationele advertentie in. Een lokaal HTTP-verzoek heeft geen Matter-exchange om open te houden voor het antwoord. Daarom verlopen alle sessies van de verwijderde fabric zodra het indexnummer uit de tabel is. Sommige fouten in delegate-opslag worden door de SDK alleen gelogd. Controleer na een herstart of de fabric wegblijft en of het andere ecosysteem nog werkt. Het verwijderen van een bridge, een verbonden voorziening of een item uit Apple Sleutelhanger zijn afzonderlijke acties in Apple. Hun exacte effect op beide Heltec-fabrics moet per actie uit de tabel en events blijken.
+
+[Gepinde native RemoveFabric](https://github.com/espressif/connectedhomeip/blob/75902a0c6f6b208d5db963a8082423465384c594/src/app/clusters/operational-credentials-server/OperationalCredentialsCluster.cpp) · [Gepinde server-delegates](https://github.com/espressif/connectedhomeip/blob/75902a0c6f6b208d5db963a8082423465384c594/src/app/server/Server.h)
+
+### B. Architectuurbesluit
+
+De gebruikte container bevat ESP-IDF 5.5.5 (`b774170ff46c393eeb5e495ea37936038d3f4f4f`), esp-matter v1.6 (`9f2e35ac3b3420fe81ee6834e72ec3db7bdba6a6`) en connectedhomeip (`75902a0c6f6b208d5db963a8082423465384c594`). Het model is getoetst aan de Matter 1.6-definities in die SDK.
+
+| Architectuur | Bediening en ecosystemen | Impact en besluit |
+|---|---|---|
+| A. Eén bridged Matter Fan, MultiSpeed en Auto | Apple kan de gebridgede ventilator als tegel tonen, met slider en handmatig/Auto volgens de hardwareproef. Matter exposeert stand 1–3 en Afwezig. Home Assistant heeft een Matter Fan-implementatie. Google Home documenteert Fan Control en optioneel On/Off. | Gekozen. De bestaande optionele On/Off blijft de Aan/Afwezig-route. Stabiele endpoint-ID’s, identiteit en OTA-opslag. Laagste wijzigingsrisico voor bestaande koppelingen en geen extra clusteropslag. |
+| B. Eén Fan met een andere featurecombinatie | Zonder On/Off blijven snelheid en FanMode mogelijk. Apple’s tegelgedrag en Siri-aan/uit met deze variant zijn onbeproefd. Step modelleert hoger/lager en definieert geen Apple-bediening. | Voor eventuele proef op apart testapparaat. On/Off schrappen bespaart een cluster, maar verandert de attribuut- en commandoset. Step voegt code en controllerafhankelijkheid toe. |
+| C. A met Woning-scènes of automatiseringen | Eén tegel, met afzonderlijke snelkoppelingen voor standen die Woning kan opslaan. Apple ondersteunt scèneactivering via Siri. Test 33%, 66%, 100%, Aan/Uit en Auto op de installatie. | Aanvullende gebruikersoptie zonder firmware-, RAM-, flash- of OTA-impact. Automatiseringen en scènes zitten in het ecosysteem en moeten bij een herstel eventueel opnieuw worden geconfigureerd. |
+| D. Fan met ModeSelect | ModeSelect modelleert benoemde keuzes. Er is geen aangetoonde generieke ondersteuning in Apple Woning voor een Fan. Google noemt specifieke Mode-clusters, zonder belofte voor deze combinatie. Home Assistant/openHAB-ondersteuning voor generieke ModeSelect op deze Fan is onbeproefd. | Een extra cluster maakt discovery, configuratie en testen complexer en gebruikt flash/RAM. Mogelijke aanpassing van caches of koppelingen zonder aangetoond UX-voordeel. |
+| E. Native HomeKit/HAP | HAP heeft fan-snelheid en handmatig/Auto. Eigen discrete knoppen zijn ook hier niet aangetoond. Een HAP-pad zou eigen pairing en interoperabiliteit hebben. | Een tweede protocolstack verhoogt complexiteit, RAM en flash. Een overstap vraagt nieuwe koppelingen en raakt Multi-Admin. Geen extra stack voor deze bèta. |
+
+**Wat Apple kan tonen.** `FanModeSequence=OffLowMedHighAuto` en `SpeedMax=3` waren al actief toen Apple een doorlopende slider toonde. `SpeedMax` bepaalt de snelheidsstappen op de server, zonder een Matter-mechanisme om Apple drie grafische stops of drie knoppen te laten tekenen. Low/Medium/High zijn direct schrijfbare Matter FanMode-waarden. Directe snelheidsknoppen in Woning zijn niet aangetoond. Beide percent-attributen zijn verplicht in Fan Control. MultiSpeed voegt de drie numerieke Speed-attributen toe, en Auto biedt null voor de settings. Het device type Fan 1.6 vereist daarnaast Identify en Groups. On/Off is optioneel. Extra clusters op hetzelfde endpoint kunnen extra mogelijkheden aan een controller bekendmaken. Hoe Apple die rendert, inclusief Fan zonder On/Off, blijft een platformtest. Gebruik scènes voor discrete toegang zolang de standaardtegel de slider gebruikt.
+
+[Matter 1.6-downloads](https://csa-iot.org/developer-resource/specifications-download-request/) · [SDK Fan-device](https://github.com/espressif/connectedhomeip/blob/75902a0c6f6b208d5db963a8082423465384c594/data_model/1.6/device_types/Fan.xml) · [SDK Fan Control](https://github.com/espressif/connectedhomeip/blob/75902a0c6f6b208d5db963a8082423465384c594/data_model/1.6/clusters/FanControl.xml) · [Google Home Fan](https://developers.home.google.com/apis/android/supported-device-types) · [Home Assistant Fan](https://github.com/home-assistant/core/blob/dev/homeassistant/components/matter/fan.py) · [openHAB Matter](https://www.openhab.org/addons/bindings/matter/) · [Apple Woning en scènes](https://support.apple.com/nl-nl/guide/iphone/iph22d98bbca/ios)
+
+### C. Implementatie en diagnostiek
+
+- `orcon_matter_pairing.cpp` en `orcon_matter_history.h` registreren tot 24 events per boot. Gewone SDK-events en fabric-delegates leggen venster, PASE, pending AddNOC, commit, verwijdering, fail-safe-expiry en DNS-SD-initialisatie vast. `pending` gaat aan commit vooraf. PASE-stop en fail-safe-expiry hebben verschillende betekenissen. De snapshot geeft de actuele fail-safe-status. De SDK levert via deze events geen algemeen foutresultaat voor iedere mislukte poging. Een lokaal deleteprobleem bevat wel de SDK-foutcode als die beschikbaar is.
+- Lokale revocatie vereist een huidige fabric-revisie, een expliciete bevestiging en bestaande owner/CSRF/Origin-controles. Tijdens een venster, commissioning, actieve schrijfactie of geplande herstart wacht de eigenaar tot de toestand stabiel is. Alle fabrics, waaronder onbekende VIDs, blijven selectief zichtbaar. Het door de eigenaar geopende lokale Basic-venster en het Enhanced-venster van een bestaande Matter-administrator blijven beschikbaar. De SDK bepaalt de venstersluiting.
+- `orcon_matter.cpp` spiegelt de canonieke waarden na de RF-transactie en houdt On/Off en Fan Control onder dezelfde CHIP-lock als de mailboxcontrole. De delegate onderdrukt RF-echo’s bij intern spiegelen. Een native FanMode On volgt de SDK-semantiek (High). Aan via het optionele On/Off herstelt de laatste bevestigde geschikte stand, met Auto als terugval.
+- `orcon_connect_page.html` en de gzip-header tonen Matter-koppelingen, VID, label en toevoegingen sinds start. De export gebruikt een afzonderlijke owner-only GET met `Cache-Control: no-store`. Fabrics en events worden compact weergegeven als respectievelijk `[index,vid,sinds_start]` en `[ms,event,index,vid,fout]`. `dropped` meldt hoeveel oudere ringbuffer-events zijn overschreven. De gedeelde buffer blijft 3.072 B.
+- Het exportbestand bevat een actuele SDK-snapshot van de Fan, een afzonderlijke 31D9-unitstand, de laatste Matter-aanvraag en RF-busy. `202` betekent ingepland. De Orcon-console toont daarna RF-transmissie en afhandeling. `unit_mode=255` duidt een onbekende stand aan. Voor null of ontbrekende Fan-attributen staat `-1`. Reachable is de bridged-device-indicator en zegt niets over de Apple-verbinding. `wifi_up` en `ipv6_link_local` zijn lokale metingen. `dnssd-ready` zegt dat de SDK DNS-SD heeft geïnitialiseerd, zonder garantie dat de Apple-hub advertenties ontvangt. De snapshot bevat verder resetreden, vrije interne heap, minimum en grootste vrije blok. De bestaande seriële `[mem]`-metingen blijven beschikbaar voor taakstacks. Er zijn geen nieuwe sondes voor CASE- of subscriptionstatus per fabric.
+- WiFi-configuratie, OTA-manifest en ondertekening, mDNS-poortdeling, RF-profielen, timer, toelating en identiteit/NVS-layout gebruiken de bestaande paden. De diagnose-export bevat geen labels, operationele IDs, certificaatmateriaal, codes of gebruikersreferenties. De live lijst escape’t tekstlabels. De eventbuffer gebruikt enkele honderden bytes statisch RAM, zonder extra taak of polling op de Heltec. De Matter-kaart op het dashboard gebruikt dezelfde term Matter-koppelingen.
+
+### D. Testresultaten en hardwarematrix
+
+De lokale ESP-IDF-kandidaat voor bèta 2 op `2acb083` levert 1.757.776 B firmware op. Het lokaal gevalideerde bèta-1-image was 1.753.872 B (+3.904 B). De linker rapporteert 119.072 B statisch DRAM tegenover 118.576 B in de eerdere projectmeting. De hostsuite geeft nul fouten. De releasecontroles hebben beide lokaal gebouwde varianten aan hun ELF, manifest en RF-beleid getoetst. Een headless-Chrome-proef op 390 CSS-pixels met drie fictieve fabrics hield de koppelingen en bediening binnen de viewport. De build is een lokaal validatie-image en is niet geïnstalleerd op de Heltec.
+
+QEMU bevestigde de canonicalisatie na gesimuleerde RF (20% → 33%, één toelatingsaanroep) en de bestaande identiteit en CASE-bediening na het vervangen van het app-slot. In de GitHub-run op `2acb083` slaagden de standaardgeheugentest en identiteitsmigratie. De laagste gemeten ready-heap in de standaardtest was 172.252 B bij de bestaande grens van 171.000 B. De Multi-Admin-stap van die run gebruikte een optionele Basic-opdracht die de SDK met `UnsupportedCommand` weigert. De gecorrigeerde proef gebruikt Enhanced Commissioning via de eerste commissioner. In de geïsoleerde QEMU-hertest ging de fabric-count van één naar twee en na selectieve verwijdering terug naar één. De eerste commissioner hield toegang. Na verwijdering van de laatste fabric was ook die toegang weg. Deze proef gebruikt native Matter-`RemoveFabric`. De owner-HTTP-route en het Apple-gedrag vragen de hardwareproef.
+
+PASS geldt alleen voor een uitgevoerde test. FAIL is een waargenomen verschil, BLOCKED vraagt een ontbrekende omgeving of handeling, NOT TESTED betekent dat de proef nog moet worden uitgevoerd. QEMU draait over Ethernet met gesimuleerde RF en is een aparte test van de SDK en het datamodel.
+
+| Hardwareproef op bèta 2 | Verwachting | Status |
+|---|---|---|
+| Versie en bereikbaarheid | Apparaat meldt exact bijgewerkt firmwarecommit, juiste variant en Ready | BLOCKED voor bèta 2. Openbare uitlezing van de huidige bèta was PASS |
+| Eerste koppeling, drie herhalingen | Eén actieve ventilator per Apple-woning. Verklaar elke fabric via VID en commit-event, en controleer venstersluiting | NOT TESTED |
+| 0%, 1%, 33%, 34%, 66%, 67%, 100% | Afwezig, 1, 1, 2, 2, 3, 3. Verifieer unitmelding en uiteindelijke SDK-setting 0/33/66/100 | NOT TESTED |
+| Stand 1/2/3, Auto, Uit, Aan | Bevestiging uit de unit. Uit = Afwezig. Aan herstelt vorige geschikte stand of Auto | NOT TESTED |
+| Snelle slider en gelijktijdige webbediening | Laatste toegelaten aanvraag wint binnen RF-toelating. Geen extra RF-transmissies door mirroring | NOT TESTED |
+| Originele afstandsbediening en webbediening | Op een betrouwbare 31D9-unitmelding volgen Woning en webinterface. Timer blijft beschikbaar | NOT TESTED |
+| Siri, scène en automatisering | Apple voert de opgeslagen, daadwerkelijk ondersteunde stand uit | NOT TESTED |
+| Heltec- en WiFi-herstart | Dezelfde naam, fan-UniqueID, fabric en werkende bediening. Tel tegels voor en na | NOT TESTED |
+| Normale, getekende OTA | Zelfde identiteit, labels, credentials, fabric en RF-profielen. Gerichte rollback-proef via bestaande testopzet | NOT TESTED |
+| Bridge verwijderen en opnieuw koppelen | Verwachte verwijdering zichtbaar in fabric-events. Een werkende ventilator komt terug | NOT TESTED |
+| Tweede ecosysteem en selectieve revocatie | Beide werken vóór revocatie. De overblijvende fabric bedient de unit erna en na reboot | NOT TESTED |
+| Mislukte commissioning | Na fail-safe-expiry komt een pending toevoeging niet blijvend in de tabel | NOT TESTED |
+| Mobiel Apple Woning en firmwarewebsite | Bevestiging leesbaar en bereikbaar bij mobiel formaat | NOT TESTED op echte iPhone |
+
+**Duurproef.** Neem bij 0, 1, 8, 24 en 72 uur een diagnose-export op en noteer beschikbaarheid in Woning, aantal bridges/tegels, RF-tx en een bevestigde unitstand. Vergelijk uptime, resetreden, heapminimum, grootste blok en fabric-events. Neem op het 1-uursmoment het gedrag tijdens een WiFi-onderbreking op. Test daarna afzonderlijk een router-, hub-, Heltec- en updatecontroleherstart. Registreer bij ‘Geen reactie’ eerst de huidige diagnostics en hubstatus voordat je herstart. Seriële `[mem]`-metingen kunnen CHIP-, loop- en RF-stack en geheugenpieken aanvullen. Alle duurproeven op bèta 2 staan op NOT TESTED.
+
+### E. GitHub, versie en OTA
+
+De implementatie staat in [PR #29](https://github.com/MarcoHuib/orcon-15rf-controller/pull/29). De actuele basis is `release/matter-beta-public` op `ec727505c70df57ceaf455e785f96a7ca3616fc9`. PR #28 is beoordeeld op expliciete bevestiging, controle na Delete en documentatie. Sterke onderdelen zijn verwerkt in de bredere wijziging. Die PR is een concept en heeft geen bewijs dat Apple-dubbels verdwijnen. PR #27 bevat de uitrolarchitectuur. De bestaande workflow geeft releases uitsluitend via `main` uit, kiest nummers uit alle gepubliceerde releases, concepten en tags, en vereist de bestaande publicatiegoedkeuring. De publieke geschiedenis vermeldt op 27 november 2026 alleen v1.0.0 en v1.0.1. De geteste bèta 1 bestaat als lokaal gevalideerd image. Een publieke v1.0.2 dient eerst als stabiele overstap. Voor de privébèta-testinstallatie past v1.1.0-beta.2 als opvolger. Zonder een eerdere beta.1 in de GitHub-historie kiest de workflow eerst beta.1. Gebruik de gewone nummering, zonder een tag aan te maken alleen om het nummer op te hogen.
+
+Bij een kanaalcontrole ontvangen gebruikers zonder opt-in alleen stabiele aanbiedingen. `control-matter` heeft een eigen variant. De workflow bouwt universeel, vergelijkt firmware/ELF en bordbestanden, controleert de manifesten en ondertekent via de bestaande goedgekeurde releasejob. De proefstart bevestigt alleen met Matter Ready en de bestaande OTA-voorwaarden. Er is in deze wijziging geen ondertekeningsstap, sleuteloverdracht, publicatie, partitiewijziging of migratie van bestaande endpoint-ID’s nodig.
+
+[PR #27](https://github.com/MarcoHuib/orcon-15rf-controller/pull/27) · [PR #28](https://github.com/MarcoHuib/orcon-15rf-controller/pull/28) · [Releases](https://github.com/MarcoHuib/orcon-15rf-controller/releases) · [Releasehandleiding](RELEASES.md)
+
+### F. Proef voor de eigenaar
+
+De [eenmalige overstap vanaf privébèta 1](RELEASES.md#overstap-vanaf-privébèta-1) gebruikt een getekende `control-matter`-bundel uit de goedgekeurde kandidaatrun of de reguliere aanbieding zodra `beta.2` publiek is. Laat de bestaande koppelingen staan. Hardwareproeven op de nieuwe kandidaat wachten op de ondertekende bundel en de installatie door de eigenaar.
+
+1. Log in, noteer **Systeem → Firmware** (versie, commit, variant) en open Matter. Exporteer **Technische status → Diagnostiek kopiëren** zodra de uitgebrachte build deze optie heeft. Deel de export via het afgesproken kanaal. Vermijd het kopiëren van het gewone `/api/connect`-antwoord tijdens een open venster. Dat antwoord kan pairinggegevens bevatten.
+2. Installeer een aangeboden, getekende `control-matter`-bèta via het bètakanaal. Kies op de Matter-pagina **Updatecontrole met korte herstart**, wacht tot de normale firmware is teruggekeerd en gebruik **Systeem → Firmware**. De bewuste updatecontrole kan een korte onderbreking in Woning veroorzaken. Gebruik op v1.0.0/v1.0.1 eerst de uitgebrachte stabiele overgangsversie volgens de releasehandleiding. Laat bestaande werkende Apple-koppelingen staan tijdens OTA en test ze direct daarna.
+3. Voor een bestaande storing maak je vóór herstel een export en noteer je hoeveel Orcon-bridges, ventilatoren en verbonden voorzieningen zichtbaar zijn. Noteer het verloop van de Woning-status. Verwijder alleen de bedoelde Orcon-bridge via **Woninginstellingen → Woningcentrales en bridges** of vanuit de instellingen van de tegel via **Bridge**. Controleer ook **Instellingen → Algemeen → Matter-accessoires** voor de verbonden voorzieningen. Maak direct en na circa 30 seconden een nieuwe export. Bekijk eerst welke fabrics daadwerkelijk zijn verdwenen.
+4. Trek alleen ondubbelzinnig achtergebleven lokale toegang in. Apple Keychain kan naast Apple Woning bestaan. Laat werkende of onbekende fabrics staan totdat hun rol vaststaat. Controleer dat een ander ecosysteem vóór en na de actie reageert. Een lokale verwijdering kan een tegel in Apple Woning laten staan.
+5. Voor de repro kies je een geschikt testmoment. Leg eerst de uitgangstabel vast. Als de Apple-bridge verdwenen is en de Apple-uitgangssituatie bekend is, open je één venster en voeg je Orcon eenmaal toe. Bij een extra ecosysteem vraag je bij voorkeur een nieuwe code via de al gekoppelde app. Exporteer direct na het koppelen en na één herstart. Beoordeel de volgorde `window-open` → `pase-start` → `fabric-pending` → `fabric-commit` / `complete` → `window-closed` met de werkelijk waargenomen timestamps. De SDK kan eventnotificaties asynchroon afleveren. Noteer per poging het aantal tegels en hun bereikbaarheid. Herhaal drie keer als de betreffende testkoppeling veilig kan worden verwijderd. Voor een niet-reagerende oude bridge volstaat selectief herstel. Fabrieksreset en nieuwe identiteit zijn afzonderlijke, ingrijpende acties.
+6. Zonder login zijn de gezondheid en broncommit veilig op te vragen. Kies het adres dat lokaal werkt. De tweede opdracht filtert de JSON direct tot de toegestane velden.
+
+   ```sh
+   ORCON_BASE=http://orcon15rf.local   # of het lokale adres van je controller
+   curl -fsS --max-time 5 "$ORCON_BASE/api/connect/state"
+   curl -fsS --max-time 5 "$ORCON_BASE/api/ota" |
+     python3 -c 'import json,sys; d=json.load(sys.stdin); print({k:d.get(k) for k in ("fw","release_name","variant","running_state")})'
+   ```

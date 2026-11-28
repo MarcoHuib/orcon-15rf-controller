@@ -127,6 +127,20 @@ int main() {
     o.m = beta1;
     CHECK(is(judge(o, Own{1001000, otap::Variant::Control, "heltec_v2_sx1276_control", slot, 0, true}), "older-release"));
 
+    // The actual transition from the private control-matter beta.1.
+    const Own privateBeta{1001000, otap::Variant::ControlMatter, "heltec_v2_matter", slot, 1, true};
+    o.m = beta1;
+    o.m.variant = otap::Variant::ControlMatter;
+    std::strcpy(o.m.env, "heltec_v2_matter");
+    CHECK(is(judge(o, privateBeta), "up-to-date"));   // a different public commit of beta.1 still has the same rank
+    o.m.pre = 2;
+    CHECK(judge(o, privateBeta) == nullptr);
+    CHECK(otap::checkManifest(o.m, "", "", slot, privateBeta.version, privateBeta.pre, true) == nullptr);
+    CHECK(is(otap::checkManifest(o.m, "", "", slot, privateBeta.version, privateBeta.pre, false), "beta-disabled"));
+    o.m.version = 1000002; o.m.pre = 0;
+    CHECK(is(judge(o, privateBeta), "older-release"));
+    CHECK(is(otap::checkManifest(o.m, "", "", slot, privateBeta.version, privateBeta.pre, true), "older-release"));
+
     std::printf(fails ? "channels: %d of %d checks FAILED\n" : "channels: %d checks, 0 failures\n", fails ? fails : checks, checks);
     return fails ? 1 : 0;
 }

@@ -60,7 +60,7 @@ h1{font-size:clamp(28px,3.8vw,43px);letter-spacing:-1.6px;line-height:1.16;margi
 <p id="stText">Laden…</p>
 <div class="chips">
 <div class="chip" id="cM"><b id="cMv">–</b><span>Matter</span></div>
-<div class="chip" id="cF"><b id="cFv">–</b><span>Gekoppeld</span></div>
+<div class="chip" id="cF"><b id="cFv">–</b><span>Koppelingen</span></div>
 <div class="chip" id="cW"><b id="cWv">–</b><span>Koppelvenster</span></div>
 </div>
 <div id="act" hidden>
@@ -98,15 +98,19 @@ h1{font-size:clamp(28px,3.8vw,43px);letter-spacing:-1.6px;line-height:1.16;margi
 <p class="msg" id="pMsg" role="status"></p>
 </section>
 <section class="panel wide" aria-labelledby="hC" id="ctlP">
-<h2 id="hC">Gekoppelde controllers</h2>
-<p>Elke slimme-woning-app die de Orcon bedient, is een eigen controller. Je kunt er meerdere tegelijk gebruiken.</p>
+<h2 id="hC">Matter-koppelingen</h2>
+<p>Elke regel is een Matter-koppeling (fabric). Een slimme woning kan meerdere koppelingen gebruiken voor dezelfde ventilator.</p>
+<p id="appleKeychain" hidden>Apple Keychain hoort bij het Apple-beheer van Matter-accessoires. Laat deze koppeling staan zolang je haar gebruikt.</p>
 <ul class="list" id="ctl"></ul>
 <p class="empty" id="ctlEmpty" hidden>Nog niet gekoppeld.</p>
 <div class="note err" id="rmBox" role="alertdialog" aria-labelledby="rmTxt" hidden style="margin-top:14px">
 <p id="rmTxt"></p>
 <div class="row"><button class="act danger" id="rmYes" style="margin-top:0">Ja, verwijderen</button><button class="sec" id="rmNo">Annuleren</button></div>
 </div>
-<div class="row" id="addRow" hidden><button class="sec" id="add">Extra controller koppelen</button></div>
+<div id="addRow" hidden>
+<p>Wil je een extra ecosysteem toevoegen? Gebruik bij voorkeur de koppelingsmodus in de app die al toegang heeft. Gebruik dit venster alleen als die app geen code kan delen. Controleer voor herstel eerst de bestaande bridge en koppelingen.</p>
+<div class="row"><button class="sec" id="add">Koppelvenster voor extra ecosysteem openen</button></div>
+</div>
 <p class="msg" id="cMsg" role="status"></p>
 </section>
 <section class="panel wide" aria-labelledby="hU" id="upP" hidden>
@@ -116,7 +120,12 @@ h1{font-size:clamp(28px,3.8vw,43px);letter-spacing:-1.6px;line-height:1.16;margi
 <p class="msg" id="uMsg" role="status"></p>
 </section>
 <details class="tech wide" id="tech"><summary><span>Technische status tonen</span><span>Technische status verbergen</span></summary>
-<section class="panel"><dl class="kv" id="diag"></dl></section>
+<section class="panel">
+<dl class="kv" id="diag"></dl>
+<dl class="kv" id="diagLive"></dl>
+<div class="row"><button class="sec" id="diagCopy">Diagnostiek kopiëren</button></div>
+<p class="msg" id="diagMsg" role="status"></p>
+</section>
 </details>
 </div>
 </main>
@@ -257,7 +266,7 @@ const QR = (() => {
   return { matrix, svg };
 })();
 
-const VENDOR = { 4937: 'Apple Woning', 24582: 'Google Home', 4631: 'Amazon Alexa', 4362: 'SmartThings' };
+const VENDOR = { 4937: 'Apple Woning', 4996: 'Apple Keychain', 24582: 'Google Home', 4631: 'Amazon Alexa', 4362: 'SmartThings' };
 const MSG = {
   'login-required': 'Je bent niet (meer) ingelogd: log in op de Orcon-pagina en open deze pagina daarna opnieuw.',
   'bad-token': 'Het beveiligingstoken hoort niet bij je huidige sessie (bijvoorbeeld na opnieuw inloggen): herlaad deze pagina.',
@@ -267,7 +276,8 @@ const MSG = {
   'bad-request': 'Ongeldig verzoek.',
   'commissioning-busy': 'Er wordt nu gekoppeld: probeer het daarna opnieuw.',
   'no-such-controller': 'Deze controller bestaat niet (meer).',
-  'remove-failed': 'Verwijderen is mislukt.',
+  'remove-failed': 'De Orcon kon de verwijdering niet bevestigen. Controleer de actuele koppelingen en kopieer de diagnostiek.',
+  'fabric-list-changed': 'De koppelingen zijn intussen gewijzigd. Controleer de lijst en kies opnieuw.',
   'answer-too-long': 'Het antwoord van de controller paste niet: herlaad de pagina.',
   'activation-busy': 'De identiteit wordt al gemaakt: even geduld.',
   'already-activated': 'Matter is al geactiveerd.',
@@ -286,7 +296,7 @@ const UMSG = {
   'update-busy': 'Er loopt al een update.'
 };
 const STATE = { ready: ['Actief', 'y'], starting: ['Start…', 'w'], waiting: ['Wacht op WiFi', 'w'], failed: ['Niet beschikbaar', 'n'] };
-let token = '', S = null, left = 0, countdown = 0, poller = 0, rmIndex = 0, online = true;
+let token = '', firmware = '', S = null, left = 0, countdown = 0, poller = 0, removal = null, removing = false, windowPending = false, statusRequest = 0, online = true;
 
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const mmss = s => Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
@@ -323,7 +333,7 @@ function show(j) {
   $('stText').textContent = idAbsent ? 'Matter is nog niet geactiveerd op deze controller.' :
     idDamaged ? 'De Matter-identiteit op de controller is beschadigd: Matter staat uit.' :
     !ready ? 'Matter draait nu niet. Bekijk de technische status hieronder.' :
-    j.fabrics ? 'De Orcon is gekoppeld met ' + j.fabrics + (j.fabrics === 1 ? ' controller.' : ' controllers.') : 'Nog niet gekoppeld met een slimme woning.';
+    j.fabrics ? 'De Orcon is gekoppeld met ' + j.fabrics + (j.fabrics === 1 ? ' Matter-koppeling.' : ' Matter-koppelingen.') : 'Nog niet gekoppeld met een slimme woning.';
   $('act').hidden = !token || !(idAbsent || idDamaged);   // only the logged-in owner activates
   $('actText').textContent = idDamaged ? 'Maak alleen een nieuwe identiteit als je opnieuw wilt koppelen: de controller wordt dan voor je apps een nieuw apparaat.' :
     'Bij het activeren maakt de controller eenmalig een eigen Matter-identiteit, op de controller zelf: een eigen sleutel en een eigen koppelcode. Daarna herstart hij (ongeveer een halve minuut) en kun je koppelen.';
@@ -341,12 +351,20 @@ function show(j) {
     }, 1000);
   } else hideCodes();
   $('pClosed').hidden = !!j.window; $('pOther').hidden = !(j.window && !j.window_code);
-  $('open').hidden = !can || !!j.window; $('close').hidden = $('close2').hidden = !can;
-  $('addRow').hidden = $('add').hidden = !can || !!j.window || !j.fabrics;
+  $('open').hidden = !can || !!j.window || !!j.fabrics || !!j.commissioning;
+  $('close').hidden = $('close2').hidden = !can;
+  $('addRow').hidden = $('add').hidden = !can || !!j.window || !!j.commissioning || !j.fabrics;
   const list = Array.isArray(j.controllers) ? j.controllers : [];
+  $('appleKeychain').hidden = !list.some(c => c.vendor === 4996);
+  const revocable = can && !j.window && !j.commissioning && Number.isInteger(j.fabric_revision);
   $('ctl').innerHTML = list.map(c => '<li class="item"><span class="sym" aria-hidden="true">✓</span><span><b>' +
-    esc(VENDOR[c.vendor] || 'Controller') + '</b><small>' + esc(c.label ? c.label + ' · ' : '') + 'koppeling ' + (c.index | 0) +
-    '</small></span>' + (can ? '<button class="sec" data-rm="' + (c.index | 0) + '">Verwijderen</button>' : '<span></span>') + '</li>').join('');
+    esc(VENDOR[c.vendor] || 'Onbekende Matter-koppeling') + '</b><small>' + esc(c.label ? c.label + ' · ' : '') +
+    'koppeling ' + (c.index | 0) + ' · VID ' + (c.vendor | 0) + ' (' + vendorHex(c.vendor) + ')' +
+    '</small></span>' + (revocable ? '<button class="sec" data-rm="' + (c.index | 0) + '">Toegang intrekken</button>' : '<span></span>') + '</li>').join('');
+  if (removal && !removing && (!revocable || j.fabric_revision !== removal.revision)) {
+    clearRemoval();
+    refused({ error: j.commissioning || j.window ? 'commissioning-busy' : 'fabric-list-changed' }, $('cMsg'));
+  }
   $('ctlEmpty').hidden = list.length > 0;
   $('upP').hidden = !can;
   const d = j.diag || {}, c = j.control || {}, f = j.fan || {};
@@ -355,24 +373,38 @@ function show(j) {
     ['Draait sinds', d.uptime_ms ? Math.round(d.uptime_ms / 60000) + ' min' : '-'],
     ['Laatste verzoek', c.last ? c.last + ' → ' + c.code + (c.error ? ' (' + c.error + ')' : '') + (c.age_s ? ', ' + c.age_s + ' s geleden' : '') : '-'],
     ['Terug naar', c.return_to || '-'], ['Ventilator-endpoint', f.ep ? f.ep + ' · ' + f.fanmode + (f.fixed ? ' · oude stand genegeerd' : '') : '-'],
-    ['Koppelen bezig', j.commissioning ? 'ja' : 'nee']].map(([k, v]) => '<dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd>').join('');
+    ['Koppelen bezig', j.commissioning ? 'ja' : 'nee'],
+    ...list.map(fabric => ['Fabric ' + (fabric.index | 0), (VENDOR[fabric.vendor] || 'Onbekende fabrikant') +
+      ' · VID ' + (fabric.vendor | 0) + ' (' + vendorHex(fabric.vendor) + ') · ' +
+      (fabric.added ? 'toegevoegd sinds start' : 'al aanwezig bij start')])].map(([k, v]) => '<dt>' + esc(k) + '</dt><dd>' + esc(v) + '</dd>').join('');
   schedule();
 }
 function refused(j, where) {
-  if (j.error === 'login-required') { $('login').hidden = false; hideCodes(); chip('cM', '–', ''); chip('cF', '–', ''); chip('cW', '–', ''); $('stText').textContent = 'Inloggen nodig.'; return; }
+  if (j.error === 'login-required') { S = null; clearRemoval(); $('ctl').innerHTML = ''; $('diag').innerHTML = ''; $('diagLive').innerHTML = ''; $('login').hidden = false; hideCodes(); chip('cM', '–', ''); chip('cF', '–', ''); chip('cW', '–', ''); $('stText').textContent = 'Inloggen nodig.'; return; }
   const t = MSG[j.error] || ('Geweigerd: ' + (j.error || 'onbekende fout'));
   if (where) { where.textContent = t; where.className = 'msg bad'; } else { $('err').textContent = t; $('err').hidden = false; }
 }
 async function load() {
-  try { const { r, j } = await get('/api/connect'); conn(true); if (r.ok) show(j); else refused(j); }
-  catch (e) { conn(false); schedule(); }
+  if (removing || windowPending) return;
+  const request = ++statusRequest;
+  try {
+    const { r, j } = await get('/api/connect');
+    if (request !== statusRequest) return;
+    conn(true);
+    if (r.ok) show(j); else { refused(j); schedule(); }
+  } catch (e) { if (request === statusRequest) { conn(false); schedule(); } }
 }
 function schedule() { clearTimeout(poller); poller = setTimeout(() => { if (!document.hidden) load(); else schedule(); }, S && S.window ? 5000 : 15000); }
 async function windowSet(open, msg) {
+  if (removing || windowPending) return;
+  windowPending = true;
+  ++statusRequest;
   for (const b of ['open', 'close', 'close2', 'add']) $(b).disabled = true;
   try { const { r, j } = await post('/api/connect/window', { open }); conn(true); if (r.ok) { show(j); msg.textContent = ''; } else refused(j, msg); }
   catch (e) { conn(false); }
+  windowPending = false;
   for (const b of ['open', 'close', 'close2', 'add']) $(b).disabled = false;
+  schedule();
 }
 $('open').onclick = () => windowSet(true, $('pMsg'));
 $('close').onclick = $('close2').onclick = () => windowSet(false, $('pMsg'));
@@ -382,23 +414,77 @@ $('copy').onclick = async () => {
   $('pMsg').textContent = ok ? 'Koppelcode gekopieerd.' : 'Kopiëren lukt hier niet: neem de code over van het scherm.';
   $('pMsg').className = 'msg ' + (ok ? 'okt' : 'warn');
 };
-$('ctl').onclick = e => {   // explicit confirmation: nothing is removed by the first click
-  const b = e.target && e.target.closest ? e.target.closest('button[data-rm]') : null;
-  if (!b) return;
-  rmIndex = +b.getAttribute('data-rm');
-  const c = (S && S.controllers || []).find(x => x.index === rmIndex) || {};
-  $('rmTxt').textContent = 'Koppeling ' + rmIndex + ' met ' + (VENDOR[c.vendor] || 'deze controller') +
-    ' verwijderen? Die app kan de Orcon daarna niet meer bedienen. Je kunt later opnieuw koppelen.';
+function setting(value) { return value < 0 ? '—' : String(value); }
+function vendorHex(id) { return '0x' + (id & 0xffff).toString(16).padStart(4, '0'); }
+
+function clearRemoval() {
+  $('rmBox').hidden = true;
+  removal = null;
+}
+
+$('ctl').onclick = e => {
+  const button = e.target && e.target.closest ? e.target.closest('button[data-rm]') : null;
+  if (!button || removing || windowPending || !S || S.window || S.commissioning || !Number.isInteger(S.fabric_revision)) return;
+  const index = +button.getAttribute('data-rm');
+  const fabric = (S.controllers || []).find(x => x.index === index);
+  if (!fabric) return;
+  removal = { index, revision: S.fabric_revision };
+  const name = VENDOR[fabric.vendor] || ('onbekende fabrikant ' + vendorHex(fabric.vendor));
+  $('rmTxt').textContent = 'Toegang intrekken voor koppeling ' + index + ' (' + name +
+    (fabric.label ? ' · ' + fabric.label : '') + ')? De Orcon verwijdert alleen deze koppeling. ' +
+    'Staat de bridge nog in Apple Woning? Verwijder die daar eerst via Woninginstellingen → Woningcentrales en bridges.';
   $('rmBox').hidden = false; $('rmNo').focus && $('rmNo').focus();
 };
-$('rmNo').onclick = () => { $('rmBox').hidden = true; rmIndex = 0; };
+$('rmNo').onclick = () => { if (!removing) clearRemoval(); };
 $('rmYes').onclick = async () => {
-  const i = rmIndex; if (!i) return;
-  $('rmYes').disabled = true;
-  try { const { r, j } = await post('/api/connect/remove', { index: i, confirm: true }); conn(true);
-    if (r.ok) { $('cMsg').textContent = 'Koppeling ' + i + ' is verwijderd.'; $('cMsg').className = 'msg okt'; show(j); } else refused(j, $('cMsg')); }
-  catch (e) { conn(false); }
-  $('rmYes').disabled = false; $('rmBox').hidden = true; rmIndex = 0;
+  if (!removal || removing || windowPending) return;
+  const { index, revision } = removal;
+  removing = true;
+  ++statusRequest;
+  $('rmYes').disabled = $('rmNo').disabled = true;
+  try {
+    const { r, j } = await post('/api/connect/remove', { index, revision, confirm: true });
+    conn(true);
+    if (r.ok) {
+      $('cMsg').textContent = 'Koppeling ' + index + ' is lokaal verwijderd.';
+      $('cMsg').className = 'msg okt';
+      show(j);
+    } else {
+      refused(j, $('cMsg'));
+      if (j.state) show(j);
+    }
+  } catch (e) { conn(false); }
+  removing = false;
+  $('rmYes').disabled = $('rmNo').disabled = false;
+  clearRemoval();
+  schedule();
+};
+$('diagCopy').onclick = async () => {
+  const button = $('diagCopy'), msg = $('diagMsg');
+  if (button.disabled) return;
+  button.disabled = true;
+  try {
+    const { r, j } = await get('/api/connect/diagnostics');
+    if (!r.ok) refused(j, msg);
+    else {
+      const snapshot = j.snapshot || {}, fan = snapshot.fan;
+      const details = [];
+      if (fan) details.push(['Matter Fan', 'EP ' + fan.ep + ' · bovenliggend ' + fan.parent + ' · type 0x002B · aantal ' + fan.count],
+        ['Fan Control', 'features ' + fan.features + ' · volgorde ' + fan.sequence + ' · max ' + fan.max + ' · modus ' + fan.mode],
+        ['Gevraagd / actief', '% ' + setting(fan.percent_setting) + ' / ' + fan.percent_current +
+          ' · stap ' + setting(fan.speed_setting) + ' / ' + fan.speed_current],
+        ['On/Off / bridge Reachable', setting(fan.on) + ' / ' + setting(fan.reachable)]);
+      const events = Array.isArray(snapshot.events) ? snapshot.events : [];
+      if (events.length) details.push(['Matter-events', events.slice(-6).map(event =>
+        Math.round(event[0] / 1000) + ' s ' + event[1] + (event[2] ? ' #' + event[2] : '') +
+        (event[3] ? ' ' + vendorHex(event[3]) : '') + (event[4] ? ' fout 0x' + event[4].toString(16) : '')).join(' · ')]);
+      $('diagLive').innerHTML = details.map(([key, value]) => '<dt>' + esc(key) + '</dt><dd>' + esc(value) + '</dd>').join('');
+      if (firmware) j.firmware = firmware;
+      msg.textContent = await copyText(JSON.stringify(j)) ? 'Diagnostiek gekopieerd.' : 'Kopiëren lukt hier niet.';
+      msg.className = 'msg';
+    }
+  } catch (e) { msg.textContent = 'Diagnostiek ophalen is mislukt.'; }
+  button.disabled = false;
 };
 async function activate(replace) {   // the identity is made on the controller itself; then it restarts into Matter
   $('activate').disabled = $('actYes').disabled = true;
@@ -430,7 +516,11 @@ $('upd').onclick = async () => {
 };
 document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
 (async () => {   // the session's CSRF token, as Orcon's own page gets it
-  try { const { j } = await get('/api/setup/state'); token = j.auth && j.auth.logged_in && j.token ? j.token : ''; } catch (e) { conn(false); }
+  try {
+    const { j } = await get('/api/setup/state');
+    token = j.auth && j.auth.logged_in && j.token ? j.token : '';
+    if (/^[0-9a-f]{40}$/.test(j.fw)) firmware = j.fw;
+  } catch (e) { conn(false); }
   await load();
 })();
 </script>

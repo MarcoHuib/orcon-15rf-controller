@@ -41,6 +41,7 @@
 #include <esp_log.h>
 #include <esp_matter.h>
 #include <esp_matter_endpoint.h>
+#include <data_model_provider/esp_matter_data_model_provider.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -97,9 +98,9 @@ uint16_t g_fanEp = 0;
 QueueHandle_t g_mailbox = nullptr;     // one open request, the latest wins. No telemetry task: no queue, no requests
 // Written by the CHIP task only: queued requests, refusals (fan "off"), and requests replaced by a newer one before
 // Orcon's loop took them (still "busy" in the [mem] line, tools/memlog.py).
-volatile uint32_t g_refused = 0, g_busy = 0, g_queued = 0;
+std::atomic<uint32_t> g_refused = 0, g_busy = 0, g_queued = 0;
 std::atomic<bool> g_mirroring{false};   // the loop task changes the fan cluster itself (stack locked): no request
-volatile int g_lastEvent = -1;
+std::atomic<int> g_lastEvent = -1;
 uint32_t g_startHeap = 0, g_afterStartHeap = 0;
 std::atomic<bool> g_telemetryUp{false};   // set by the telemetry task itself, after its first sample
 orcon_matter::Telemetry g_telemetry = orcon_matter::Telemetry::NotStarted;   // earlyBegin() result (loop task only)
@@ -114,9 +115,9 @@ void stateLine(const char* what) {
 
 void post(Req r) {   // CHIP task: the latest request replaces one that Orcon's loop has not taken yet
     if (!g_mailbox) return;
-    if (uxQueueMessagesWaiting(g_mailbox)) g_busy = g_busy + 1;
+    if (uxQueueMessagesWaiting(g_mailbox)) ++g_busy;
     xQueueOverwrite(g_mailbox, &r);
-    g_queued = g_queued + 1;
+    ++g_queued;
 }
 
 // Fan Control's delegate (CHIP task, stack locked), set through the cluster config: called after every committed
@@ -128,7 +129,7 @@ struct FanDelegate final : FanControl::Delegate {
     void OnFanDriveStateChanged(const FanControl::FanDriveState& s) override {
         if (g_mirroring.load() || !orcon_matter::matterReady()) return;   // our own view update, or the boot restore
         const Req r = orcon_matter::reqOfFanMode(uint8_t(s.mode));      // off is Afwezig
-        if (r == Req::None) { g_refused = g_refused + 1; return; }      // an unknown mode: no request, the view returns
+        if (r == Req::None) { ++g_refused; return; }      // an unknown mode: no request, the view returns
         post(r);
     }
 };
@@ -175,12 +176,12 @@ esp_err_t attributeCb(attribute::callback_type_t type, uint16_t ep, uint32_t clu
     bool refuse = false;
     if (!switchRequest(ep, cluster, attr, val, r, refuse)) {
         if (!refuse) return ESP_OK;
-        g_refused = g_refused + 1;               // a stand switched "off": no Orcon meaning, no request
+        ++g_refused;               // a stand switched "off": no Orcon meaning, no request
         return ESP_ERR_INVALID_ARG;
     }
 #else
     // Only the fan's own On/Off arrives here (Fan Control through g_fanDelegate): off is Afwezig, on leaves it.
-    // The mirror writes it with attribute::report(), which skips this callback, so every call is a controller's.
+    // The mirror disables the attribute callback for its local writes.
     if (ep != g_fanEp || cluster != OnOff::Id || attr != OnOff::Attributes::OnOff::Id) return ESP_OK;
     r = orcon_matter::reqOfOnOff(val->val.b);
 #endif
@@ -235,7 +236,7 @@ void telemetryTask(void*) {
               unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
               unsigned(heap_caps_get_free_size(MALLOC_CAP_DMA)), unsigned(g_startHeap),
               unsigned(g_afterStartHeap), orcon_matter::MatterState::name(st), g_mtr.step(),
-              unsigned(g_mtr.err()), unsigned(g_mtr.sinceMs()), g_lastEvent, (unsigned long)g_queued,
+              unsigned(g_mtr.err()), unsigned(g_mtr.sinceMs()), g_lastEvent.load(), (unsigned long)g_queued,
               (unsigned long)g_refused, (unsigned long)g_busy);
         orcon_matter::heapMonitorReport(o);
         for (const char* name : kTasks)
@@ -294,6 +295,7 @@ const char* applyDefaultNodeLabel() {
 
 void onChipEvent(const chip::DeviceLayer::ChipDeviceEvent* e, intptr_t) {
     g_lastEvent = int(e->Type);
+    pairingEvent(*e);
     if (e->Type == chip::DeviceLayer::DeviceEventType::kServerReady) {
         // On ESP32, Server::Init leaves DNS-SD to the next IP event (esp_matter_core.cpp). Orcon starts Matter on a
         // connected home network, so an address that came before esp_matter::start() would leave a commissioned
@@ -363,7 +365,6 @@ void mirror(uint32_t now) {
     View v;
     const bool known = viewOfUnit(unit, v);
     if (txBusy || g_pend.req != Req::None) return;
-    int8_t setOn = -1;
     chip::DeviceLayer::PlatformMgr().LockChipStack();
     if (uxQueueMessagesWaiting(g_mailbox) == 0) {   // a write that came in before this lock is queued: it goes first
         bool onNow = true;   // the fan's On/Off as stored (NONVOLATILE: a mirrored Afwezig survives a restart)
@@ -398,20 +399,30 @@ void mirror(uint32_t now) {
             const uint8_t want = known ? v.fanMode : placeholderFor(shown, onNow);
             g_mirroring.store(true);   // SetFanMode tells the delegate synchronously: not a request
             if (want != kFanKeep && shown != want) fan->SetFanMode(FanControl::FanModeEnum(want));
-            // shortcut: PercentCurrent/SpeedCurrent follow the stand (33/66/100, 1/2/3) and stay put in Auto; the
-            // unit's real fan percentage (31DA) is not mapped yet. Upgrade when Woning shows the current speed.
-            if (known) if (const uint8_t pct = percentOfFanMode(v.fanMode)) fan->SetPercentCurrent(pct);
-            if (known) if (const uint8_t spd = speedOfFanMode(v.fanMode)) fan->SetSpeedCurrent(spd);
+            // A slider write within the confirmed stand leaves FanMode unchanged in CHIP. Normalize that setting
+            // as well, once admission and the RF transaction have finished. In Auto the SDK keeps settings null.
+            if (known && v.fanMode != kFanAuto) {
+                const uint8_t pct = percentOfFanMode(v.fanMode);
+                const auto setting = fan->GetPercentSetting();
+                if (setting.IsNull() || setting.Value() != pct)
+                    fan->SetPercentSetting(chip::app::DataModel::MakeNullable(pct));
+                // These are stand equivalents from 31D9. Auto's actual speed from 31DA is not calibrated.
+                fan->SetPercentCurrent(pct);
+                fan->SetSpeedCurrent(speedOfFanMode(v.fanMode));
+            }
             g_mirroring.store(false);
         }
-        if (known && a && onNow != v.on) setOn = v.on;
-        else if (!known && fixOn) setOn = 1;   // the placeholder Auto shows the fan on, not a stale "off"
+        if ((known && a && onNow != v.on) || (!known && fixOn)) {
+            esp_matter_attr_val_t nv = esp_matter_bool(!known || v.on);
+            // Keep the mailbox check and both cluster updates in the same locked section.
+            const auto id = OnOff::Attributes::OnOff::Id;
+            if (attribute::set_val(a, &nv, false) == ESP_OK) {
+                data_model::provider::get_instance().ReportAttributeChanged(
+                    chip::app::AttributePathParams(g_fanEp, OnOff::Id, id));
+            }
+        }
     }
     chip::DeviceLayer::PlatformMgr().UnlockChipStack();
-    if (setOn >= 0) {   // report(): set, store and tell the subscribers, without attributeCb (it takes the lock itself)
-        esp_matter_attr_val_t nv = esp_matter_bool(setOn == 1);
-        attribute::report(g_fanEp, OnOff::Id, OnOff::Attributes::OnOff::Id, &nv);
-    }
 }
 }  // namespace
 
@@ -432,6 +443,35 @@ void probeStarting() { g_mtr.start(millis()); }
 void probeHandedOver() { g_mtr.handedOver(millis()); }
 #endif
 
+void liveFanJson(Out& o) {
+    const auto* fan = FanControl::FindClusterOnEndpoint(g_fanEp);
+    if (!fan) { o.fmt("null"); return; }
+    unsigned count = 0;
+    for (auto* ep = endpoint::get_first(node::get()); ep; ep = endpoint::get_next(ep)) {
+        for (size_t i = 0; i < endpoint::get_device_type_count(ep); ++i) {
+            uint32_t id;
+            uint8_t version;
+            if (endpoint::get_device_type_at_index(ep, i, id, version) == ESP_OK && id == 0x002b) ++count;
+        }
+    }
+    const auto readBool = [](uint32_t cluster, uint32_t attr) -> int {
+        esp_matter_attr_val_t value = esp_matter_invalid(nullptr);
+        auto* a = attribute::get(g_fanEp, cluster, attr);
+        return a && attribute::get_val(a, &value) == ESP_OK ? int(value.val.b) : -1;
+    };
+    const auto pct = fan->GetPercentSetting();
+    const auto spd = fan->GetSpeedSetting();
+    o.fmt("{\"ep\":%u,\"parent\":%u,\"type\":43,\"count\":%u,\"features\":%u,\"sequence\":%u,"
+          "\"mode\":%u,\"max\":%u,\"percent_setting\":%d,\"percent_current\":%u,"
+          "\"speed_setting\":%d,\"speed_current\":%u,\"on\":%d,\"reachable\":%d}",
+          unsigned(g_fanEp), unsigned(endpoint::get_parent_endpoint_id(endpoint::get(g_fanEp))), count,
+          unsigned(fan->GetFeatureMap().Raw()), unsigned(fan->GetFanModeSequence()), unsigned(fan->GetFanMode()),
+          unsigned(fan->GetSpeedMax()), pct.IsNull() ? -1 : int(pct.Value()), unsigned(fan->GetPercentCurrent()),
+          spd.IsNull() ? -1 : int(spd.Value()), unsigned(fan->GetSpeedCurrent()),
+          readBool(OnOff::Id, OnOff::Attributes::OnOff::Id),
+          readBool(BridgedDeviceBasicInformation::Id, BridgedDeviceBasicInformation::Attributes::Reachable::Id));
+}
+
 void fanCheckJson(Out& o) {   // the fan endpoint's first look this boot (loop task)
     const FanCheck& c = g_fanCheck;
     o.fmt("{\"ep\":%u,\"t_ms\":%lu,\"tries\":%u,\"fanmode\":\"%s\",\"err\":\"0x%lx\",\"onoff\":%d,"
@@ -443,11 +483,13 @@ void fanCheckJson(Out& o) {   // the fan endpoint's first look this boot (loop t
 }
 
 void controlJson(Out& o) {   // for the owner's GET /api/connect (loop task, like serviceControl)
+    bool txBusy = false;
+    const uint8_t unit = setupweb::matterUnitMode(txBusy);
     o.fmt("{\"enabled\":%s,\"last\":\"%s\",\"code\":%d,\"error\":\"%s\",\"age_s\":%lu,"
-          "\"pending\":%s,\"return_to\":\"%s\",\"queued\":%lu,\"refused\":%lu,\"replaced\":%lu}",
+          "\"unit_mode\":%u,\"rf_busy\":%s,\"pending\":%s,\"return_to\":\"%s\",\"queued\":%lu,\"refused\":%lu,\"replaced\":%lu}",
           kControlBuild ? "true" : "false", kReqName[unsigned(g_last.req) % 7], g_last.code,
           g_last.err, (unsigned long)(g_last.ms ? (millis() - g_last.ms) / 1000 : 0),
-          g_pend.req != Req::None ? "true" : "false", g_lastStand ? g_lastStand : "",
+          unsigned(unit), txBusy ? "true" : "false", g_pend.req != Req::None ? "true" : "false", g_lastStand ? g_lastStand : "",
           (unsigned long)g_queued, (unsigned long)g_refused, (unsigned long)g_busy);
 }
 

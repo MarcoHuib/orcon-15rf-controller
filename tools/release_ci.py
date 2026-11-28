@@ -11,7 +11,7 @@ keys and tampered inputs. A --dist is one variant's directory (BUILD_INFO.json) 
   next --newest N [--channel stable|beta] [--betas "TAGS"] [--notes TEXT] -- patch|minor|major
                                          the next release, one step above N: the newest stable version among every tag
                                          and release (the history job's awk rule, the same as the publish floor; 0 =
-                                         none). patch 1.0.0 -> 1.0.1; minor 1.0.5 -> 1.1.1; major 1.4.8 -> 2.0.1. A beta is
+                                         none). patch 1.0.0 -> 1.0.1; minor 1.0.5 -> 1.1.0; major 1.4.8 -> 2.0.0. A beta is
                                          that number's next beta (beta.1 when it has none; TAGS: the beta tags that exist).
                                          Refuses an empty history and a number outside 0..999 per part
   source --repo R --ref REF --event E --default-branch B --sha SHA --head SHA
@@ -127,13 +127,18 @@ def release_rank(n, pre):
     return n * 100 + (pre if pre else 100)
 
 
-def next_release(kind, newest, channel='stable', betas=()):
+def next_release(kind, newest, channel='stable', betas=(), candidate_from=''):
     """(number, pre): stable, one step above the newest stable (next_version); beta, that same number's next beta. The
     beta tags that exist count, whatever their state: a beta number is never used twice either."""
     n = next_version(kind, newest)
-    if channel == 'stable': return n, 0
-    if channel != 'beta': fail(f'channel {channel!r}: stable or beta')
+    if channel == 'stable' and not candidate_from: return n, 0
+    if channel != 'beta': fail('a test candidate requires the beta channel' if candidate_from else f'channel {channel!r}: stable or beta')
     taken = [pre for num, pre in filter(None, map(parse_release_tag, betas)) if num == n and pre]
+    if candidate_from:
+        installed = parse_release_tag(candidate_from)
+        if not installed or installed[0] != n or not installed[1]:
+            fail(f'candidate_from must be an installed v{semver_text(n)}-beta.N')
+        taken.append(installed[1])
     pre = max(taken, default=0) + 1
     if pre > 99: fail(f'v{semver_text(n)} has 99 betas: release it, or choose a bigger step')
     return n, pre
@@ -142,13 +147,14 @@ def next_release(kind, newest, channel='stable', betas=()):
 def next_version(kind, newest):
     """The number of the next release: one step above `newest`, the newest version among every tag and release,
     published or not (a draft, or a tag left by a failed publish, keeps its number: a number is never used twice). A new
-    minor or major starts its patches at 1. No history (0) is refused: a failed lookup must never restart the count."""
+    minor or major starts its patches at 0 (SemVer; the first beta of 1.1.0 is 1.1.0-beta.1). No history (0) is refused:
+    a failed lookup must never restart the count."""
     if kind not in BUMPS: fail(f'release type {kind!r}: choose patch, minor or major')
     if not isinstance(newest, int) or not 0 <= newest <= 999999999: fail(f'newest version {newest!r}: not a release number')
     if not newest: fail('no earlier release in the tags and releases: refusing to start the count (did the lookup fail?)')
     top = newest
     a, b, c = top // 1000000, top // 1000 % 1000, top % 1000
-    a, b, c = {'patch': (a, b, c + 1), 'minor': (a, b + 1, 1), 'major': (a + 1, 0, 1)}[kind]
+    a, b, c = {'patch': (a, b, c + 1), 'minor': (a, b + 1, 0), 'major': (a + 1, 0, 0)}[kind]
     if max(a, b, c) > 999: fail(f'{kind} after v{semver_text(top)} leaves the range 0..999 per part: choose a bigger step')
     return check_version(f'{a}.{b}.{c}', [semver_text(top)])
 
@@ -340,13 +346,21 @@ def variant_dirs(dist):
     return ds
 
 
+def release_variants(pre):
+    """A stable release publishes the control firmware only (the stable channel stays as it is); a beta both variants."""
+    return sorted(KINDS) if pre else ['control']
+
+
 def release_infos(dist):
-    """A release directory: every variant, one release (version, beta, commit). One variant's directory: just it."""
+    """A release directory: its variants (release_variants), one release (version, beta, commit). One variant's
+    directory: just it."""
     ds = variant_dirs(dist)
     infos = [load_info(d) for d in ds]
     if len(ds) > 1 or not (Path(dist) / 'BUILD_INFO.json').is_file():
-        if sorted(i['variant'] for i in infos) != sorted(KINDS): fail(f"a release carries every variant {sorted(KINDS)}: {sorted(i['variant'] for i in infos)}")
         if len({(i['version'], i['pre'], i['commit']) for i in infos}) != 1: fail('the variants are not one release (version, beta, commit)')
+        want = release_variants(infos[0]['pre'])
+        if sorted(i['variant'] for i in infos) != want:
+            fail(f"a {'beta' if infos[0]['pre'] else 'stable'} release carries exactly the variants {want}: {sorted(i['variant'] for i in infos)}")
     return list(zip(ds, infos))
 
 
@@ -588,11 +602,11 @@ def notes_md(dist, notes='', run='', sums_file=None):
               'installeert in het andere geheugenslot en keert automatisch terug naar de vorige versie als de nieuwe niet binnen 5 minuten gezond opstart.', '']
     if 'control-matter' in by:
         lines += [f"**Matter (experimenteel, niet gecertificeerd):** `{bundle['control-matter']}` is dezelfde firmware met Matter (Apple Woning en andere Matter-apps). "
-                  'Een controller zonder Matter krijgt die nooit vanzelf: kies het bestand bij *Handmatig installeren* en bevestig de wissel. '
+                  'Draait je controller nog v1.0.0 of v1.0.1? Installeer eerst de stabiele control-update v1.0.2 of nieuwer via *Update installeren*. '
+                  'Zet *Bèta-updates ontvangen* aan, kies het Matter-bestand bij *Handmatig installeren* en bevestig de wissel. '
                   'Activeer daarna Matter op de pagina *Verbinden* en koppel met de QR-code. Apple Woning meldt een niet-gecertificeerd accessoire: '
                   "kies 'Voeg toch toe'. Dit project heeft geen eigen vendor-ID en is niet door de CSA gecertificeerd. "
-                  f"Terug zonder Matter: `{bundle.get('control', '')}` met dezelfde bevestiging. "
-                  'Een controller met v1.0.x installeert eerst deze control-versie (*Update installeren*); pas die kent de Matter-variant.', '']
+                  f"Terug zonder Matter: `{bundle.get('control', '')}` met dezelfde bevestiging.", '']
     if any(fac.values()):
         lines += ['**Nieuwe controller (eerste installatie via USB):** ' + ' of '.join(
                       f"`{fac[v]}` ({'met Matter' if v == 'control-matter' else 'zonder Matter'})" for v in sorted(by) if fac[v]) +
@@ -616,6 +630,7 @@ def main(argv=None):
     s = p.add_subparsers(dest='cmd', required=True)
     nx = s.add_parser('next'); nx.add_argument('kind'); nx.add_argument('--newest', required=True); nx.add_argument('--notes', default='')
     nx.add_argument('--channel', default='stable'); nx.add_argument('--betas', default='')
+    nx.add_argument('--candidate-from', default='')
     so = s.add_parser('source')
     for k in ('repo', 'ref', 'event', 'default-branch', 'sha', 'head'): so.add_argument('--' + k, required=True)
     pk = s.add_parser('packages'); pk.add_argument('--list', required=True)
@@ -638,11 +653,12 @@ def main(argv=None):
     try:
         if a.cmd == 'next':
             if not re.fullmatch(r'0|[1-9][0-9]{0,8}', a.newest, re.ASCII): fail(f'newest version {a.newest!r}: not a release number')
-            n, pre = next_release(a.kind, int(a.newest), a.channel, a.betas.split())
+            n, pre = next_release(a.kind, int(a.newest), a.channel, a.betas.split(), a.candidate_from)
             clean_notes(a.notes)   # refused here, before anything is built
+            if a.candidate_from: print('Test candidate: verified workflow artifact only, no publication', file=sys.stderr)
             print(f'newest stable tag or release v{semver_text(int(a.newest))}, {a.kind} {a.channel}: {release_tag(n, pre)}', file=sys.stderr)
             print(f'number={n}\npre={pre}\ntag={release_tag(n, pre)}\nname={release_name(n, pre)}\nrank={release_rank(n, pre)}\n'
-                  f'prerelease={"true" if pre else "false"}')
+                  f'is_beta={"true" if pre else "false"}\nlatest={"false" if pre else "true"}')
         elif a.cmd == 'source':
             check_source(a.repo, a.ref, a.event, a.default_branch, a.sha, a.head); print('source OK')
         elif a.cmd == 'packages': check_packages(Path(a.list).read_text()); print('PlatformIO packages match the lock')

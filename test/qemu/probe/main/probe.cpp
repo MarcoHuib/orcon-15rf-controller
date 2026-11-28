@@ -388,7 +388,7 @@ static void controlChecks() {
     writePercent(20); delay(300);
     check("percent-20-goes-to-admission-as-1", sim::calls == 6 && !strcmp(sim::lastKey, "1"));
     unitReports(1); delay(1200); s = snap();
-    check("unit-confirms-low", s.mode == 1 && s.cur == 33 && s.spd == 1 && sim::calls == 6);
+    check("unit-confirms-low", s.mode == 1 && s.pct == 33 && s.cur == 33 && s.spd == 1 && sim::calls == 6);
     writePercent(0); delay(300);   // the slider to 0 % = off = Afwezig
     check("percent-0-is-away", sim::calls == 7 && !strcmp(sim::lastKey, "away"));
     unitReports(0); delay(1200);

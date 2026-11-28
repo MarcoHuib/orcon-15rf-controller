@@ -96,6 +96,7 @@ MI=idf/components/orcon_matter
 run matter_control     -Wall -Wextra -Werror -I $MI test/matter/test_control.cpp
 run matter_state       -Wall -Wextra -Werror -I $MI test/matter/test_state.cpp
 run matter_nvs         -Wall -Wextra -Werror -I $MI test/matter/test_nvs_check.cpp
+run matter_history     -Wall -Wextra -Werror -I $MI test/matter/test_history.cpp
 run matter_out         -Wall -Wextra -Werror -I $MI test/matter/test_out.cpp
 if [ -d "$AJ" ]; then
     run matter_update_boot -Wall -Wextra -Werror -I src -I $AJ test/matter/test_update_boot.cpp
