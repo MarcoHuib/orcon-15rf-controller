@@ -16,7 +16,7 @@ const check = (ok, what) => { checks++; if (!ok) { fails++; console.log('FAIL ' 
 const TOKEN = 'a'.repeat(32);
 function res(status, body) { return { ok: status >= 200 && status < 300, status, json: async () => body }; }
 const base = { state: 'ready', fabrics: 0, window: false, window_code: false, window_s: 0, error: '', commissioning: false,
-               controllers: [], diag: { state: 'ready', step: '-', err: '0x0', server_ready: true, confirm_refused: 0, uptime_ms: 600000 } };
+               fabric_revision: 27, controllers: [], diag: { state: 'ready', step: '-', err: '0x0', server_ready: true, confirm_refused: 0, uptime_ms: 600000 } };
 const st = o => Object.assign({}, base, o);
 const OPEN = st({ window: true, window_code: true, window_s: 900, code: '12345678901', qr: 'MT:Y.K9042C00KA0648G00' });
 
@@ -35,14 +35,15 @@ async function run(routes, { loggedIn = true } = {}) {
   routes['GET /api/setup/state'] = routes['GET /api/setup/state'] ||
     res(200, loggedIn ? { auth: { enabled: true, logged_in: true }, token: TOKEN } : { auth: { enabled: true, logged_in: false } });
   const document = { getElementById: get, hidden: false, addEventListener() {}, body: { appendChild() {} },
-    createElement: () => ({ style: {}, setAttribute() {}, select() {}, setSelectionRange() {}, remove() {} }),
+    createElement: () => ({ style: {}, setAttribute() {}, select() { selected = this.value; }, setSelectionRange() {}, remove() {} }),
     execCommand: () => true };
   const copied = [];
+  let selected = '';
   const ctx = { document, fetch, window: { isSecureContext: false }, navigator: {}, console, Math, JSON, String, Array, Number,
     setTimeout: (f, ms) => { timers.push({ f, ms }); return timers.length; }, clearTimeout() {},
     setInterval: (f) => { intervals.push(f); return intervals.length; }, clearInterval: (i) => { if (i) intervals[i - 1] = null; },
     encodeURIComponent, unescape, parseInt, Infinity, Error };
-  document.execCommand = () => { copied.push(true); return true; };
+  document.execCommand = () => { copied.push(selected); return true; };
   vm.runInNewContext(script, ctx);
   await flush();
   return { el, calls, timers, intervals, copied };
@@ -129,9 +130,70 @@ const hasSvg = el => /<svg[^>]*viewBox="0 0 33 33"/.test(el.qr.innerHTML);   // 
     check(el.rmBox.hidden && posts(calls).length === 0, 'remove cancelled: nothing posted');
     el.ctl.onclick({ target }); await el.rmYes.onclick(); await flush();
     const p = posts(calls)[0];
-    check(p && p.url === '/api/connect/remove' && p.opt.body === '{"index":2,"confirm":true}', 'remove confirmed: index and confirm');
+    check(p && p.url === '/api/connect/remove' && p.opt.body === '{"index":2,"revision":27,"confirm":true}', 'remove confirmed: index and confirm');
     check(p && p.opt.headers['X-Orcon-Token'] === TOKEN, 'remove: the session token as X-Orcon-Token');
     check(el.rmBox.hidden && /verwijderd/.test(el.cMsg.textContent) && el.cFv.textContent === '1', 'removed: message and one controller left');
+  }
+  {
+    const fabric = { index: 7, vendor: 4996, label: '', added: true };
+    const other = { index: 8, vendor: 65521, label: '', added: false };
+    const { el } = await run({ 'GET /api/connect': res(200, st({ fabrics: 2, controllers: [fabric, other] })) });
+    check(/Apple Keychain/.test(el.ctl.innerHTML) && !el.appleKeychain.hidden, 'Apple Keychain is identified by its registered VID');
+    check(/Onbekende Matter-koppeling/.test(el.ctl.innerHTML) && /65521 \(0xfff1\)/.test(el.ctl.innerHTML), 'unknown VID is displayed accurately');
+    check(/toegevoegd sinds start/.test(el.diag.innerHTML) && /al aanwezig bij start/.test(el.diag.innerHTML), 'technical status distinguishes uptime additions');
+  }
+  {
+    const one = st({ fabrics: 1, controllers: [{ index: 2, vendor: 4937, label: '' }] });
+    let resolveStatus, resolveRemove, callsToStatus = 0;
+    const { el, calls, timers } = await run({
+      'GET /api/connect': () => callsToStatus++ ? new Promise(resolve => { resolveStatus = resolve; }) : res(200, one),
+      'POST /api/connect/remove': () => new Promise(resolve => { resolveRemove = resolve; }),
+    });
+    const target = { closest: () => ({ getAttribute: () => '2' }) };
+    el.ctl.onclick({ target });
+    timers.pop().f();
+    const pending = el.rmYes.onclick();
+    await el.rmYes.onclick();
+    check(posts(calls).length === 1, 'double-click sends a single revocation');
+    resolveRemove(res(200, st({ fabric_revision: 28 })));
+    await pending;
+    resolveStatus(res(200, one));
+    await flush();
+    check(el.ctlEmpty.hidden === false && el.rmBox.hidden, 'an older refresh cannot restore a revoked fabric');
+  }
+  {
+    const one = st({ fabrics: 1, controllers: [{ index: 2, vendor: 4937, label: '' }] });
+    let reads = 0;
+    const { el, calls, timers } = await run({
+      'GET /api/connect': () => res(200, reads++ ? st({ fabric_revision: 28 }) : one),
+    });
+    el.ctl.onclick({ target: { closest: () => ({ getAttribute: () => '2' }) } });
+    timers.pop().f(); await flush(); await el.rmYes.onclick();
+    check(el.rmBox.hidden && /intussen gewijzigd/.test(el.cMsg.textContent) && !posts(calls).length,
+      'a changed revision cancels the stale confirmation');
+  }
+  for (const [status, error, message] of [[404, 'no-such-controller', /bestaat niet/],
+                                          [500, 'remove-failed', /niet bevestigen/],
+                                          [409, 'fabric-list-changed', /intussen gewijzigd/]]) {
+    const { el } = await run({
+      'GET /api/connect': res(200, st({ fabrics: 1, controllers: [{ index: 2, vendor: 4937, label: '' }] })),
+      'POST /api/connect/remove': res(status, { error }),
+    });
+    el.ctl.onclick({ target: { closest: () => ({ getAttribute: () => '2' }) } });
+    await el.rmYes.onclick();
+    check(message.test(el.cMsg.textContent), error + ': the page reports failure');
+  }
+  {
+    const bundle = { schema: 1, snapshot: { count: 1, events: [[77, 'fabric-commit', 3, 4937, 0]] } };
+    const { el, calls, copied } = await run({
+      'GET /api/connect': res(200, OPEN),
+      'GET /api/connect/diagnostics': res(200, bundle),
+    });
+    await el.diagCopy.onclick();
+    check(posts(calls).length === 0 && copied[0] === JSON.stringify(bundle),
+      'export copies only the separate read-only diagnostics response, even during an open window');
+    check(!copied[0].includes(OPEN.code) && !copied[0].includes(OPEN.qr) && !copied[0].includes(TOKEN),
+      'the display-only pairing data and the CSRF token are absent from the export');
   }
   // 8. Closing posts {"open":false}; every refusal gets its own message.
   {
@@ -150,6 +212,22 @@ const hasSvg = el => /<svg[^>]*viewBox="0 0 33 33"/.test(el.qr.innerHTML);   // 
     const { el } = await run({ 'GET /api/connect': res(200, st({ fabrics: 1, controllers: [{ index: 1, vendor: 4937, label: '' }] })), 'POST /api/connect/remove': res(409, { error: 'commissioning-busy' }) });
     el.ctl.onclick({ target: { closest: () => ({ getAttribute: () => '1' }) } }); await el.rmYes.onclick(); await flush();
     check(/Er wordt nu gekoppeld/.test(el.cMsg.textContent), 'commissioning-busy: its own message');
+  }
+  {
+    let reads = 0, resolveStatus, resolveClose;
+    const { el, calls, timers } = await run({
+      'GET /api/connect': () => reads++ ? new Promise(resolve => { resolveStatus = resolve; }) : res(200, OPEN),
+      'POST /api/connect/window': () => new Promise(resolve => { resolveClose = resolve; }),
+    });
+    timers.pop().f();
+    const closing = el.close.onclick();
+    await el.close.onclick();
+    check(posts(calls).length === 1, 'a repeated click cannot send a second window mutation');
+    resolveClose(res(200, st({})));
+    await closing;
+    resolveStatus(res(200, OPEN));
+    await flush();
+    check(el.pOpen.hidden && el.code.textContent === '', 'an older status cannot re-display pairing codes after a close');
   }
   // 9. Copy: the digits only; the hw5 update restart keeps its CSRF rules.
   {

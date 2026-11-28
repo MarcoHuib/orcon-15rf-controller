@@ -347,13 +347,16 @@ static void handleChannel() {
     JsonDocument d;
     if (body.length() > 32 || deserializeJson(d, body) || !d.is<JsonObject>() || d.as<JsonObject>().size() != 1 ||
         !d["beta"].is<bool>()) { fail(400, "bad-json"); return; }
-    if (g_running) { fail(409, "update-busy"); return; }
+    if (g_running || busy() || net::restartQueued()) { fail(409, "update-busy"); return; }
     const bool beta = d["beta"].as<bool>();
+    if (beta == g_beta) { statusBody(200); return; }
     Preferences p;
     if (!p.begin("orcon", false) || p.putBool("beta", beta) != 1) { p.end(); fail(503, "storage-unavailable"); return; }
     p.end();
     g_beta = beta;
-    LOCKED(g_st.found = fwup::Found::None);
+    // The previous check was for another feed. Keep the check rate limit, but drop its result and timestamp.
+    g_finished = false;
+    LOCKED(g_st = Status{});
     setupweb::note(rfcon::INFO, beta ? "update: bèta-updates aan (op verzoek van de eigenaar)" : "update: bèta-updates uit");
     statusBody(200);
 }

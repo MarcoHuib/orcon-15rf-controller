@@ -127,13 +127,18 @@ def release_rank(n, pre):
     return n * 100 + (pre if pre else 100)
 
 
-def next_release(kind, newest, channel='stable', betas=()):
+def next_release(kind, newest, channel='stable', betas=(), candidate_from=''):
     """(number, pre): stable, one step above the newest stable (next_version); beta, that same number's next beta. The
     beta tags that exist count, whatever their state: a beta number is never used twice either."""
     n = next_version(kind, newest)
-    if channel == 'stable': return n, 0
-    if channel != 'beta': fail(f'channel {channel!r}: stable or beta')
+    if channel == 'stable' and not candidate_from: return n, 0
+    if channel != 'beta': fail('a test candidate requires the beta channel' if candidate_from else f'channel {channel!r}: stable or beta')
     taken = [pre for num, pre in filter(None, map(parse_release_tag, betas)) if num == n and pre]
+    if candidate_from:
+        installed = parse_release_tag(candidate_from)
+        if not installed or installed[0] != n or not installed[1]:
+            fail(f'candidate_from must be an installed v{semver_text(n)}-beta.N')
+        taken.append(installed[1])
     pre = max(taken, default=0) + 1
     if pre > 99: fail(f'v{semver_text(n)} has 99 betas: release it, or choose a bigger step')
     return n, pre
@@ -625,6 +630,7 @@ def main(argv=None):
     s = p.add_subparsers(dest='cmd', required=True)
     nx = s.add_parser('next'); nx.add_argument('kind'); nx.add_argument('--newest', required=True); nx.add_argument('--notes', default='')
     nx.add_argument('--channel', default='stable'); nx.add_argument('--betas', default='')
+    nx.add_argument('--candidate-from', default='')
     so = s.add_parser('source')
     for k in ('repo', 'ref', 'event', 'default-branch', 'sha', 'head'): so.add_argument('--' + k, required=True)
     pk = s.add_parser('packages'); pk.add_argument('--list', required=True)
@@ -647,8 +653,9 @@ def main(argv=None):
     try:
         if a.cmd == 'next':
             if not re.fullmatch(r'0|[1-9][0-9]{0,8}', a.newest, re.ASCII): fail(f'newest version {a.newest!r}: not a release number')
-            n, pre = next_release(a.kind, int(a.newest), a.channel, a.betas.split())
+            n, pre = next_release(a.kind, int(a.newest), a.channel, a.betas.split(), a.candidate_from)
             clean_notes(a.notes)   # refused here, before anything is built
+            if a.candidate_from: print('Test candidate: verified workflow artifact only, no publication', file=sys.stderr)
             print(f'newest stable tag or release v{semver_text(int(a.newest))}, {a.kind} {a.channel}: {release_tag(n, pre)}', file=sys.stderr)
             print(f'number={n}\npre={pre}\ntag={release_tag(n, pre)}\nname={release_name(n, pre)}\nrank={release_rank(n, pre)}\n'
                   f'is_beta={"true" if pre else "false"}\nlatest={"false" if pre else "true"}')

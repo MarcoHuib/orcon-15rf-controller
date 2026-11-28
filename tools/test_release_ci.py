@@ -145,6 +145,24 @@ try:
     assert rc.build_flags(VERSION, COMMIT, 4).endswith(' -DORCON_RELEASE_PRE=4') and rc.stamp(VERSION, 4) == '1002003-beta.4'
     ok('betas: tags, ranks (a stable above its betas), the next beta of a number once, never past 99; build flag and stamp')
 
+    # The real release sequence is independent of a private installation or test artifact.
+    assert nr('patch', 1000001) == (1000002, 0)
+    assert nr('minor', 1000002, 'beta') == (1001000, 1)
+    assert nr('minor', 1000002, 'beta', ['v1.1.0-beta.1']) == (1001000, 2)
+    for newest in (1000001, 1000002):
+        assert nr('minor', newest, 'beta', [], 'v1.1.0-beta.1') == (1001000, 2)
+        assert nr('minor', newest, 'beta', ['v1.1.0-beta.3'], 'v1.1.0-beta.1') == (1001000, 4)
+    refused(nr, 'minor', 1000001, 'stable', [], 'v1.1.0-beta.1', want='requires the beta channel')
+    for bad in ('v1.0.2-beta.1', 'v1.1.0', 'v1.1.0-beta.01', 'v1.2.0-beta.1', ' '):
+        refused(nr, 'minor', 1000001, 'beta', [], bad, want='installed v1.1.0-beta.N')
+    refused(nr, 'minor', 1000001, 'beta', [], 'v1.1.0-beta.99', want='99 betas')
+    out = io.StringIO()
+    with redirect_stdout(out), redirect_stderr(io.StringIO()):
+        code = rc.main(['next', '--newest', '1000001', '--channel', 'beta',
+                        '--candidate-from=v1.1.0-beta.1', '--', 'minor'])
+    assert code == 0 and 'pre=2\ntag=v1.1.0-beta.2\n' in out.getvalue()
+    ok('test candidate: higher than the installed private beta and published history, public sequence intact')
+
     # ---- release source ----------------------------------------------------------------------------------------------
     good = dict(repo='MarcoHuib/orcon-15rf-controller', ref='refs/heads/main', event='workflow_dispatch', default_branch='main', sha=COMMIT, head=COMMIT)
     rc.check_source(**good)

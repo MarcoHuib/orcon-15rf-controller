@@ -65,7 +65,7 @@ async function page(routes, hash = '') {
         calls.push({ key, headers: o.headers || {}, body: typeof o.body === 'string' ? JSON.parse(o.body) : o.body });
         const h = routes[key] || routes[key.split('?')[0]];
         if (!h) return { ok: false, status: 404, json: async () => ({ error: 'no-route' }) };
-        const [status, body] = h(calls[calls.length - 1]);
+        const [status, body] = await h(calls[calls.length - 1]);
         return { ok: status < 300, status, json: async () => body };
     };
     const ctx = { document, location, fetch, setTimeout: () => 0, clearTimeout() {}, addEventListener: (t, f) => { win[t] = f; },
@@ -346,6 +346,76 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         valid = true; await p.refresh();
         assert.equal(p.location.hash, '#firmware'); assert.match(p.$('upM').textContent, /Update geslaagd: v1\.3\.0/);
         ok('missed "written" (paused tab) and a lost session: followed through /api/ota to the confirmation, no jump to the login');
+    }
+    for (const variant of ['control', 'control-matter']) {
+        const fw = '1'.repeat(40);
+        const base = { supported: true, current: { variant }, channel: 'stable',
+            phase: 'idle', update_boot: false, found: 'newer', latest: { release: 1001000, name: '1.1.0', commit: fw } };
+        let up = base, error = '', oldRefresh, resolveOldRefresh;
+        const routes = {
+            'GET /api/setup/state': () => [200, state({ ...CAPS_TX, settings_pages: true, update_check: true },
+                { fw, setup: { state: 'done' }, profiles: PF([PI(2, 'Washok', '29:000101')], 2) })],
+            'GET /api/state': () => [200, {}],
+            'GET /api/ota': () => [200, { fw, variant, running: 'app1', running_state: 'valid', release_name: '1.0.2' }],
+            'GET /api/update': () => {
+                if (oldRefresh) { const pending = oldRefresh; oldRefresh = null; return pending; }
+                return [200, up];
+            },
+            'POST /api/update/channel': c => {
+                if (error) return [503, { error }];
+                up = { ...base, channel: c.body.beta ? 'beta' : 'stable', found: 'none', latest: null };
+                return [200, up];
+            },
+            'POST /api/update/restart': () => [202, { restart: 'update-check' }],
+        };
+        const p = await page(routes, 'firmware');
+        const beta = p.$('upBeta');
+        const toggle = checked => { beta.checked = checked; beta.handlers.change[0](); };
+        const posts = path => p.posts().filter(c => c.key === 'POST /api/update/' + path);
+        assert.equal(p.$('upBetaRow').hidden, false);
+        assert.equal(beta.checked, false);
+        assert.match(p.$('upKv').innerHTML, /Actief updatekanaal.*Stabiel/);
+        assert.equal(p.$('upRestart').hidden, variant !== 'control-matter');
+        dlg.asked = []; dlg.confirm = false;
+        toggle(true); await flush();
+        assert.equal(beta.checked, false);
+        assert.match(dlg.asked[0], /storingen/);
+        assert.equal(posts('channel').length, 0);
+
+        dlg.confirm = true;
+        oldRefresh = new Promise(resolve => { resolveOldRefresh = resolve; });
+        await p.refresh();
+        toggle(true); toggle(true); await flush();
+        assert.deepEqual(posts('channel').map(c => c.body), [{ beta: true }]);
+        assert.deepEqual({ ...posts('channel')[0].headers }, { 'Content-Type': 'application/json', 'X-Orcon-Token': 'tok123' });
+        resolveOldRefresh([200, base]); await flush();
+        assert.equal(beta.checked, true);
+        assert.match(p.$('upKv').innerHTML, /Actief updatekanaal.*Bèta/);
+        assert.equal(p.$('upInst').hidden, true);
+        const reloaded = await page(routes, 'firmware');
+        assert.equal(reloaded.$('upBeta').checked, true);
+
+        error = 'storage-unavailable';
+        toggle(false); await flush();
+        assert.equal(beta.checked, true);
+        assert.match(p.$('err').textContent, /kanaalkeuze niet opslaan/);
+        error = '';
+        if (variant === 'control-matter') {
+            dlg.confirm = false; p.$('upRestart').click(); await flush();
+            assert.equal(posts('restart').length, 0);
+            dlg.confirm = true; p.$('upRestart').click(); p.$('upRestart').click(); await flush();
+            assert.equal(posts('restart').length, 1);
+            assert.equal(posts('restart')[0].headers['X-Orcon-Token'], 'tok123');
+            assert.match(p.$('upM').textContent, /herstart voor de updatecontrole/);
+            up = { ...up, update_boot: true, phase: 'checking' }; await p.refresh();
+            assert.equal(p.$('upRestart').hidden, true);
+            assert.equal(beta.checked, true); assert.equal(beta.disabled, true);
+            up = { ...up, phase: 'idle' }; await p.refresh();
+        }
+        toggle(false); await flush();
+        assert.equal(beta.checked, false);
+        assert.deepEqual(posts('channel').at(-1).body, { beta: false });
+        ok(variant + ': confirmed beta opt-in, stale refresh, saved state, storage refusal and channel reset');
     }
     {   // failures in plain Dutch; nothing is reported as installed; up to date; too soon
         let up = { supported: true, phase: 'idle', job: 'check', error: '', checked: true, checked_age_s: 30, found: 'up-to-date',
@@ -987,8 +1057,8 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
         const sum = o => () => [200, { state: 'ready', identity: 'valid', activating: false, fabrics: 0, window: false, window_code: false, window_s: 0, error: '', ...o }];
         let p = await page({ 'GET /api/setup/state': () => [200, state(CAPS_RX, prof)] }); await p.refresh();   // RX: no remote state poll
         assert.equal(p.$('cMat').hidden, true); ok('Matter card: hidden on firmware without Matter (404)');
-        for (const [o, want, on] of [[{ fabrics: 1 }, 'Beschikbaar · gekoppeld met 1 controller', true],
-                                     [{ fabrics: 2, window: true }, 'Beschikbaar · gekoppeld met 2 controllers · koppelvenster open', true],
+        for (const [o, want, on] of [[{ fabrics: 1 }, 'Beschikbaar · 1 Matter-koppeling', true],
+                                     [{ fabrics: 2, window: true }, 'Beschikbaar · 2 Matter-koppelingen · koppelvenster open', true],
                                      [{ state: 'starting' }, 'Niet beschikbaar · niet gekoppeld', false],
                                      [{ state: 'failed', identity: 'absent' }, 'Nog niet geactiveerd · activeren op de Matter-pagina', false],
                                      [{ state: 'failed', identity: 'damaged' }, 'Identiteit beschadigd · zie de Matter-pagina', false]]) {
@@ -1002,8 +1072,8 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
     //      does the begin request carry the owner's variant_change (the controller refuses a switch without it)
     {
         const prof = { profiles: PF([PI(2, 'Washok', '29:000101')], 2) };
-        const bundle = variant => {
-            const man = JSON.stringify({ v: 2, kind: 'orcon-release', env: variant === 'control-matter' ? 'heltec_v2_matter' : 'heltec_v2_sx1276_control',
+        const bundle = (variant, pre = 0) => {
+            const man = JSON.stringify({ v: 2, kind: pre ? 'orcon-prerelease' : 'orcon-release', ...(pre ? { pre } : {}), env: variant === 'control-matter' ? 'heltec_v2_matter' : 'heltec_v2_sx1276_control',
                                          variant, allow_tx: true, commit: 'c'.repeat(40), version: 1001000, size: 5, sha256: 'a'.repeat(64) });
             const text = JSON.stringify({ manifest: man, sig: 'ab' }) + '\nIMAGE';
             return { slice: (a, b) => ({ text: async () => text.slice(a, b) }) };
@@ -1023,6 +1093,14 @@ const pickRow = (p, d) => p.$('plist').click({ target: { closest: () => ({ datas
             assert.deepEqual(Object.keys(begin.body).sort(), change ? ['manifest', 'sig', 'variant_change'] : ['manifest', 'sig']);
             if (say) assert.match(dlg.asked[0], say); else assert.doesNotMatch(dlg.asked[0], /Matter|ander type/);
         }
+        dlg.asked = []; dlg.confirm = false;
+        const candidate = await page({ 'GET /api/setup/state': () => [200, state(CAPS_RX, prof)],
+            'GET /api/ota': () => [200, { variant: 'control-matter', running: 'app1' }] }, 'firmware');
+        candidate.$('fwIn').files = [bundle('control-matter', 2)];
+        candidate.$('fwGo').click(); await flush();
+        assert.match(dlg.asked[0], /v1\.1\.0-beta\.2/);
+        assert.ok(!candidate.posts().length);
+
         dlg.asked = []; dlg.confirm = false;
         const q = await page({ 'GET /api/setup/state': () => [200, state(CAPS_RX, prof)], 'GET /api/ota': () => [200, { variant: 'control-matter', running: 'app1' }] }, 'firmware');
         q.$('fwIn').files = [bundle('control')]; q.$('fwGo').click(); await flush(); await flush();

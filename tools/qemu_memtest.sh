@@ -24,7 +24,8 @@
 #     Then chip-tool reads Basic Information and writes FanMode, through Orcon's (simulated) admission. P: a migration
 #     build moves its identity onto the device (N), chip-tool commissions it (K), then the app slot is rewritten with
 #     the universal image, as an OTA does, and the controller still reads and writes over CASE (L). Q: an identity made
-#     on the device (N), commissioned (K). The setup code and the PAA come from the emulated flash (ESP-IDF's
+#     on the device (N), commissioned (K), joined by a second commissioner, and selectively revoked. The setup code
+#     and the PAA come from the emulated flash (ESP-IDF's
 #     nvs_tool): no log line carries a code.
 # Checked: every step of every boot; the lowest free internal RAM once Matter is ready, against a floor; the identity
 # across boots (kept, unique between devices, new after R, byte-identical after a migration); every generated chain
@@ -137,7 +138,7 @@ PY
       ct() {   # ct <label> <chip-tool arguments>: its output to the log under "== label", its exit code to .rc
         local label=$1; shift
         echo "== $label" >> /w/$LOG.chiptool
-        chip-tool "$@" --storage-directory /w/ct-$DEV --timeout 240 >> /w/$LOG.chiptool 2>&1
+        chip-tool "$@" --storage-directory "${CT_STORE:-/w/ct-$DEV}" --timeout "${CT_TIMEOUT:-240}" >> /w/$LOG.chiptool 2>&1
         echo "$label $?" >> /w/$LOG.rc
       }
       for i in $(seq 900); do grep -qE "PROBE (window-open|operational)" /w/$LOG 2> /dev/null && break; kill -0 $q 2> /dev/null || break; sleep 1; done
@@ -151,6 +152,30 @@ PY
       ct write-fan fancontrol write fan-mode "$MODE" 0x7a11 2
       sleep 2
       ct read-fan fancontrol read fan-mode 0x7a11 2
+      if [ "$DEV" = Q ] && [ "$SC" = K ]; then
+        ct before operationalcredentials read commissioned-fabrics 0x7a11 0
+        ct open-extra pairing open-commissioning-window 0x7a11 1 180 1000 1234
+        extra_code=$(grep -Eo "Manual pairing code: \[[0-9]+\]" /w/$LOG.chiptool | tail -1 | tr -cd "0-9")
+        sed -i -E "s/(Manual pairing code|SetupQRCode): \[[^]]+\]/\1: [redacted]/g" /w/$LOG.chiptool
+        index=""
+        if [ -n "$extra_code" ]; then
+          mkdir -p /w/ct-beta-$DEV
+          CT_STORE=/w/ct-beta-$DEV CT_TIMEOUT=60 ct add-beta pairing code 0x7a12 "$extra_code" \
+            --commissioner-name beta --commissioner-vendor-id 65522 --use-only-onnetwork-discovery true \
+            --paa-trust-store-path /w/trust-$DEV/paa --bypass-attestation-verifier true
+          ct joined operationalcredentials read commissioned-fabrics 0x7a11 0
+          CT_STORE=/w/ct-beta-$DEV CT_TIMEOUT=30 ct beta-index operationalcredentials read current-fabric-index 0x7a12 0 --commissioner-name beta
+          index=$(grep -Eo "CurrentFabricIndex: [0-9]+" /w/$LOG.chiptool | tail -1 | cut -d " " -f 2)
+        fi
+        if [ -n "$index" ]; then
+          ct remove-beta operationalcredentials remove-fabric "$index" 0x7a11 0
+          ct remaining operationalcredentials read commissioned-fabrics 0x7a11 0
+          ct alpha-still-operational fancontrol read fan-mode 0x7a11 2
+          CT_STORE=/w/ct-beta-$DEV CT_TIMEOUT=12 ct beta-revoked basicinformation read vendor-name 0x7a12 0 --commissioner-name beta
+          ct remove-last operationalcredentials remove-fabric 1 0x7a11 0
+          CT_TIMEOUT=12 ct alpha-revoked basicinformation read vendor-name 0x7a11 0
+        fi
+      fi
       for i in $(seq 60); do grep -q "PROBE DONE" /w/$LOG 2> /dev/null && break; sleep 1; done
       sleep 2; kill $q 2> /dev/null; wait $q 2> /dev/null || true'
     [ "$sc" = K ] || return 0
@@ -209,6 +234,11 @@ for n, spec in enumerate(plan, 1):
         part = {m[1]: m[2] for m in re.finditer(r"^== (\S+)\n(.*?)(?=^== |\Z)", raw, re.M | re.S)}
         rcs = [tuple(l.rsplit(" ", 1)) for l in (out / f"serial-{n}-{dev}{sc}.log.rc").read_text().split("\n") if l]
         want_rc = ([("strict", None), ("consent", "0")] if sc == "K" else []) + [("read-vendor", "0"), ("write-fan", "0"), ("read-fan", "0")]
+        multi_admin = dev == "Q" and sc == "K"
+        if multi_admin:
+            want_rc += [(label, "0") for label in ("before", "open-extra", "add-beta", "joined", "beta-index",
+                                                   "remove-beta", "remaining", "alpha-still-operational")]
+            want_rc += [("beta-revoked", None), ("remove-last", "0"), ("alpha-revoked", None)]
         ctok = [r[0] for r in rcs] == [w[0] for w in want_rc] and all(w[1] is None and r[1] != "0" or r[1] == w[1] for r, w in zip(rcs, want_rc))
         ctok = ctok and "VendorName: Zelfbouw (niet van Orcon)" in part.get("read-vendor", "") and \
             re.search(rf"FanMode: {'2' if sc == 'K' else '3'}\b", part.get("read-fan", "")) is not None
@@ -224,6 +254,14 @@ for n, spec in enumerate(plan, 1):
                 for t, v in ((0, 1), (1, 65521), (3, 43), (8, 0))) and \
                 re.search(r"tag\[Anonymous\]: 0x100, type: Unsigned Fixed Point \(0x04\), value: 32768\b", cd) is not None
             ctok = ctok and cdok
+        if multi_admin:
+            ctok = ctok and all(
+                re.search(rf"CommissionedFabrics: {count}\b", part.get(label, ""))
+                for label, count in (("before", 1), ("joined", 2), ("remaining", 1))
+            ) and "Device commissioning completed with success" in part.get("add-beta", "") and \
+                re.search(r"CurrentFabricIndex: 2\b", part.get("beta-index", "")) is not None and all(
+                    re.search(r"statusCode: 0\b", part.get(label, "")) for label in ("remove-beta", "remove-last")
+                )
         good = good and ctok and bool(com) and com[1] == "1"
     ok &= good
     boots.append(dict(dev=dev, sc=sc, img=img, ident=ident, gen=gen, mig=mig, blobs=blobs, n=n))
