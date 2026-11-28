@@ -8,9 +8,10 @@ De workflow bouwt voor stabiele releases de **control-firmware** (`heltec_v2_sx1
 2. GitHub → **Actions** → *Release control firmware (Heltec V2)* → **Run workflow**. Kies branch `main` en:
    - het **soort release**: `patch` (standaard), `minor` of `major`. Het versienummer zelf bepaalt de workflow (zie [Automatische versie](#automatische-versie));
    - het **kanaal**: `stable` (standaard) of `beta` (zie [Bètakanaal en Matter](#bètakanaal-en-matter));
+   - `candidate_from`: leeg voor publicatie, of de geïnstalleerde bètatag voor een [getekende testkandidaat](#getekende-testkandidaat-vóór-publicatie);
    - eventueel **korte releasenotes**: maximaal 400 bytes, zichtbaar op de controller.
 3. De workflow controleert en bouwt (zie hieronder). Bij de job *Sign (protected environment)* vraagt GitHub om **goedkeuring** (*Review deployments* → *Approve*). Dat is de enige extra klik. Zonder goedkeuring wordt er niets ondertekend of gepubliceerd.
-4. Na de goedkeuring tekent de workflow, verifieert het pakket opnieuw met de regels van het apparaat en publiceert de GitHub Release.
+4. Na de goedkeuring tekent de workflow en verifieert het pakket opnieuw met de regels van het apparaat. Een gewone run publiceert de release. Een kandidaatrun eindigt met het geverifieerde Actions-artifact.
 5. Je controller meldt de nieuwe versie bij de volgende dagelijkse controle, of meteen na **Systeem → Firmware → Controleer op updates**. Installeren doe je zelf met **Update installeren** ([UPDATECONTROLE.md](UPDATECONTROLE.md)). Nooit automatisch.
 
 ## Versienummers
@@ -159,6 +160,57 @@ Zonder secret faalt de job `sign` met `signing key missing`. Er wordt dan niets 
 - De update-indexen van het bètakanaal staan in de vaste pre-release `channel-beta`. Een publicatie die boven elke eerdere tag uitkomt, vervangt ze daar; de firmware zelf blijft in de versierelease. Alleen een controller met *Bèta-updates ontvangen* aan leest ze.
 - De Matter-firmware wordt alleen bij een bèta gebouwd, in de vastgepinde ESP-Matter-image (`tools/build_idf.sh --release N --pre P`). `tools/release_matter_check.sh` controleert hem zoals het control-image: het image byte voor byte uit de ELF, release- en commitstempel, de Matter-marker, géén ingebouwde identiteit, de vastgepinde bootbestanden, de rollback-hook, het apparaatbeleid en één RF-pad (`check_elf_tx.py`). De workflow bouwt nooit met een identiteit; de guard in `tools/test_tx_poc_safety.py` weigert dat.
 - **Controllers met v1.0.0 of v1.0.1** weigeren de bètamanifesten en de variant `control-matter`. Installeer eerst de stabiele control-release v1.0.2 via *Update installeren*. Zet daarna *Bèta-updates ontvangen* aan, kies de `control-matter`-bundel bij *Handmatig installeren* en bevestig de wissel. Tijdens elke installatie blijft de vorige firmware beschikbaar voor automatische terugval.
+
+### Getekende testkandidaat vóór publicatie
+
+Gebruik [Release Control op `main`](https://github.com/MarcoHuib/orcon-15rf-controller/actions/workflows/release-control.yml) nadat de beoordeelde kandidaatcode op `main` staat. Kies voor deze Heltec `release_type=minor`, `channel=beta` en `candidate_from=v1.1.0-beta.1`. Controleer de SHA van de run en de berekende versie vóór aparte toestemming voor ondertekening. De bestaande omgeving `orcon-production-release` vereist de normale reviewergoedkeuring. Met de huidige releasehistorie berekent de workflow `v1.1.0-beta.2`, zowel vóór als na de stabiele overgangsrelease. Bij meerdere getagde bèta's kiest zij een hoger volgnummer dan de geïnstalleerde en geregistreerde bèta's van dezelfde release. Een ongeldige tag, stabiel kanaal of afwijkende releaseversie wordt geweigerd.
+
+De kandidaatrun voert dezelfde build-, signature- en pakketcontroles uit. Het artifact **release-verified** blijft drie dagen beschikbaar. De job **Publish the GitHub Release** wordt overgeslagen, zodat tags, Releases en `channel-beta` door deze run niet veranderen. Behandel het artifact als downloadbaar voor ingelogde GitHub-gebruikers met leesrechten op deze repository. Het bevat universele images. Gebruik voor de bestaande Matter-Heltec alleen het getekende `orcon-control-matter-*.orconfw`-bestand. [GitHub Actions-artifacts downloaden](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)
+
+### Overstap vanaf privébèta 1
+
+De Heltec met `1.1.0-beta.1`, commit `cc6fe82`, heeft de beveiligde kanaal-API al. De bestaande pagina van die versie heeft geen schakelaar. Meld je aan op de controller en open de browserconsole van **Systeem → Firmware** op hetzelfde lokale adres. Voer onderstaande eenmalige opt-in zelf uit. De code toont alleen het kanaal. Het CSRF-token blijft in de eigenaarssessie.
+
+```javascript
+(async () => {
+  const request = async (path, options) => {
+    const response = await fetch(path, { cache: 'no-store', ...options });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'HTTP ' + response.status);
+    return data;
+  };
+  const before = await request('/api/update');
+  if (before.current?.name !== '1.1.0-beta.1' ||
+      before.current?.variant !== 'control-matter' ||
+      !before.current?.fw?.startsWith('cc6fe82')) {
+    throw new Error('Controleer de draaiende versie en variant onder Systeem → Firmware.');
+  }
+  if (before.channel === 'beta') {
+    console.info('Actief updatekanaal: bèta');
+    return;
+  }
+  if (before.channel !== 'stable' ||
+      !confirm('Bèta-updates ontvangen? Bètaversies kunnen storingen veroorzaken.')) return;
+  const session = await request('/api/setup/state');
+  if (!session.auth?.logged_in || !session.token) throw new Error('Meld je aan als eigenaar.');
+  const after = await request('/api/update/channel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Orcon-Token': session.token },
+    body: JSON.stringify({ beta: true }),
+  });
+  if (after.channel !== 'beta') throw new Error('Kanaalwijziging niet bevestigd.');
+  console.info('Actief updatekanaal: bèta');
+})().catch(error => console.error(error.message));
+```
+
+- **Vóór publicatie.** Download **release-verified** van de goedgekeurde geslaagde kandidaatrun. Controleer de SHA, versie en variant uit de run en de bundelnaam. Kies het getekende bestand bij **Systeem → Firmware → Handmatig installeren**. De Heltec controleert de handtekening, de bètakeuze, het versienummer, de variant en de image-integriteit, en start een proefboot met rollback. Controleer daarna in **Systeem → Firmware** op `v1.1.0-beta.2`, de kandidaatcommit, `control-matter` en een bevestigd actief slot. Doe de [Matter-hardwareproef](MATTER.md#f-proef-voor-de-eigenaar) met de bestaande koppelingen.
+- **Na publicatie.** Een installatie op privé-`beta.1` krijgt de publieke `beta.1` niet aangeboden, ook bij een andere commit. Stabiele `v1.0.2` is lager en alleen voor de overgang vanaf stabiele control-firmware. Het eerste automatische aanbod voor de privébèta is publieke `v1.1.0-beta.2` op `channel-beta`. Zet het kanaal aan vóór **Updatecontrole met korte herstart**, meld je na de herstart opnieuw aan en kies **Systeem → Firmware → Update installeren** zodra de kandidaat met juiste variant en commit wordt aangeboden.
+- **Na een kandidaatinstallatie.** Een gepubliceerde build met dezelfde rang levert hetzelfde oordeel *up-to-date* op. Als de publiek uitgebrachte `beta.2` na de hardwareproef inhoudelijk is gewijzigd, kan de eigenaar die geverifieerde bundel één keer handmatig via dezelfde getekende route installeren. Een volgende publieke `beta.3` komt weer via de automatische aanbieding. Verander de rangvergelijking of het rollbackbeleid hiervoor niet.
+- **Publieke volgorde.** Laat `candidate_from` leeg. Publiceer eerst de echte stabiele `v1.0.2` (`patch` + `stable`), vervolgens de echte publieke `v1.1.0-beta.1` en daarna `v1.1.0-beta.2` (beide `minor` + `beta`). Goedkeuring en acceptatie blijven per publicatie nodig. De kandidaatrun reserveert geen nummer en vereist geen fictieve tag.
+
+### Integratievolgorde
+
+Merge [PR #29](https://github.com/MarcoHuib/orcon-15rf-controller/pull/29) na beoordeling en CI naar `release/matter-beta-public`. Daardoor neemt [PR #27](https://github.com/MarcoHuib/orcon-15rf-controller/pull/27) de firmware, kandidaatmodus en releasevoorbereiding mee. Controleer de bijgewerkte PR #27 voordat die naar `main` gaat. [PR #28](https://github.com/MarcoHuib/orcon-15rf-controller/pull/28) is overbodig zodra #29 is opgenomen. De bruikbare wijzigingen zijn daar al verwerkt. Sluit het concept zonder dubbele merge.
 
 ## Bekende restpunten van het releaseproces (Codex r4, MINOR)
 

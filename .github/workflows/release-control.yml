@@ -41,6 +41,11 @@ on:
         options:
           - stable
           - beta
+      candidate_from:
+        description: 'Getekende testkandidaat zonder publicatie: vul de geinstalleerde betatag in (bijv. v1.1.0-beta.1)'
+        required: false
+        type: string
+        default: ''
       notes:
         description: 'Korte releasenotes voor de controller (optioneel, maximaal 400 bytes)'
         required: false
@@ -129,8 +134,9 @@ jobs:
           NOTES: ${{ inputs.notes }}
           NEWEST: ${{ needs.history.outputs.newest }}
           BETAS: ${{ needs.history.outputs.betas }}
+          CANDIDATE_FROM: ${{ inputs.candidate_from }}
         run: |
-          python3 -I tools/release_ci.py next --newest "$NEWEST" --channel "$CHANNEL" --betas="$BETAS" --notes="$NOTES" -- "$RELEASE_TYPE" >> "$GITHUB_OUTPUT"
+          python3 -I tools/release_ci.py next --newest "$NEWEST" --channel "$CHANNEL" --betas="$BETAS" --candidate-from="$CANDIDATE_FROM" --notes="$NOTES" -- "$RELEASE_TYPE" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build and test
@@ -336,6 +342,7 @@ jobs:
 
   publish:
     name: Publish the GitHub Release
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'MarcoHuib/orcon-15rf-controller' && inputs.candidate_from == ''
     needs: [prepare, build, sign, verify]
     runs-on: ubuntu-24.04
     timeout-minutes: 10

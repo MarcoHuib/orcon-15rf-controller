@@ -8,7 +8,8 @@ Status: gebouwd en host-getest op `feature/github-releases-control-ota`. **Niet 
 - de geïnstalleerde versie (`v1.2.3` of *Ontwikkelversie*) en de volledige commit;
 - het actieve geheugenslot (`app0`/`app1`) en zijn status (*bevestigd*, *proefstart*);
 - het andere slot en zijn status (*bevestigd* = terugvaloptie, *ongeldig* of *afgebroken* = een mislukte of teruggedraaide update, *leeg of onbekend*);
-- wanneer er voor het laatst is gecontroleerd en de nieuwste officiële versie, met korte releasenotes;
+- onder **Officiële updates** het actieve kanaal, de schakelaar **Bèta-updates ontvangen**, de laatste controle en de nieuwste aangeboden versie;
+- op Matter-firmware daarnaast **Updatecontrole met korte herstart**. Gebruik die als een gewone controle te weinig geheugen heeft. Meld je na de herstart aan en open **Systeem → Firmware** om de aanbieding te installeren. De controller keert daarna terug naar de normale start met Matter;
 - de knoppen **Controleer op updates** en, alleen bij een nieuwere versie, **Update installeren**.
 
 Na **Update installeren** vraagt de pagina eerst om bevestiging. Daarna volgt ze de update stap voor stap:
@@ -20,7 +21,7 @@ Na **Update installeren** vraagt de pagina eerst om bevestiging. Daarna volgt ze
 
 Wordt de nieuwe firmware niet bevestigd, dan meldt de pagina dat de controller automatisch is teruggekeerd naar de vorige versie. Tijdens de download en de herstart weigert de controller RF-bediening, Siri, koppelen, uitlezen en herstarten (`update-busy`).
 
-De handmatige `.orconfw`-upload blijft bestaan, onder *Handmatig installeren*, en wordt nu op dezelfde manier gevolgd.
+De handmatige `.orconfw`-upload staat onder **Handmatig installeren** en volgt dezelfde proefstart en rollback. De bètaschakelaar staat standaard uit. De firmware bewaart de keuze in `orcon/beta` in NVS en leest hem bij iedere start opnieuw, ook na OTA en tijdens een updateherstart. De kanaalkeuze verwijdert de vorige update-aanbieding. Start daarna een controle voor het gekozen kanaal.
 
 De pagina volgt een installatie vanaf de klik via `/api/ota`, dat geen login nodig heeft. Ook een gepauzeerd tabblad dat de fase *geschreven* mist, of een sessie die door de herstart verdween, eindigt dus bij de echte uitkomst en niet op het inlogscherm.
 
